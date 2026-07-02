@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+{# Batch manifest page — prepended to each print-ready batch PDF.
+   Data: { batch: {label, tax_year, form_count, created_at, order_note}, rows: [{n, payer, recipient, form_type, sheet}] } #}
+<html>
+<head>
+  <meta charset="utf-8">
+  <link rel="stylesheet" href="base.css">
+  <style>
+    @page { size: letter portrait; margin: 0.6in; }
+    th, td { border: 0.5pt solid #000; padding: 3pt 5pt; text-align: left; font-size: 8pt; }
+    th { background: #eee; }
+  </style>
+</head>
+<body>
+  <h1 style="font-size: 14pt;">Vibe 1099 — Paper Batch Manifest</h1>
+  <p>
+    <strong>Batch:</strong> {{ batch.label }} &nbsp;
+    <strong>Tax year:</strong> {{ batch.tax_year }} &nbsp;
+    <strong>Forms:</strong> {{ batch.form_count }} &nbsp;
+    <strong>Built:</strong> {{ batch.created_at }}
+  </p>
+  <p class="small">{{ batch.order_note }}</p>
+  <table>
+    <thead><tr><th>#</th><th>Payer</th><th>Recipient</th><th>Form</th><th>Sheet</th></tr></thead>
+    <tbody>
+      {% for r in rows %}
+      <tr><td>{{ r.n }}</td><td>{{ r.payer }}</td><td>{{ r.recipient }}</td><td>1099-{{ r.form_type }}</td><td>{{ r.sheet }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</body>
+</html>

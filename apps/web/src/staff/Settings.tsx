@@ -1,0 +1,404 @@
+import { useEffect, useState } from 'react';
+import { useOutletContext } from 'react-router-dom';
+import { api, ApiError, downloadBlob } from '../api';
+import type { Me } from './Shell';
+
+interface Firm {
+  id: string; name: string; ein: string; address: Record<string, string>; phone: string;
+  irisEnvironment: string; moWithholdingId: string;
+  impositionOffsetX16: number; impositionOffsetY16: number; licenseTier: string;
+}
+interface IrisSettings { tcc: string; apiClientId: string; hasJwk: boolean; publicJwk: Record<string, unknown> | null; environment: 'ATS' | 'PROD' }
+interface User { id: string; email: string; name: string; role: string; active: boolean; totpEnabled: boolean; lastLoginAt: string | null }
+interface AuditEntry { id: number; createdAt: string; actorType: string; actorId: string | null; action: string; entityType: string; entityId: string | null; ip: string | null }
+
+export function Settings() {
+  const me = useOutletContext<Me>();
+  const [tab, setTab] = useState<'firm' | 'iris' | 'users' | 'templates' | 'audit' | 'queues' | 'license' | 'status'>('firm');
+  const [firm, setFirm] = useState<Firm | null>(null);
+  const [iris, setIris] = useState<IrisSettings | null>(null);
+  const [users, setUsers] = useState<User[]>([]);
+  const [audit, setAudit] = useState<AuditEntry[]>([]);
+  const [queues, setQueues] = useState<Record<string, Record<string, number>>>({});
+  const [license, setLicense] = useState<Record<string, unknown> | null>(null);
+  const [status, setStatus] = useState<Record<string, unknown> | null>(null);
+  const [settings, setSettings] = useState<Record<string, unknown>>({});
+  const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
+  const [newUser, setNewUser] = useState({ email: '', name: '', role: 'preparer', password: '' });
+  const [totpSetup, setTotpSetup] = useState<{ secret: string; otpauthUrl: string } | null>(null);
+  const [totpCode, setTotpCode] = useState('');
+  const [sms, setSms] = useState({ provider: 'env', textlinkApiKey: '', twilioAccountSid: '', twilioAuthToken: '', twilioFromNumber: '', hasTextlinkKey: false, hasTwilioAuth: false, envProvider: 'none' });
+  const [thresholds, setThresholds] = useState<Record<string, string>>({});
+  const isAdmin = me.role === 'admin';
+
+  const loadAll = () => {
+    api.get<{ firm: Firm }>('/api/admin/firm').then((r) => setFirm(r.firm)).catch(() => {});
+    api.get<{ settings: Record<string, unknown> }>('/api/admin/settings').then((r) => {
+      setSettings(r.settings);
+      const t = (r.settings['federal_thresholds'] as Record<string, number>) ?? {};
+      setThresholds(Object.fromEntries(Object.entries(t).map(([k, v]) => [k, (v / 100).toString()])));
+    }).catch(() => {});
+    if (me.role === 'admin') {
+      api.get<typeof sms>('/api/admin/sms').then((r) => setSms((s) => ({ ...s, ...r }))).catch(() => {});
+    }
+    if (isAdmin) {
+      api.get<IrisSettings>('/api/iris/settings').then(setIris).catch(() => {});
+      api.get<{ users: User[] }>('/api/auth/users').then((r) => setUsers(r.users)).catch(() => {});
+      api.get<Record<string, unknown>>('/api/admin/license').then(setLicense).catch(() => {});
+    }
+    api.get<{ queues: Record<string, Record<string, number>> }>('/api/admin/queues').then((r) => setQueues(r.queues)).catch(() => {});
+    api.get<Record<string, unknown>>('/api/status').then(setStatus).catch(() => {});
+  };
+  useEffect(loadAll, [isAdmin]);
+
+  const saveFirm = async () => {
+    if (!firm) return;
+    try {
+      await api.put('/api/admin/firm', {
+        name: firm.name, ein: firm.ein, address: firm.address, phone: firm.phone,
+        moWithholdingId: firm.moWithholdingId,
+        impositionOffsetX16: firm.impositionOffsetX16, impositionOffsetY16: firm.impositionOffsetY16,
+      });
+      setNotice('Firm settings saved.');
+    } catch (err) { setError(err instanceof ApiError ? err.message : String(err)); }
+  };
+
+  const saveIris = async () => {
+    if (!iris) return;
+    try {
+      await api.put('/api/iris/settings', { tcc: iris.tcc, apiClientId: iris.apiClientId, environment: iris.environment });
+      setNotice('IRIS settings saved.');
+    } catch (err) { setError(err instanceof ApiError ? err.message : String(err)); }
+  };
+
+  const generateJwk = async () => {
+    const r = await api.post<{ publicJwk: Record<string, unknown> }>('/api/iris/settings/generate-jwk');
+    setNotice('JWK generated. Register the public key below with IRS A2A enrollment.');
+    setIris((i) => (i ? { ...i, hasJwk: true, publicJwk: r.publicJwk } : i));
+  };
+
+  const addUser = async () => {
+    try {
+      await api.post('/api/auth/users', newUser);
+      setNewUser({ email: '', name: '', role: 'preparer', password: '' });
+      setNotice('User created.');
+      loadAll();
+    } catch (err) { setError(err instanceof ApiError ? err.message : String(err)); }
+  };
+
+  const toggleUser = async (u: User) => {
+    await api.patch(`/api/auth/users/${u.id}`, { active: !u.active });
+    loadAll();
+  };
+
+  const loadAudit = async () => {
+    const r = await api.get<{ entries: AuditEntry[] }>('/api/admin/audit');
+    setAudit(r.entries);
+  };
+
+  const exportAudit = async () => {
+    const blob = await api.get<Blob>('/api/admin/audit?format=csv');
+    downloadBlob(blob, 'audit-log.csv');
+  };
+
+  const startTotp = async () => {
+    const r = await api.post<{ secret: string; otpauthUrl: string }>('/api/auth/totp/setup');
+    setTotpSetup(r);
+  };
+  const confirmTotp = async () => {
+    try {
+      await api.post('/api/auth/totp/confirm', { code: totpCode });
+      setNotice('TOTP enabled.');
+      setTotpSetup(null);
+    } catch (err) { setError(err instanceof ApiError ? err.message : String(err)); }
+  };
+
+  const saveSetting = async (key: string, value: unknown) => {
+    await api.put(`/api/admin/settings/${key}`, { value });
+    setNotice(`Setting ${key} saved.`);
+    loadAll();
+  };
+
+  const yearLock = async (lock: boolean) => {
+    const year = prompt('Tax year:');
+    if (!year) return;
+    if (lock) await api.post(`/api/dashboard/year-lock/${year}`);
+    else await api.del(`/api/dashboard/year-lock/${year}`);
+    setNotice(`Tax year ${year} ${lock ? 'locked' : 'unlocked'}.`);
+  };
+
+  const calibration = async () => {
+    const blob = await api.get<Blob>('/api/batches/test-pattern');
+    downloadBlob(blob, 'calibration.pdf');
+  };
+
+  return (
+    <div>
+      <h1>Settings</h1>
+      {error && <div className="error-box" onClick={() => setError('')}>{error}</div>}
+      {notice && <div className="ok-box" onClick={() => setNotice('')}>{notice}</div>}
+
+      <div className="tabs">
+        {(['firm', 'iris', 'users', 'templates', 'audit', 'queues', 'license', 'status'] as const).map((t) => (
+          <button key={t} className={tab === t ? 'active' : ''} onClick={() => { setTab(t); if (t === 'audit') void loadAudit(); }}>
+            {t === 'firm' ? 'Firm & printing' : t === 'iris' ? 'IRIS e-file' : t.charAt(0).toUpperCase() + t.slice(1)}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'firm' && firm && (
+        <div className="panel">
+          <div className="row">
+            <div className="field grow"><label>Firm name</label><input disabled={!isAdmin} value={firm.name} onChange={(e) => setFirm({ ...firm, name: e.target.value })} /></div>
+            <div className="field"><label>EIN</label><input disabled={!isAdmin} value={firm.ein} onChange={(e) => setFirm({ ...firm, ein: e.target.value })} /></div>
+            <div className="field"><label>Phone</label><input disabled={!isAdmin} value={firm.phone} onChange={(e) => setFirm({ ...firm, phone: e.target.value })} /></div>
+            <div className="field"><label>MO withholding ID (firm)</label><input disabled={!isAdmin} value={firm.moWithholdingId} onChange={(e) => setFirm({ ...firm, moWithholdingId: e.target.value })} /></div>
+          </div>
+          <h2>Pressure-seal calibration (±1/16″ steps)</h2>
+          <div className="row">
+            <div className="field"><label>Offset X (16ths of an inch)</label>
+              <input type="number" min={-16} max={16} disabled={!isAdmin} value={firm.impositionOffsetX16}
+                onChange={(e) => setFirm({ ...firm, impositionOffsetX16: Number(e.target.value) })} /></div>
+            <div className="field"><label>Offset Y (16ths of an inch)</label>
+              <input type="number" min={-16} max={16} disabled={!isAdmin} value={firm.impositionOffsetY16}
+                onChange={(e) => setFirm({ ...firm, impositionOffsetY16: Number(e.target.value) })} /></div>
+            <button className="secondary" onClick={calibration}>Print calibration sheet</button>
+          </div>
+          <h2>Federal filing thresholds (warn-only, per form type & year)</h2>
+          <p className="muted">Amounts below the threshold warn but never block (LOCKED decision). Blank = registry default (TY2026 NEC/MISC: $2,000 per OBBBA).</p>
+          <div className="row">
+            {['NEC:2026', 'MISC:2026', 'NEC:2025', 'MISC:2025'].map((key) => (
+              <div className="field" key={key}>
+                <label>1099-{key.replace(':', ' TY')} ($)</label>
+                <input className="num" disabled={!isAdmin} value={thresholds[key] ?? ''} placeholder="registry default"
+                  onChange={(e) => setThresholds((t) => ({ ...t, [key]: e.target.value }))} />
+              </div>
+            ))}
+            {isAdmin && (
+              <button className="secondary" onClick={() => {
+                const map: Record<string, number> = {};
+                for (const [k, v] of Object.entries(thresholds)) {
+                  if (v.trim() !== '') map[k] = Math.round(parseFloat(v) * 100);
+                }
+                void saveSetting('federal_thresholds', map);
+              }}>Save thresholds</button>
+            )}
+          </div>
+
+          {isAdmin && (
+            <>
+              <h2>SMS provider (firm-level; overrides appliance env: {sms.envProvider})</h2>
+              <div className="row">
+                <div className="field"><label>Provider</label>
+                  <select value={sms.provider} onChange={(e) => setSms((s) => ({ ...s, provider: e.target.value }))}>
+                    <option value="env">Use appliance env config</option>
+                    <option value="textlink">TextLink</option>
+                    <option value="twilio">Twilio</option>
+                    <option value="none">Disabled</option>
+                  </select></div>
+                {sms.provider === 'textlink' && (
+                  <div className="field grow"><label>TextLink API key {sms.hasTextlinkKey && '(saved — blank keeps current)'}</label>
+                    <input type="password" value={sms.textlinkApiKey} onChange={(e) => setSms((s) => ({ ...s, textlinkApiKey: e.target.value }))} /></div>
+                )}
+                {sms.provider === 'twilio' && (
+                  <>
+                    <div className="field"><label>Account SID</label>
+                      <input value={sms.twilioAccountSid} onChange={(e) => setSms((s) => ({ ...s, twilioAccountSid: e.target.value }))} /></div>
+                    <div className="field"><label>Auth token {sms.hasTwilioAuth && '(saved)'}</label>
+                      <input type="password" value={sms.twilioAuthToken} onChange={(e) => setSms((s) => ({ ...s, twilioAuthToken: e.target.value }))} /></div>
+                    <div className="field"><label>From number</label>
+                      <input value={sms.twilioFromNumber} onChange={(e) => setSms((s) => ({ ...s, twilioFromNumber: e.target.value }))} /></div>
+                  </>
+                )}
+                <button className="secondary" onClick={async () => {
+                  try {
+                    await api.put('/api/admin/sms', {
+                      provider: sms.provider,
+                      ...(sms.textlinkApiKey ? { textlinkApiKey: sms.textlinkApiKey } : {}),
+                      ...(sms.twilioAccountSid ? { twilioAccountSid: sms.twilioAccountSid } : {}),
+                      ...(sms.twilioAuthToken ? { twilioAuthToken: sms.twilioAuthToken } : {}),
+                      ...(sms.twilioFromNumber ? { twilioFromNumber: sms.twilioFromNumber } : {}),
+                    });
+                    setNotice('SMS settings saved (credentials stored encrypted).');
+                    setSms((s) => ({ ...s, textlinkApiKey: '', twilioAuthToken: '' }));
+                    loadAll();
+                  } catch (err) { setError(err instanceof ApiError ? err.message : String(err)); }
+                }}>Save SMS settings</button>
+              </div>
+            </>
+          )}
+
+          <h2>Reviewer gate</h2>
+          <div className="row">
+            <div className="field"><label>Require reviewer approval before queue/transmit</label>
+              <select disabled={!isAdmin} value={settings['reviewer_gate_enabled'] ? '1' : '0'} onChange={(e) => saveSetting('reviewer_gate_enabled', e.target.value === '1')}>
+                <option value="0">Off</option><option value="1">On</option>
+              </select></div>
+            {isAdmin && (
+              <>
+                <button className="secondary" onClick={() => yearLock(true)}>Lock a tax year</button>
+                <button className="secondary" onClick={() => yearLock(false)}>Unlock a tax year</button>
+              </>
+            )}
+          </div>
+          <h2>My account</h2>
+          {!totpSetup ? (
+            <button className="secondary" onClick={startTotp}>Set up TOTP two-factor</button>
+          ) : (
+            <div>
+              <p>Add this secret to your authenticator app: <span className="mono">{totpSetup.secret}</span></p>
+              <div className="row">
+                <div className="field"><label>6-digit code</label><input value={totpCode} onChange={(e) => setTotpCode(e.target.value)} maxLength={6} /></div>
+                <button onClick={confirmTotp}>Confirm & enable</button>
+              </div>
+            </div>
+          )}
+          {isAdmin && <div style={{ marginTop: 16 }}><button onClick={saveFirm}>Save firm settings</button></div>}
+        </div>
+      )}
+
+      {tab === 'iris' && isAdmin && iris && (
+        <div className="panel">
+          <div className="row">
+            <div className="field"><label>TCC (Transmitter Control Code)</label><input value={iris.tcc} onChange={(e) => setIris({ ...iris, tcc: e.target.value })} /></div>
+            <div className="field grow"><label>API Client ID</label><input value={iris.apiClientId} onChange={(e) => setIris({ ...iris, apiClientId: e.target.value })} /></div>
+            <div className="field"><label>Environment</label>
+              <select value={iris.environment} onChange={(e) => setIris({ ...iris, environment: e.target.value as 'ATS' | 'PROD' })}>
+                <option value="ATS">ATS (test)</option><option value="PROD">Production</option>
+              </select></div>
+            <button onClick={saveIris}>Save</button>
+          </div>
+          {iris.environment === 'ATS' && <div className="warn-box">ATS mode — transmissions are TEST filings. Pass ATS scenarios, then the IRS flips your TCC to Production.</div>}
+          <h2>Signing key (JWK)</h2>
+          <p className="muted">The private key is envelope-encrypted at rest. Register the PUBLIC JWK with IRS A2A enrollment. Rotation: generate a new pair, re-register, keep transmitting.</p>
+          <div className="row">
+            <button className="secondary" onClick={generateJwk}>{iris.hasJwk ? 'Rotate keypair' : 'Generate keypair'}</button>
+          </div>
+          {iris.publicJwk && (
+            <pre className="mono" style={{ background: '#f1f5f9', padding: 10, overflow: 'auto', fontSize: 11 }}>{JSON.stringify(iris.publicJwk, null, 2)}</pre>
+          )}
+          <h2>Onboarding checklist</h2>
+          <ol className="muted">
+            <li>Apply for IRIS A2A TCC (Transmitter role) — ID.me-verified Responsible Officials; allow 45+ days</li>
+            <li>Apply for the API Client ID after TCC approval</li>
+            <li>Generate the JWK here → register the public key with the IRS</li>
+            <li>Pass ATS communication/scenario testing in ATS mode</li>
+            <li>IRS flips the TCC to Production → switch the environment above</li>
+          </ol>
+        </div>
+      )}
+
+      {tab === 'users' && isAdmin && (
+        <div className="panel">
+          <table className="grid">
+            <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>TOTP</th><th>Last login</th><th>Active</th></tr></thead>
+            <tbody>
+              {users.map((u) => (
+                <tr key={u.id}>
+                  <td>{u.name}</td><td>{u.email}</td><td>{u.role}</td>
+                  <td>{u.totpEnabled ? '✓' : '—'}</td>
+                  <td>{u.lastLoginAt ? new Date(u.lastLoginAt).toLocaleString() : '—'}</td>
+                  <td><button className={`small ${u.active ? 'danger' : ''}`} onClick={() => toggleUser(u)}>{u.active ? 'Deactivate' : 'Activate'}</button></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <h2>Add user</h2>
+          <div className="row">
+            <div className="field"><label>Name</label><input value={newUser.name} onChange={(e) => setNewUser({ ...newUser, name: e.target.value })} /></div>
+            <div className="field"><label>Email</label><input value={newUser.email} onChange={(e) => setNewUser({ ...newUser, email: e.target.value })} /></div>
+            <div className="field"><label>Role</label>
+              <select value={newUser.role} onChange={(e) => setNewUser({ ...newUser, role: e.target.value })}>
+                <option>admin</option><option>preparer</option><option>reviewer</option>
+              </select></div>
+            <div className="field"><label>Password (12+)</label><input type="password" value={newUser.password} onChange={(e) => setNewUser({ ...newUser, password: e.target.value })} /></div>
+            <button onClick={addUser}>Create</button>
+          </div>
+        </div>
+      )}
+
+      {tab === 'templates' && (
+        <div className="panel">
+          <p className="muted">Message templates use {'{{var}}'} placeholders. Links always carry opaque tokens — never a TIN or a name. Edit as JSON (admin only):</p>
+          <TemplateEditor disabled={!isAdmin} value={settings['message_templates']} onSave={(v) => saveSetting('message_templates', v)} />
+        </div>
+      )}
+
+      {tab === 'audit' && (
+        <div className="panel">
+          <div className="row" style={{ justifyContent: 'space-between' }}>
+            <h2 style={{ margin: 0 }}>Audit log (latest 200)</h2>
+            {isAdmin && <button className="secondary" onClick={exportAudit}>Export CSV</button>}
+          </div>
+          <table className="grid" style={{ marginTop: 8 }}>
+            <thead><tr><th>When</th><th>Actor</th><th>Action</th><th>Entity</th><th>IP</th></tr></thead>
+            <tbody>
+              {audit.map((a) => (
+                <tr key={a.id}>
+                  <td>{new Date(a.createdAt).toLocaleString()}</td>
+                  <td>{a.actorType}</td>
+                  <td className="mono">{a.action}</td>
+                  <td className="mono muted">{a.entityType}{a.entityId ? `:${a.entityId.slice(0, 8)}` : ''}</td>
+                  <td className="mono muted">{a.ip}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {tab === 'queues' && (
+        <div className="panel">
+          <table className="grid">
+            <thead><tr><th>Queue</th><th className="num">Waiting</th><th className="num">Active</th><th className="num">Completed</th><th className="num">Failed</th></tr></thead>
+            <tbody>
+              {Object.entries(queues).map(([name, c]) => (
+                <tr key={name}>
+                  <td>{name}</td>
+                  <td className="num">{c['waiting'] ?? 0}</td>
+                  <td className="num">{c['active'] ?? 0}</td>
+                  <td className="num">{c['completed'] ?? 0}</td>
+                  <td className="num" style={{ color: c['failed'] ? 'var(--danger)' : undefined }}>{c['failed'] ?? 0}
+                    {isAdmin && (c['failed'] ?? 0) > 0 && <button className="small secondary" style={{ marginLeft: 6 }} onClick={() => api.post(`/api/admin/queues/${name}/retry-failed`).then(loadAll)}>retry</button>}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {tab === 'license' && isAdmin && license && (
+        <div className="panel">
+          <p><strong>Tier:</strong> {String(license['tier'])} &nbsp; <strong>Enforcement:</strong> {license['licenseRequired'] ? 'ON' : 'off (license_required=0)'}</p>
+          <p><strong>Usage metering:</strong> {JSON.stringify(license['usage'])}</p>
+          {typeof license['note'] === 'string' && <p className="muted">{license['note'] as string}</p>}
+        </div>
+      )}
+
+      {tab === 'status' && status && (
+        <div className="panel">
+          <pre className="mono" style={{ background: '#f1f5f9', padding: 10, overflow: 'auto', fontSize: 11 }}>{JSON.stringify(status, null, 2)}</pre>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TemplateEditor({ value, onSave, disabled }: { value: unknown; onSave: (v: unknown) => void; disabled: boolean }) {
+  const [text, setText] = useState(JSON.stringify(value ?? null, null, 2));
+  const [err, setErr] = useState('');
+  useEffect(() => setText(JSON.stringify(value ?? null, null, 2)), [value]);
+  return (
+    <div>
+      {err && <div className="error-box">{err}</div>}
+      <textarea rows={12} className="mono" disabled={disabled} value={text} onChange={(e) => setText(e.target.value)} />
+      {!disabled && (
+        <button style={{ marginTop: 8 }} onClick={() => {
+          try { onSave(JSON.parse(text)); setErr(''); } catch { setErr('Invalid JSON'); }
+        }}>Save templates</button>
+      )}
+      <p className="muted">Set to null to use the shipped defaults.</p>
+    </div>
+  );
+}

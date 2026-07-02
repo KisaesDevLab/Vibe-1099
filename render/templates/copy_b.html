@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+{# Portal PDF: 8.5x11 portrait, Copy B + instructions page(s).
+   Data contract: { form: {...}, instructions_key: 'nec'|'misc'|'int'|'div' } #}
+<html>
+<head>
+  <meta charset="utf-8">
+  <link rel="stylesheet" href="base.css">
+  <link rel="stylesheet" href="copyb.css">
+</head>
+<body>
+  {% include '_form_grid.html' %}
+  <div class="instructions">
+    {% include 'instructions/_' ~ instructions_key ~ '.html' %}
+  </div>
+</body>
+</html>

@@ -1,0 +1,275 @@
+/**
+ * Admin: firm settings, audit log viewer + export, queue dashboard (staff-only),
+ * imposition calibration, licensing (gated by LICENSE_REQUIRED flag), retention.
+ */
+import { Router } from 'express';
+import { and, desc, eq, gte, lte, sql } from 'drizzle-orm';
+import { z } from 'zod';
+import { AppError, ErrorCodes } from '@vibe1099/shared';
+import { getCrypto, getQueue, loadEnv, QUEUE_NAMES, type QueueName } from '@vibe1099/core';
+import { auditLog, firms, getDb } from '@vibe1099/db';
+import { h } from '../middleware/error.js';
+import { requireStaff } from '../middleware/auth.js';
+import { allSettings, setSetting } from '../services/settings.js';
+
+export const adminRouter = Router();
+
+// --- firm profile (any staff can read; admin writes) ------------------------------
+
+adminRouter.get(
+  '/firm',
+  requireStaff(),
+  h(async (req, res) => {
+    const firm = await getDb().query.firms.findFirst({ where: eq(firms.id, req.staff!.firmId) });
+    if (!firm) throw AppError.notFound('Firm');
+    res.json({
+      firm: {
+        id: firm.id,
+        name: firm.name,
+        ein: firm.ein,
+        address: firm.address,
+        phone: firm.phone,
+        irisEnvironment: firm.irisEnvironment,
+        moWithholdingId: firm.moWithholdingId,
+        impositionOffsetX16: firm.impositionOffsetX16,
+        impositionOffsetY16: firm.impositionOffsetY16,
+        licenseTier: firm.licenseTier,
+      },
+    });
+  }),
+);
+
+adminRouter.put(
+  '/firm',
+  requireStaff('admin'),
+  h(async (req, res) => {
+    const input = z
+      .object({
+        name: z.string().min(1).max(120).optional(),
+        ein: z.string().max(11).optional(),
+        address: z.record(z.string()).optional(),
+        phone: z.string().max(20).optional(),
+        moWithholdingId: z.string().max(14).optional(),
+        impositionOffsetX16: z.number().int().min(-16).max(16).optional(),
+        impositionOffsetY16: z.number().int().min(-16).max(16).optional(),
+      })
+      .parse(req.body);
+    await getDb()
+      .update(firms)
+      .set({ ...input, updatedAt: new Date() })
+      .where(eq(firms.id, req.staff!.firmId));
+    res.locals['audit'] = { action: 'firm.update', entityType: 'firm', entityId: req.staff!.firmId, detail: { fields: Object.keys(input) } };
+    res.json({ ok: true });
+  }),
+);
+
+// --- SMS provider (firm-level, secrets encrypted at rest) ---------------------------
+
+adminRouter.get(
+  '/sms',
+  requireStaff('admin'),
+  h(async (req, res) => {
+    const firm = await getDb().query.firms.findFirst({ where: eq(firms.id, req.staff!.firmId) });
+    const o = (firm?.smsOverride ?? {}) as Record<string, string>;
+    res.json({
+      provider: o['provider'] ?? 'env',
+      hasTextlinkKey: !!o['textlinkApiKeyEncrypted'],
+      hasTwilioAuth: !!o['twilioAuthTokenEncrypted'],
+      twilioAccountSid: o['twilioAccountSid'] ?? '',
+      twilioFromNumber: o['twilioFromNumber'] ?? '',
+      envProvider: loadEnv().SMS_PROVIDER,
+    });
+  }),
+);
+
+adminRouter.put(
+  '/sms',
+  requireStaff('admin'),
+  h(async (req, res) => {
+    const input = z
+      .object({
+        provider: z.enum(['env', 'none', 'textlink', 'twilio']),
+        textlinkApiKey: z.string().max(300).optional(),
+        twilioAccountSid: z.string().max(100).optional(),
+        twilioAuthToken: z.string().max(300).optional(),
+        twilioFromNumber: z.string().max(20).optional(),
+      })
+      .parse(req.body);
+    const db = getDb();
+    if (input.provider === 'env') {
+      // clear the override — fall back to appliance-level env config
+      await db.update(firms).set({ smsOverride: null, updatedAt: new Date() }).where(eq(firms.id, req.staff!.firmId));
+    } else {
+      const firm = await db.query.firms.findFirst({ where: eq(firms.id, req.staff!.firmId) });
+      const prev = (firm?.smsOverride ?? {}) as Record<string, string>;
+      const crypto = getCrypto();
+      const next: Record<string, string> = { provider: input.provider };
+      if (input.provider === 'textlink') {
+        const key = input.textlinkApiKey ?? '';
+        next['textlinkApiKeyEncrypted'] = key ? crypto.encrypt(key) : (prev['textlinkApiKeyEncrypted'] ?? '');
+        if (!next['textlinkApiKeyEncrypted']) throw AppError.validation('TextLink API key required');
+      } else if (input.provider === 'twilio') {
+        next['twilioAccountSid'] = input.twilioAccountSid ?? prev['twilioAccountSid'] ?? '';
+        next['twilioFromNumber'] = input.twilioFromNumber ?? prev['twilioFromNumber'] ?? '';
+        const token = input.twilioAuthToken ?? '';
+        next['twilioAuthTokenEncrypted'] = token ? crypto.encrypt(token) : (prev['twilioAuthTokenEncrypted'] ?? '');
+        if (!next['twilioAccountSid'] || !next['twilioAuthTokenEncrypted'] || !next['twilioFromNumber']) {
+          throw AppError.validation('Twilio requires Account SID, auth token, and from-number');
+        }
+      }
+      await db.update(firms).set({ smsOverride: next, updatedAt: new Date() }).where(eq(firms.id, req.staff!.firmId));
+    }
+    res.locals['audit'] = { action: 'sms.configure', entityType: 'firm', entityId: req.staff!.firmId, detail: { provider: input.provider } };
+    res.json({ ok: true });
+  }),
+);
+
+// --- app settings -----------------------------------------------------------------
+
+adminRouter.get(
+  '/settings',
+  requireStaff(),
+  h(async (_req, res) => {
+    res.json({ settings: await allSettings() });
+  }),
+);
+
+adminRouter.put(
+  '/settings/:key',
+  requireStaff('admin'),
+  h(async (req, res) => {
+    const key = z.string().min(1).max(100).parse(req.params['key']);
+    const { value } = z.object({ value: z.unknown() }).parse(req.body);
+    await setSetting(key, value);
+    res.locals['audit'] = { action: 'settings.update', entityType: 'app_settings', entityId: key };
+    res.json({ ok: true });
+  }),
+);
+
+// --- audit log viewer with filters + export ------------------------------------------
+
+adminRouter.get(
+  '/audit',
+  requireStaff('admin'),
+  h(async (req, res) => {
+    const q = z
+      .object({
+        action: z.string().optional(),
+        entityType: z.string().optional(),
+        entityId: z.string().optional(),
+        actorType: z.enum(['staff', 'client', 'recipient', 'system']).optional(),
+        from: z.coerce.date().optional(),
+        to: z.coerce.date().optional(),
+        limit: z.coerce.number().int().min(1).max(1000).default(200),
+        offset: z.coerce.number().int().min(0).default(0),
+        format: z.enum(['json', 'csv']).default('json'),
+      })
+      .parse(req.query);
+    const conds = [eq(auditLog.firmId, req.staff!.firmId)];
+    if (q.action) conds.push(sql`${auditLog.action} LIKE ${q.action + '%'}`);
+    if (q.entityType) conds.push(eq(auditLog.entityType, q.entityType));
+    if (q.entityId) conds.push(eq(auditLog.entityId, q.entityId));
+    if (q.actorType) conds.push(eq(auditLog.actorType, q.actorType));
+    if (q.from) conds.push(gte(auditLog.createdAt, q.from));
+    if (q.to) conds.push(lte(auditLog.createdAt, q.to));
+    const rows = await getDb()
+      .select()
+      .from(auditLog)
+      .where(and(...conds))
+      .orderBy(desc(auditLog.id))
+      .limit(q.limit)
+      .offset(q.offset);
+    if (q.format === 'csv') {
+      const header = 'id,created_at,actor_type,actor_id,action,entity_type,entity_id,ip';
+      const lines = rows.map((r) =>
+        [r.id, r.createdAt.toISOString(), r.actorType, r.actorId ?? '', r.action, r.entityType, r.entityId ?? '', r.ip ?? '']
+          .map((v) => `"${String(v).replace(/"/g, '""')}"`)
+          .join(','),
+      );
+      res.setHeader('content-disposition', 'attachment; filename="audit-log.csv"');
+      return void res.type('text/csv').send([header, ...lines].join('\n'));
+    }
+    res.json({ entries: rows });
+  }),
+);
+
+// --- queue dashboard (staff-only route, Phase 1) ---------------------------------------
+
+adminRouter.get(
+  '/queues',
+  requireStaff(),
+  h(async (_req, res) => {
+    const out: Record<string, unknown> = {};
+    for (const name of Object.values(QUEUE_NAMES)) {
+      const q = getQueue(name as QueueName);
+      const counts = await q.getJobCounts('waiting', 'active', 'completed', 'failed', 'delayed');
+      out[name] = counts;
+    }
+    res.json({ queues: out });
+  }),
+);
+
+adminRouter.get(
+  '/queues/:name/failed',
+  requireStaff('admin'),
+  h(async (req, res) => {
+    const name = z.enum(['render', 'delivery', 'iris', 'w9', 'housekeeping']).parse(req.params['name']);
+    const jobs = await getQueue(name).getFailed(0, 50);
+    res.json({
+      failed: jobs.map((j) => ({ id: j.id, name: j.name, failedReason: j.failedReason, attemptsMade: j.attemptsMade, data: j.data })),
+    });
+  }),
+);
+
+adminRouter.post(
+  '/queues/:name/retry-failed',
+  requireStaff('admin'),
+  h(async (req, res) => {
+    const name = z.enum(['render', 'delivery', 'iris', 'w9', 'housekeeping']).parse(req.params['name']);
+    const jobs = await getQueue(name).getFailed(0, 200);
+    for (const j of jobs) await j.retry();
+    res.locals['audit'] = { action: 'queue.retry-failed', entityType: 'queue', entityId: name, detail: { count: jobs.length } };
+    res.json({ retried: jobs.length });
+  }),
+);
+
+// --- licensing (usage metering hooks; enforcement gated by LICENSE_REQUIRED) ------------
+
+adminRouter.get(
+  '/license',
+  requireStaff('admin'),
+  h(async (req, res) => {
+    const env = loadEnv();
+    const db = getDb();
+    const firm = await db.query.firms.findFirst({ where: eq(firms.id, req.staff!.firmId) });
+    // usage metering for commercial tiers: payer count + client-portal seats
+    const [meter] = await db.execute(sql`SELECT
+      (SELECT count(*)::int FROM payers WHERE firm_id = ${req.staff!.firmId} AND active) AS payer_count,
+      (SELECT count(DISTINCT payer_id)::int FROM client_invites WHERE firm_id = ${req.staff!.firmId} AND revoked_at IS NULL) AS portal_seats
+    `).then((r) => (r as unknown as { rows: Array<{ payer_count: number; portal_seats: number }> }).rows);
+    res.json({
+      licenseRequired: env.LICENSE_REQUIRED === 1,
+      licenseServer: env.LICENSE_SERVER_URL,
+      tier: firm?.licenseTier ?? 'internal',
+      keyPresent: !!firm?.licenseKey,
+      usage: meter ?? { payer_count: 0, portal_seats: 0 },
+      note: env.LICENSE_REQUIRED === 0 ? 'License enforcement disabled (license_required=0); licensing.kisaes.com integration is later-phase.' : undefined,
+    });
+  }),
+);
+
+adminRouter.put(
+  '/license',
+  requireStaff('admin'),
+  h(async (req, res) => {
+    const { licenseKey } = z.object({ licenseKey: z.string().max(500) }).parse(req.body);
+    const env = loadEnv();
+    if (env.LICENSE_REQUIRED === 1) {
+      // later-phase: validate against licensing.kisaes.com; hard-fail for now
+      throw new AppError(ErrorCodes.E_LICENSE, 'License validation service is not yet available', 503);
+    }
+    await getDb().update(firms).set({ licenseKey, updatedAt: new Date() }).where(eq(firms.id, req.staff!.firmId));
+    res.locals['audit'] = { action: 'license.update', entityType: 'firm', entityId: req.staff!.firmId };
+    res.json({ ok: true });
+  }),
+);

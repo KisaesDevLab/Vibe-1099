@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+{# Z-fold pressure-seal sheet (duplex pair): page 1 = front (mailer face top
+   panel + form on middle/bottom), page 2 = back (recipient instructions —
+   printed by the app per the blank-stock decision).
+   Data contract: { form: {...}, instructions_key, firm_return: {name, address_lines},
+                    offset_x_in: float, offset_y_in: float } #}
+<html>
+<head>
+  <meta charset="utf-8">
+  <link rel="stylesheet" href="base.css">
+  <link rel="stylesheet" href="copyb.css">
+  <link rel="stylesheet" href="zfold.css">
+</head>
+<body>
+  <!-- FRONT -->
+  <div class="sheet">
+    <div class="panel panel-top">
+      <div class="return-block" style="margin-left: {{ offset_x_in }}in; margin-top: {{ offset_y_in }}in;">
+        {{ firm_return.name }}<br>
+        {% for line in firm_return.address_lines %}{{ line }}<br>{% endfor %}
+      </div>
+      <div class="postal-legend">
+        FIRST-CLASS MAIL<br>
+        <span class="small">U.S. POSTAGE PAID</span>
+      </div>
+      <div class="address-block" style="margin-left: {{ offset_x_in }}in; margin-top: {{ offset_y_in }}in;">
+        {{ form.recipient.name1 }}<br>
+        {% if form.recipient.name2 %}{{ form.recipient.name2 }}<br>{% endif %}
+        {% for line in form.recipient.address_lines %}{{ line }}<br>{% endfor %}
+      </div>
+      <div class="tax-legend">IMPORTANT TAX RETURN DOCUMENT ENCLOSED</div>
+    </div>
+    <div class="form-area">
+      {% include '_form_grid.html' %}
+    </div>
+  </div>
+
+  <!-- BACK (instructions backer) -->
+  <div class="sheet">
+    <div class="backer">
+      {% include 'instructions/_' ~ instructions_key ~ '.html' %}
+    </div>
+  </div>
+</body>
+</html>

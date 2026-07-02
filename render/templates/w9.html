@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+{# Completed W-9 render (current revision fields). Data: { w9: {...}, esign: {ip, timestamp, user_agent, kind} } #}
+<html>
+<head>
+  <meta charset="utf-8">
+  <link rel="stylesheet" href="base.css">
+  <style>
+    @page { size: letter portrait; margin: 0.6in; }
+    .field { border-bottom: 0.5pt solid #000; padding: 2pt 4pt; margin-bottom: 6pt; }
+    .field .lbl { font-size: 6.5pt; }
+    .field .val { font-size: 10pt; font-weight: bold; min-height: 12pt; }
+    .cert { border: 0.75pt solid #000; padding: 6pt; font-size: 7.5pt; margin-top: 8pt; }
+    .sig-img { max-height: 0.6in; }
+  </style>
+</head>
+<body>
+  <h1 style="font-size: 13pt;">Form W-9 <span style="font-weight: normal; font-size: 9pt;">Request for Taxpayer Identification Number and Certification</span></h1>
+  <p class="small">Completed electronically via Vibe 1099 secure portal.</p>
+
+  <div class="field"><div class="lbl">1. Name of entity/individual (as shown on your income tax return)</div><div class="val">{{ w9.name }}</div></div>
+  <div class="field"><div class="lbl">2. Business name/disregarded entity name, if different from above</div><div class="val">{{ w9.business_name }}</div></div>
+  <div class="field"><div class="lbl">3a. Federal tax classification</div><div class="val">{{ w9.tax_classification_label }}</div></div>
+  <div class="field"><div class="lbl">4. Exemptions — Exempt payee code: {{ w9.exempt_payee_code or '—' }} &nbsp; FATCA exemption code: {{ w9.fatca_exemption_code or '—' }}</div><div class="val">&nbsp;</div></div>
+  <div class="field"><div class="lbl">5–6. Address, city, state, ZIP</div><div class="val">{{ w9.address_line }}</div></div>
+  <div class="field"><div class="lbl">Part I — Taxpayer Identification Number ({{ w9.tin_type }})</div><div class="val mono">{{ w9.tin_display }}</div></div>
+
+  <div class="cert">
+    <strong>Part II — Certification.</strong> Under penalties of perjury, I certify that:<br>
+    1. The number shown on this form is my correct taxpayer identification number (or I am waiting for a number to be issued to me); and<br>
+    2. I am not subject to backup withholding because (a) I am exempt from backup withholding, or (b) I have not been notified by the
+    Internal Revenue Service (IRS) that I am subject to backup withholding as a result of a failure to report all interest or dividends,
+    or (c) the IRS has notified me that I am no longer subject to backup withholding; and<br>
+    3. I am a U.S. citizen or other U.S. person; and<br>
+    4. The FATCA code(s) entered on this form (if any) indicating that I am exempt from FATCA reporting is correct.
+  </div>
+
+  <table style="margin-top: 10pt;">
+    <tr>
+      <td style="width: 60%; border-bottom: 0.75pt solid #000; padding: 4pt;">
+        <span class="lbl small">Signature of U.S. person</span><br>
+        {% if esign.kind == 'drawn' and w9.signature_image %}
+          <img class="sig-img" src="{{ w9.signature_image }}">
+        {% else %}
+          <span style="font-family: 'Liberation Serif', serif; font-style: italic; font-size: 14pt;">{{ w9.signature_name }}</span>
+        {% endif %}
+      </td>
+      <td style="border-bottom: 0.75pt solid #000; padding: 4pt;">
+        <span class="lbl small">Date</span><br>{{ esign.timestamp }}
+      </td>
+    </tr>
+  </table>
+
+  <p class="tiny" style="margin-top: 12pt;">
+    Electronic signature captured with ESIGN/UETA consent. Kind: {{ esign.kind }} ·
+    IP: {{ esign.ip }} · UTC timestamp: {{ esign.timestamp }} · User agent: {{ esign.user_agent }}
+  </p>
+</body>
+</html>

@@ -1,0 +1,17 @@
+/* Vibe 1099 — shared print CSS (external-CSS convention from Vibe T&B invoices).
+   Print-safe: no external assets; DejaVu/Liberation embedded from container fonts. */
+* { box-sizing: border-box; }
+body {
+  font-family: "Liberation Sans", "DejaVu Sans", Arial, sans-serif;
+  font-size: 8.5pt;
+  color: #000;
+  margin: 0;
+}
+.mono { font-family: "Liberation Mono", "DejaVu Sans Mono", monospace; }
+h1, h2, h3 { margin: 0; }
+table { border-collapse: collapse; width: 100%; }
+.small { font-size: 7pt; }
+.tiny { font-size: 6pt; }
+.bold { font-weight: bold; }
+.center { text-align: center; }
+.right { text-align: right; }

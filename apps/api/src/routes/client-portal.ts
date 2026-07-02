@@ -1,0 +1,289 @@
+/**
+ * Client entry portal — PUBLIC routes (Phase 5). Client zone: magic-link token
+ * scoped to (payer, tax_year). Scope enforcement lives at the query layer here;
+ * clients NEVER see other payers/years/staff data, and vault matches are masked.
+ */
+import { Router } from 'express';
+import { and, eq, inArray } from 'drizzle-orm';
+import { z } from 'zod';
+import { AppError, getFormDef, zRecipientInput, zTinType, type FormType } from '@vibe1099/shared';
+import { audit } from '@vibe1099/core';
+import { clientInvites, firms, formRecords, getDb, payers, recipients } from '@vibe1099/db';
+import { h } from '../middleware/error.js';
+import { requireClient } from '../middleware/auth.js';
+import { rateLimit } from '../middleware/rate-limit.js';
+import { createRecipient, lookupByTin } from '../services/vault.js';
+import { validateFormRecord } from '../services/forms.js';
+
+export const clientPortalRouter = Router();
+clientPortalRouter.use(rateLimit({ key: 'client-portal', limit: 120, windowSec: 60 }));
+clientPortalRouter.use(requireClient());
+
+async function touchActivity(inviteId: string): Promise<void> {
+  await getDb().update(clientInvites).set({ lastActivityAt: new Date() }).where(eq(clientInvites.id, inviteId));
+}
+
+/** Landing: payer confirmation, engagement scope, plain-language instructions. */
+clientPortalRouter.get(
+  '/session',
+  h(async (req, res) => {
+    const scope = req.clientScope!;
+    const db = getDb();
+    const [payer, firm, invite] = await Promise.all([
+      db.query.payers.findFirst({ where: eq(payers.id, scope.payerId) }),
+      db.query.firms.findFirst({ where: eq(firms.id, scope.firmId) }),
+      db.query.clientInvites.findFirst({ where: eq(clientInvites.id, scope.inviteId) }),
+    ]);
+    if (!payer || !invite) throw AppError.notFound('Engagement');
+    await touchActivity(scope.inviteId);
+    res.json({
+      firmName: firm?.name ?? '',
+      payerName: payer.legalName,
+      taxYear: scope.taxYear,
+      formTypes: scope.formTypes,
+      submitted: !!invite.submittedAt,
+      draftState: invite.draftState ?? null,
+      registry: scope.formTypes.map((ft) => {
+        const def = getFormDef(ft as FormType, scope.taxYear);
+        return {
+          formType: def.formType,
+          title: def.title,
+          boxes: def.boxes
+            .filter((b) => !b.stateField)
+            .map((b) => ({ id: b.id, boxNumber: b.boxNumber, label: b.label, kind: b.kind })),
+        };
+      }),
+    });
+  }),
+);
+
+/** Prior-year recipients pre-listed for the contractor grid. */
+clientPortalRouter.get(
+  '/contractors',
+  h(async (req, res) => {
+    const scope = req.clientScope!;
+    const db = getDb();
+    const prior = await db
+      .selectDistinct({ recipientId: formRecords.recipientId })
+      .from(formRecords)
+      .where(and(eq(formRecords.payerId, scope.payerId), eq(formRecords.taxYear, scope.taxYear - 1)));
+    const current = await db
+      .select()
+      .from(formRecords)
+      .where(
+        and(
+          eq(formRecords.payerId, scope.payerId),
+          eq(formRecords.taxYear, scope.taxYear),
+          eq(formRecords.clientInviteId, scope.inviteId),
+        ),
+      );
+    const ids = [...new Set([...prior.map((p) => p.recipientId), ...current.map((c) => c.recipientId)])];
+    const recips = ids.length ? await db.select().from(recipients).where(inArray(recipients.id, ids)) : [];
+    res.json({
+      contractors: recips.map((r) => ({
+        recipientId: r.id,
+        // masked identity only — no full TIN echo to client zone
+        name1: r.name1,
+        maskedAddress: `${(r.address['line1'] ?? '').slice(0, 12)}… ${r.address['city'] ?? ''}`,
+        tinLast4: r.tinLast4,
+        w9Status: r.w9Status,
+      })),
+      entries: current.map((c) => ({
+        formId: c.id,
+        recipientId: c.recipientId,
+        formType: c.formType,
+        boxValues: c.boxValues,
+      })),
+    });
+  }),
+);
+
+/** Client-side TIN lookup → masked confirm/update flow. */
+clientPortalRouter.post(
+  '/lookup',
+  h(async (req, res) => {
+    const { tin, tinType } = z.object({ tin: z.string().min(9).max(11), tinType: zTinType }).parse(req.body);
+    const scope = req.clientScope!;
+    const match = await lookupByTin(getDb(), scope.firmId, tin, tinType);
+    await touchActivity(scope.inviteId);
+    if (!match) return void res.json({ match: null });
+    // masked echo: "We have JOHN D— at 123 M— St — is this current?"
+    const maskName = (n: string) => {
+      const parts = n.split(/\s+/);
+      return parts.map((p, i) => (i === parts.length - 1 && parts.length > 1 ? `${p[0] ?? ''}—` : p)).join(' ');
+    };
+    const line1 = match.address['line1'] ?? '';
+    res.json({
+      match: {
+        recipientId: match.recipientId,
+        maskedName: maskName(match.name1),
+        maskedAddress: `${line1.split(/\s+/).slice(0, 2).join(' ')}— ${match.address['city'] ?? ''}`,
+        w9Status: match.w9Status,
+      },
+    });
+  }),
+);
+
+/** Add a new contractor (client zone) — lands in the vault flagged client-created. */
+clientPortalRouter.post(
+  '/contractors',
+  h(async (req, res) => {
+    const scope = req.clientScope!;
+    const input = zRecipientInput.parse(req.body);
+    const result = await createRecipient(getDb(), scope.firmId, input, {
+      source: 'client',
+      onExisting: 'return', // never leak or overwrite existing vault data from client zone
+    });
+    await touchActivity(scope.inviteId);
+    await audit(getDb(), {
+      firmId: scope.firmId,
+      actorType: 'client',
+      actorId: scope.inviteId,
+      action: 'client.contractor.add',
+      entityType: 'recipient',
+      entityId: result.id,
+      ip: req.ip,
+    });
+    res.status(201).json({ recipientId: result.id, existed: result.existed });
+  }),
+);
+
+/** Client-initiated W-9 request ("don't have their TIN?" button — Phase 7). */
+clientPortalRouter.post(
+  '/w9-request',
+  h(async (req, res) => {
+    const scope = req.clientScope!;
+    const { name, email, mobile } = z
+      .object({ name: z.string().max(120).default(''), email: z.string().email().optional().nullable(), mobile: z.string().optional().nullable() })
+      .parse(req.body);
+    const { createW9Request } = await import('./w9.js');
+    const result = await createW9Request({
+      firmId: scope.firmId,
+      payerId: scope.payerId,
+      requestedName: name,
+      email: email ?? null,
+      mobile: mobile ?? null,
+      requestedVia: 'client',
+    });
+    await touchActivity(scope.inviteId);
+    res.status(201).json({ id: result.id });
+  }),
+);
+
+/** Save draft (save-and-return). */
+clientPortalRouter.put(
+  '/draft',
+  h(async (req, res) => {
+    const scope = req.clientScope!;
+    const { draftState } = z.object({ draftState: z.record(z.unknown()) }).parse(req.body);
+    const invite = await getDb().query.clientInvites.findFirst({ where: eq(clientInvites.id, scope.inviteId) });
+    if (invite?.submittedAt) throw AppError.state('Engagement already submitted — ask your accountant to re-open it');
+    await getDb()
+      .update(clientInvites)
+      .set({ draftState: draftState as Record<string, unknown>, lastActivityAt: new Date() })
+      .where(eq(clientInvites.id, scope.inviteId));
+    res.json({ ok: true });
+  }),
+);
+
+/** Submit: entries land as draft records flagged client_submitted → staff review queue. */
+clientPortalRouter.post(
+  '/submit',
+  h(async (req, res) => {
+    const scope = req.clientScope!;
+    const { entries } = z
+      .object({
+        entries: z
+          .array(
+            z.object({
+              recipientId: z.string().uuid(),
+              formType: z.string(),
+              boxValues: z.record(z.union([z.number().int(), z.boolean(), z.string(), z.null()])),
+            }),
+          )
+          .min(1)
+          .max(1000),
+      })
+      .parse(req.body);
+
+    const db = getDb();
+    const invite = await db.query.clientInvites.findFirst({ where: eq(clientInvites.id, scope.inviteId) });
+    if (!invite) throw AppError.notFound('Engagement');
+    if (invite.submittedAt) throw AppError.state('Already submitted');
+
+    // scope enforcement: only staff-enabled form types
+    for (const e of entries) {
+      if (!scope.formTypes.includes(e.formType)) {
+        throw AppError.forbidden(`Form type ${e.formType} is not enabled for this engagement`);
+      }
+    }
+
+    // replace this invite's previous entries (client edits before submit)
+    await db
+      .delete(formRecords)
+      .where(
+        and(
+          eq(formRecords.clientInviteId, scope.inviteId),
+          eq(formRecords.status, 'draft'),
+          eq(formRecords.clientSubmitted, true),
+        ),
+      );
+
+    const created: string[] = [];
+    const issuesByEntry: Array<{ index: number; issues: unknown[] }> = [];
+    for (let i = 0; i < entries.length; i++) {
+      const e = entries[i]!;
+      const issues = await validateFormRecord(db, scope.firmId, {
+        formType: e.formType as FormType,
+        taxYear: scope.taxYear,
+        boxValues: e.boxValues,
+        recipientId: e.recipientId,
+        secondTinNotice: false,
+      });
+      const errors = issues.filter((x) => x.severity === 'error');
+      if (errors.length) {
+        issuesByEntry.push({ index: i, issues: errors });
+        continue;
+      }
+      const [row] = await db
+        .insert(formRecords)
+        .values({
+          firmId: scope.firmId,
+          payerId: scope.payerId,
+          recipientId: e.recipientId,
+          taxYear: scope.taxYear,
+          formType: e.formType as FormType,
+          boxValues: e.boxValues as Record<string, number | boolean | string | null>,
+          clientSubmitted: true,
+          clientInviteId: scope.inviteId,
+          moSource: false,
+        })
+        .returning({ id: formRecords.id });
+      if (row) created.push(row.id);
+    }
+
+    if (issuesByEntry.length) {
+      // reject atomically-ish: remove created rows, surface validation report
+      if (created.length) await db.delete(formRecords).where(inArray(formRecords.id, created));
+      throw AppError.validation('Some entries have errors', issuesByEntry);
+    }
+
+    await db
+      .update(clientInvites)
+      .set({ submittedAt: new Date(), lastActivityAt: new Date(), draftState: null })
+      .where(eq(clientInvites.id, scope.inviteId));
+
+    await audit(db, {
+      firmId: scope.firmId,
+      actorType: 'client',
+      actorId: scope.inviteId,
+      action: 'client.submit',
+      entityType: 'client_invite',
+      entityId: scope.inviteId,
+      detail: { entryCount: created.length },
+      ip: req.ip,
+    });
+
+    res.json({ ok: true, created: created.length });
+  }),
+);

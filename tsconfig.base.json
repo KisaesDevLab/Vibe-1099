@@ -1,0 +1,27 @@
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2023"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "declaration": false,
+    "sourceMap": false,
+    "noEmit": true,
+    "baseUrl": ".",
+    "paths": {
+      "@vibe1099/shared": ["packages/shared/src/index.ts"],
+      "@vibe1099/shared/*": ["packages/shared/src/*"],
+      "@vibe1099/db": ["packages/db/src/index.ts"],
+      "@vibe1099/db/*": ["packages/db/src/*"],
+      "@vibe1099/core": ["packages/core/src/index.ts"],
+      "@vibe1099/core/*": ["packages/core/src/*"]
+    }
+  }
+}

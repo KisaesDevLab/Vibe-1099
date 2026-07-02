@@ -1,0 +1,70 @@
+{# Registry-driven substitute form grid (Pub 1179 layout: payer/recipient blocks
+   left column, numbered boxes right column, state boxes bottom).
+   Expects: form (dict) with payer, recipient, boxes, state_boxes, meta fields. #}
+<div class="form-grid">
+  <div class="cell payer-block" style="grid-row: span 3;">
+    <div class="box-label">PAYER'S name, street address, city or town, state or province, country, ZIP or foreign postal code, and telephone no.</div>
+    <div class="box-value">
+      {{ form.payer.name }}<br>
+      {% for line in form.payer.address_lines %}{{ line }}<br>{% endfor %}
+      {% if form.payer.phone %}{{ form.payer.phone }}{% endif %}
+    </div>
+  </div>
+  <div class="cell form-title-block">
+    {% if form.corrected %}<div class="corrected-banner">CORRECTED (if checked) <span class="checkbox">X</span></div>{% endif %}
+    <div class="omb">OMB No. {{ form.omb }}</div>
+    <div class="fy">{{ form.tax_year }}</div>
+    <div class="fname">Form {{ form.form_number }}</div>
+    <div class="small">{{ form.form_title }}</div>
+  </div>
+  <div class="cell">
+    <div class="box-label">PAYER'S TIN</div>
+    <div class="box-value mono">{{ form.payer.tin_display }}</div>
+  </div>
+  <div class="cell">
+    <div class="box-label">RECIPIENT'S TIN</div>
+    <div class="box-value mono">{{ form.recipient.tin_masked }}</div>
+  </div>
+  <div class="cell" style="grid-row: span 2;">
+    <div class="box-label">RECIPIENT'S name and address</div>
+    <div class="box-value">
+      {{ form.recipient.name1 }}<br>
+      {% if form.recipient.name2 %}{{ form.recipient.name2 }}<br>{% endif %}
+      {% for line in form.recipient.address_lines %}{{ line }}<br>{% endfor %}
+    </div>
+  </div>
+  <div class="cell">
+    <div class="box-label">Account number (see instructions){% if form.second_tin_notice %} &nbsp;&nbsp;2nd TIN not. <span class="checkbox">X</span>{% endif %}</div>
+    <div class="box-value mono">{{ form.account_number }}</div>
+  </div>
+</div>
+
+<div class="form-grid" style="border-top: none;">
+  <div class="boxes-2col" style="grid-column: span 2;">
+    {% for box in form.boxes %}
+    <div class="cell">
+      <div class="box-label"><span class="box-num">{{ box.number }}</span> {{ box.label }}</div>
+      <div class="box-value">
+        {%- if box.kind == 'checkbox' -%}
+          <span class="checkbox">{{ 'X' if box.value else '' }}</span>
+        {%- else -%}
+          {{ box.value }}
+        {%- endif -%}
+      </div>
+    </div>
+    {% endfor %}
+    {% for box in form.state_boxes %}
+    <div class="cell">
+      <div class="box-label"><span class="box-num">{{ box.number }}</span> {{ box.label }}</div>
+      <div class="box-value">{{ box.value }}</div>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+
+<div class="legend">
+  This is important tax information and is being furnished to the IRS. If you are required to file a
+  return, a negligence penalty or other sanction may be imposed on you if this income is taxable and
+  the IRS determines that it has not been reported.
+  &nbsp;&nbsp;<span class="bold">{{ form.copy_label }}</span> — For Recipient
+</div>

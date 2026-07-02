@@ -1,0 +1,119 @@
+# Vibe 1099 appliance — Docker Compose (Addendum A manifest fragment source).
+# Ports (suite table): api 8210, web 8211, render 8212. Caddy at appliance level.
+name: vibe1099
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: vibe1099
+      POSTGRES_USER: vibe1099
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-vibe1099}
+    volumes:
+      - vibe1099-pgdata:/var/lib/postgresql/data
+      # backup hook: pg_dump target directory (Duplicati-compatible volume layout,
+      # Vibe-Linux-Setup convention — see docs/backup-restore.md)
+      - vibe1099-backups:/backups
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vibe1099"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - vibe1099-redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  render:
+    build: ./render
+    image: vibe1099-render:latest
+    ports:
+      - "8212:8212"
+    restart: unless-stopped
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.node
+    image: vibe1099-app:latest
+    command: ["pnpm", "--filter", "@vibe1099/api", "start"]
+    environment: &appenv
+      NODE_ENV: production
+      DATABASE_URL: postgres://vibe1099:${POSTGRES_PASSWORD:-vibe1099}@postgres:5432/vibe1099
+      REDIS_URL: redis://redis:6379/3
+      API_PORT: "8210"
+      MASTER_KEY: ${MASTER_KEY:?set MASTER_KEY (32 bytes base64) in .env}
+      APP_BASE_URL: ${APP_BASE_URL:-http://localhost:8211}
+      PORTAL_BASE_URL: ${PORTAL_BASE_URL:-http://localhost:8211}
+      RENDER_URL: http://render:8212
+      LICENSE_REQUIRED: ${LICENSE_REQUIRED:-0}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      SMTP_FROM: ${SMTP_FROM:-Vibe 1099 <no-reply@localhost>}
+      SMTP_SECURE: ${SMTP_SECURE:-0}
+      SMS_PROVIDER: ${SMS_PROVIDER:-none}
+      TEXTLINK_API_KEY: ${TEXTLINK_API_KEY:-}
+      TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID:-}
+      TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN:-}
+      TWILIO_FROM_NUMBER: ${TWILIO_FROM_NUMBER:-}
+      IRIS_MOCK_BASE_URL: ${IRIS_MOCK_BASE_URL:-}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      SESSION_INACTIVITY_MINUTES: ${SESSION_INACTIVITY_MINUTES:-30}
+      STAFF_IP_ALLOWLIST: ${STAFF_IP_ALLOWLIST:-}
+      DATA_RETENTION_YEARS: ${DATA_RETENTION_YEARS:-4}
+    ports:
+      - "8210:8210"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      render:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:8210/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  worker:
+    image: vibe1099-app:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.node
+    command: ["pnpm", "--filter", "@vibe1099/worker", "start"]
+    environment: *appenv
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      render:
+        condition: service_started
+    restart: unless-stopped
+
+  web:
+    build: ./apps/web
+    image: vibe1099-web:latest
+    ports:
+      - "8211:8211"
+    depends_on:
+      - api
+    restart: unless-stopped
+
+volumes:
+  vibe1099-pgdata:
+  vibe1099-redisdata:
+  vibe1099-backups:

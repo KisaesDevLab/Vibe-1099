@@ -1,0 +1,9 @@
+# Dev override: expose postgres/redis to the host so api/worker can run via tsx.
+# Usage: docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d postgres redis render
+services:
+  postgres:
+    ports:
+      - "55432:5432"
+  redis:
+    ports:
+      - "56379:6379"

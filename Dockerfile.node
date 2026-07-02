@@ -1,0 +1,21 @@
+# Vibe 1099 — shared image for api + worker (Node 24, tsx runtime)
+FROM node:24-slim AS base
+RUN corepack enable && corepack prepare pnpm@9.15.9 --activate
+WORKDIR /app
+
+COPY package.json pnpm-workspace.yaml pnpm-lock.yaml .npmrc ./
+COPY packages/shared/package.json packages/shared/
+COPY packages/db/package.json packages/db/
+COPY packages/core/package.json packages/core/
+COPY apps/api/package.json apps/api/
+COPY apps/worker/package.json apps/worker/
+RUN pnpm install --frozen-lockfile --filter '!@vibe1099/web'
+
+COPY tsconfig.base.json tsconfig.json ./
+COPY packages/ packages/
+COPY apps/api/ apps/api/
+COPY apps/worker/ apps/worker/
+
+EXPOSE 8210
+# api by default; worker overrides command in compose
+CMD ["pnpm", "--filter", "@vibe1099/api", "start"]

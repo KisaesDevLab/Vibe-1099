@@ -1,0 +1,32 @@
+{
+  "name": "vibe-1099",
+  "version": "0.1.0",
+  "private": true,
+  "license": "PolyForm-Internal-Use-1.0.0",
+  "description": "Vibe 1099 — self-hosted 1099 preparation, recipient delivery, and IRS IRIS A2A e-filing appliance for CPA firms",
+  "engines": {
+    "node": ">=24"
+  },
+  "packageManager": "pnpm@9.15.9",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "lint": "eslint . --ext .ts,.tsx --max-warnings 0",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "dev:api": "pnpm --filter @vibe1099/api dev",
+    "dev:worker": "pnpm --filter @vibe1099/worker dev",
+    "dev:web": "pnpm --filter @vibe1099/web dev",
+    "migrate": "tsx packages/db/src/migrate-cli.ts",
+    "seed": "pnpm --filter @vibe1099/api exec tsx src/seed.ts",
+    "build:web": "pnpm --filter @vibe1099/web build"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@typescript-eslint/eslint-plugin": "^8.34.0",
+    "@typescript-eslint/parser": "^8.34.0",
+    "eslint": "^9.29.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.8.0",
+    "vitest": "^3.2.0"
+  }
+}
