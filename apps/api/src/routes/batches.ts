@@ -159,7 +159,7 @@ batchesRouter.get(
     });
     if (!batch) throw AppError.notFound('Batch');
     if (!batch.pdfBlobId) throw AppError.state('Batch PDF is still rendering');
-    const blob = await getBlob(getDb(), batch.pdfBlobId);
+    const blob = await getBlob(getDb(), batch.pdfBlobId, req.staff!.firmId);
     if (!blob) throw AppError.notFound('Batch PDF');
     res.setHeader('content-disposition', `attachment; filename="${batch.label.replace(/[^\w.-]+/g, '_')}.pdf"`);
     res.type('application/pdf').send(blob.bytes);

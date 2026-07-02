@@ -7,7 +7,7 @@ import { Router } from 'express';
 import { and, desc, eq, isNull, lt, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { AppError, ErrorCodes, maskTin, normalizeTin, zW9RequestInput, zW9SubmitInput } from '@vibe1099/shared';
-import { audit, getBlob, getCrypto, getQueue, getRenderClient, loadEnv, putBlob, QUEUE_NAMES, type DeliveryJob } from '@vibe1099/core';
+import { audit, getBlob, getCrypto, getQueue, getRenderClient, loadEnv, putBlob, QUEUE_NAMES, safeHexEqual, type DeliveryJob } from '@vibe1099/core';
 import { firms, getDb, recipients, w9Requests } from '@vibe1099/db';
 import { h } from '../middleware/error.js';
 import { requireStaff } from '../middleware/auth.js';
@@ -219,7 +219,7 @@ w9StaffRouter.get(
     const db = getDb();
     const row = await db.query.w9Requests.findFirst({ where: and(eq(w9Requests.id, id), eq(w9Requests.firmId, req.staff!.firmId)) });
     if (!row?.pdfBlobId) throw AppError.notFound('Completed W-9');
-    const blob = await getBlob(db, row.pdfBlobId);
+    const blob = await getBlob(db, row.pdfBlobId, req.staff!.firmId);
     if (!blob) throw AppError.notFound('W-9 PDF');
     await audit(db, {
       firmId: req.staff!.firmId,
@@ -268,7 +268,7 @@ async function loadW9ByToken(token: string) {
   if (!verified) throw new AppError(ErrorCodes.E_TOKEN_EXPIRED, 'This W-9 link has expired or is invalid', 401);
   const row = await getDb().query.w9Requests.findFirst({ where: eq(w9Requests.id, verified.id) });
   if (!row) throw AppError.notFound('W-9 request');
-  if (crypto.tokenHash(token) !== row.tokenHash) throw new AppError(ErrorCodes.E_TOKEN_REVOKED, 'This link has been replaced — use the newest link', 401);
+  if (!safeHexEqual(crypto.tokenHash(token), row.tokenHash)) throw new AppError(ErrorCodes.E_TOKEN_REVOKED, 'This link has been replaced — use the newest link', 401);
   if (row.status === 'revoked') throw new AppError(ErrorCodes.E_TOKEN_REVOKED, 'This link has been revoked', 401);
   if (row.status === 'completed') throw AppError.state('This W-9 has already been submitted');
   if (row.expiresAt.getTime() < Date.now()) throw new AppError(ErrorCodes.E_TOKEN_EXPIRED, 'This link has expired', 401);
@@ -349,7 +349,7 @@ w9PublicRouter.post(
 
     if (recipientId) {
       const current = await db.query.recipients.findFirst({ where: eq(recipients.id, recipientId) });
-      if (current && crypto.tinHash(tin) !== current.tinHash) {
+      if (current && crypto.tinHash(tin, row.firmId, input.tinType) !== current.tinHash) {
         // vault already has a DIFFERENT TIN for this recipient — flag for staff review, never silently overwrite
         tinMismatch = true;
         await updateRecipient(

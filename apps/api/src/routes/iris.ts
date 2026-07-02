@@ -150,7 +150,7 @@ irisRouter.get(
       where: and(eq(transmissions.id, id), eq(transmissions.firmId, req.staff!.firmId)),
     });
     if (!tx?.xmlBlobId) throw AppError.notFound('Transmission XML');
-    const blob = await getBlob(getDb(), tx.xmlBlobId);
+    const blob = await getBlob(getDb(), tx.xmlBlobId, req.staff!.firmId);
     if (!blob) throw AppError.notFound('XML blob');
     res.setHeader('content-disposition', `attachment; filename="${tx.utid}.xml"`);
     res.type('application/xml').send(blob.bytes);
@@ -166,7 +166,7 @@ irisRouter.get(
       where: and(eq(transmissions.id, id), eq(transmissions.firmId, req.staff!.firmId)),
     });
     if (!tx?.ackBlobId) throw AppError.notFound('Acknowledgement');
-    const blob = await getBlob(getDb(), tx.ackBlobId);
+    const blob = await getBlob(getDb(), tx.ackBlobId, req.staff!.firmId);
     if (!blob) throw AppError.notFound('Ack blob');
     res.setHeader('content-disposition', `attachment; filename="${tx.utid}-ack.xml"`);
     res.type('application/xml').send(blob.bytes);

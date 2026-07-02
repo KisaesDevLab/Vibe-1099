@@ -7,12 +7,18 @@
 import type { NextFunction, Request, Response } from 'express';
 import { eq } from 'drizzle-orm';
 import { AppError, ErrorCodes, type UserRole } from '@vibe1099/shared';
-import { getCrypto, getRedis, loadEnv } from '@vibe1099/core';
+import { getCrypto, getRedis, loadEnv, safeHexEqual } from '@vibe1099/core';
 import { clientInvites, deliveries, getDb } from '@vibe1099/db';
 import type { StaffSession } from '../types.js';
 
 export const SESSION_COOKIE = 'v1099_sid';
 export const CSRF_COOKIE = 'v1099_csrf';
+export const RECIPIENT_COOKIE = 'v1099_recip';
+
+/** Redis key binding a passed last-4 challenge to a specific browser session. */
+export function recipientChallengeKey(deliveryId: string, recipSid: string): string {
+  return `recip-ok:${deliveryId}:${recipSid}`;
+}
 
 const SESSION_PREFIX = 'sess:';
 
@@ -55,7 +61,7 @@ export function requireStaff(...roles: UserRole[]) {
       if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
         const cookieToken = (req.cookies as Record<string, string>)[CSRF_COOKIE];
         const headerToken = req.headers['x-csrf-token'];
-        if (!cookieToken || cookieToken !== headerToken) {
+        if (!cookieToken || typeof headerToken !== 'string' || !safeHexEqual(cookieToken, headerToken)) {
           throw new AppError(ErrorCodes.E_CSRF, 'CSRF token missing or mismatched', 403);
         }
       }
@@ -106,7 +112,7 @@ export function requireClient() {
       if (invite.expiresAt.getTime() < Date.now()) {
         throw new AppError(ErrorCodes.E_TOKEN_EXPIRED, 'This link has expired — ask your accountant to reissue it', 401);
       }
-      if (crypto.tokenHash(token) !== invite.tokenHash) {
+      if (!safeHexEqual(crypto.tokenHash(token), invite.tokenHash)) {
         // token was reissued; old signed tokens must die even if unexpired
         throw new AppError(ErrorCodes.E_TOKEN_REVOKED, 'This link has been replaced — use the newest link', 401);
       }
@@ -139,7 +145,7 @@ export function requireRecipientToken() {
       const delivery = await db.query.deliveries.findFirst({ where: eq(deliveries.id, verified.id) });
       if (!delivery || !delivery.tokenHash) throw AppError.auth('Link not found');
       if (delivery.tokenRevokedAt) throw new AppError(ErrorCodes.E_TOKEN_REVOKED, 'This link has been revoked', 401);
-      if (crypto.tokenHash(token) !== delivery.tokenHash) {
+      if (!safeHexEqual(crypto.tokenHash(token), delivery.tokenHash)) {
         throw new AppError(ErrorCodes.E_TOKEN_REVOKED, 'This link has been replaced by a newer one', 401);
       }
       if (delivery.tokenExpiresAt && delivery.tokenExpiresAt.getTime() < Date.now()) {
@@ -151,7 +157,13 @@ export function requireRecipientToken() {
       });
       if (!record) throw AppError.notFound('Form');
 
-      const challenged = await getRedis().get(`recip-ok:${delivery.id}`);
+      // Challenge success is bound to THIS browser's recipient session cookie,
+      // not just the deliveryId — so possession of the token alone cannot ride
+      // another viewer's passed challenge (the token travels in the URL).
+      const recipSid = (req.cookies as Record<string, string>)[RECIPIENT_COOKIE];
+      const challenged = recipSid
+        ? await getRedis().get(recipientChallengeKey(delivery.id, recipSid))
+        : null;
       req.recipientScope = {
         deliveryId: delivery.id,
         formRecordId: delivery.formRecordId,

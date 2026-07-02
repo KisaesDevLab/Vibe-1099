@@ -63,7 +63,7 @@ export function checkTin(raw: string, tinType: TinType): { tin: string; isItin: 
 export async function lookupByTin(db: Db, firmId: string, rawTin: string, tinType: TinType): Promise<VaultMatch | null> {
   const tin = normalizeTin(rawTin);
   if (tin.length !== 9) return null;
-  const hash = getCrypto().tinHash(tin);
+  const hash = getCrypto().tinHash(tin, firmId, tinType);
   const row = await db.query.recipients.findFirst({
     where: and(eq(recipients.firmId, firmId), eq(recipients.tinHash, hash), isNull(recipients.mergedIntoId)),
   });
@@ -110,7 +110,7 @@ export async function createRecipient(
 ): Promise<{ id: string; existed: boolean; nameChanged: boolean }> {
   const { tin, isItin } = checkTin(input.tin, input.tinType);
   const crypto = getCrypto();
-  const hash = crypto.tinHash(tin);
+  const hash = crypto.tinHash(tin, firmId, input.tinType);
 
   const existing = await db.query.recipients.findFirst({
     where: and(eq(recipients.firmId, firmId), eq(recipients.tinHash, hash), isNull(recipients.mergedIntoId)),
@@ -193,9 +193,10 @@ export async function updateRecipient(
   if (input.backupWithholding !== undefined) patch.backupWithholding = input.backupWithholding;
 
   if (input.tin !== undefined) {
-    const { tin, isItin } = checkTin(input.tin, input.tinType ?? row.tinType);
+    const newTinType = input.tinType ?? row.tinType;
+    const { tin, isItin } = checkTin(input.tin, newTinType);
     const crypto = getCrypto();
-    const newHash = crypto.tinHash(tin);
+    const newHash = crypto.tinHash(tin, firmId, newTinType);
     if (newHash !== row.tinHash) {
       const clash = await db.query.recipients.findFirst({
         where: and(eq(recipients.firmId, firmId), eq(recipients.tinHash, newHash), isNull(recipients.mergedIntoId)),

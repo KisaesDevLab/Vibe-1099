@@ -36,8 +36,11 @@ services:
   render:
     build: ./render
     image: vibe1099-render:latest
-    ports:
-      - "8212:8212"
+    # No host port publish: the render sidecar is reached only over the internal
+    # Docker network by api/worker (RENDER_URL=http://render:8212). Exposing it
+    # publicly would open the /render + /validate-xml endpoints to untrusted input.
+    expose:
+      - "8212"
     restart: unless-stopped
 
   api:

@@ -113,7 +113,7 @@ async function main(): Promise<void> {
       .values({
         firmId: firm.id,
         tinEncrypted: crypto.encrypt(r.tin),
-        tinHash: crypto.tinHash(r.tin),
+        tinHash: crypto.tinHash(r.tin, firm.id, r.tinType),
         tinType: r.tinType,
         tinLast4: tinLast4(r.tin),
         name1: r.name1,

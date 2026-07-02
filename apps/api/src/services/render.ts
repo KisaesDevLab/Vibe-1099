@@ -38,9 +38,12 @@ export async function buildFormPayload(db: Db, firmId: string, formRecordId: str
     where: and(eq(formRecords.id, formRecordId), eq(formRecords.firmId, firmId)),
   });
   if (!record) throw AppError.notFound('Form record');
+  // parties MUST be re-scoped to the firm: a record whose payerId/recipientId was
+  // poisoned (e.g. a foreign UUID slipped through a write path) must never cause a
+  // cross-firm TIN to be decrypted into a rendered document
   const [payer, recipient, firm] = await Promise.all([
-    db.query.payers.findFirst({ where: eq(payers.id, record.payerId) }),
-    db.query.recipients.findFirst({ where: eq(recipients.id, record.recipientId) }),
+    db.query.payers.findFirst({ where: and(eq(payers.id, record.payerId), eq(payers.firmId, firmId)) }),
+    db.query.recipients.findFirst({ where: and(eq(recipients.id, record.recipientId), eq(recipients.firmId, firmId)) }),
     db.query.firms.findFirst({ where: eq(firms.id, firmId) }),
   ]);
   if (!payer || !recipient || !firm) throw AppError.notFound('Form parties');

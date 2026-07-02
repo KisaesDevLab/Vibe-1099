@@ -8,7 +8,7 @@ import express from 'express';
 import cookieParser from 'cookie-parser';
 import helmet from 'helmet';
 import { pinoHttp } from 'pino-http';
-import { createLogger } from '@vibe1099/core';
+import { createLogger, loadEnv } from '@vibe1099/core';
 import './types.js';
 import { errorHandler } from './middleware/error.js';
 import { auditMutations } from './middleware/audit.js';
@@ -32,7 +32,9 @@ import { healthRouter } from './routes/health.js';
 
 export function createApp(): express.Express {
   const app = express();
-  app.set('trust proxy', 1); // behind Caddy / Cloudflare Tunnel
+  // exact trusted hop count (Cloudflare Tunnel + Caddy = 2 by default) so req.ip
+  // resolves to the real client and per-IP rate limits can't be spoofed/collapsed
+  app.set('trust proxy', loadEnv().TRUST_PROXY_HOPS);
 
   app.use(
     helmet({

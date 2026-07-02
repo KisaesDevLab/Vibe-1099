@@ -254,7 +254,7 @@ moRouter.get(
     const db = getDb();
     const file = await db.query.stateFiles.findFirst({ where: and(eq(stateFiles.id, id), eq(stateFiles.firmId, req.staff!.firmId)) });
     if (!file?.fileBlobId) throw AppError.notFound('State file');
-    const blob = await getBlob(db, file.fileBlobId);
+    const blob = await getBlob(db, file.fileBlobId, req.staff!.firmId);
     if (!blob) throw AppError.notFound('File blob');
     res.setHeader('content-disposition', `attachment; filename="${file.filename}"`);
     res.type('text/plain').send(blob.bytes);

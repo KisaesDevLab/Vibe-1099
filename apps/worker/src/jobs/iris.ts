@@ -66,7 +66,7 @@ export async function handleIrisTransmit(job: Job): Promise<void> {
     return;
   }
   if (!tx.xmlBlobId) throw new Error('transmission has no XML');
-  const blob = await getBlob(db, tx.xmlBlobId);
+  const blob = await getBlob(db, tx.xmlBlobId, data.firmId);
   if (!blob) throw new Error('XML blob missing');
 
   await db.update(transmissions).set({ status: 'transmitting' }).where(eq(transmissions.id, tx.id));

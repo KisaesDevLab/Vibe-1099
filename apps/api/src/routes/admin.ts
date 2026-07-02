@@ -181,9 +181,16 @@ adminRouter.get(
       .offset(q.offset);
     if (q.format === 'csv') {
       const header = 'id,created_at,actor_type,actor_id,action,entity_type,entity_id,ip';
+      // CSV-quote, and neutralize spreadsheet formula injection by prefixing any
+      // cell that starts with = + - @ (or tab/CR) with a single quote
+      const csvCell = (v: unknown): string => {
+        let s = String(v);
+        if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`;
+        return `"${s.replace(/"/g, '""')}"`;
+      };
       const lines = rows.map((r) =>
         [r.id, r.createdAt.toISOString(), r.actorType, r.actorId ?? '', r.action, r.entityType, r.entityId ?? '', r.ip ?? '']
-          .map((v) => `"${String(v).replace(/"/g, '""')}"`)
+          .map(csvCell)
           .join(','),
       );
       res.setHeader('content-disposition', 'attachment; filename="audit-log.csv"');
@@ -214,9 +221,24 @@ adminRouter.get(
   requireStaff('admin'),
   h(async (req, res) => {
     const name = z.enum(['render', 'delivery', 'iris', 'w9', 'housekeeping']).parse(req.params['name']);
-    const jobs = await getQueue(name).getFailed(0, 50);
+    const jobs = await getQueue(name).getFailed(0, 200);
+    // BullMQ queues are appliance-global (shared by all firms). Only return this
+    // firm's jobs, and NEVER expose raw job.data — it carries other-firm contact
+    // info and live portal/W-9 links with working tokens.
+    const firmId = req.staff!.firmId;
     res.json({
-      failed: jobs.map((j) => ({ id: j.id, name: j.name, failedReason: j.failedReason, attemptsMade: j.attemptsMade, data: j.data })),
+      failed: jobs
+        .filter((j) => (j.data as { firmId?: string } | undefined)?.firmId === firmId)
+        .slice(0, 50)
+        .map((j) => ({
+          id: j.id,
+          name: j.name,
+          failedReason: j.failedReason,
+          attemptsMade: j.attemptsMade,
+          // safe, non-sensitive descriptor only — no `to`, no `link`/token, no vars
+          kind: (j.data as { kind?: string } | undefined)?.kind ?? null,
+          channel: (j.data as { channel?: string } | undefined)?.channel ?? null,
+        })),
     });
   }),
 );
@@ -226,10 +248,13 @@ adminRouter.post(
   requireStaff('admin'),
   h(async (req, res) => {
     const name = z.enum(['render', 'delivery', 'iris', 'w9', 'housekeeping']).parse(req.params['name']);
-    const jobs = await getQueue(name).getFailed(0, 200);
-    for (const j of jobs) await j.retry();
-    res.locals['audit'] = { action: 'queue.retry-failed', entityType: 'queue', entityId: name, detail: { count: jobs.length } };
-    res.json({ retried: jobs.length });
+    const jobs = await getQueue(name).getFailed(0, 500);
+    // only retry this firm's failed jobs
+    const firmId = req.staff!.firmId;
+    const mine = jobs.filter((j) => (j.data as { firmId?: string } | undefined)?.firmId === firmId);
+    for (const j of mine) await j.retry();
+    res.locals['audit'] = { action: 'queue.retry-failed', entityType: 'queue', entityId: name, detail: { count: mine.length } };
+    res.json({ retried: mine.length });
   }),
 );
 

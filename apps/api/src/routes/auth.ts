@@ -4,15 +4,21 @@
  */
 import { Router } from 'express';
 import { hash as argonHash, verify as argonVerify } from '@node-rs/argon2';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, isNull } from 'drizzle-orm';
 import { z } from 'zod';
 import { AppError, ErrorCodes, zEmail, zLoginInput, zUserRole } from '@vibe1099/shared';
-import { audit, getCrypto, getQueue, loadEnv, QUEUE_NAMES, type DeliveryJob } from '@vibe1099/core';
+import { audit, getCrypto, getQueue, getRedis, loadEnv, QUEUE_NAMES, type DeliveryJob } from '@vibe1099/core';
 import { getDb, passwordResets, users } from '@vibe1099/db';
 import { h } from '../middleware/error.js';
 import { rateLimit, checkLockout, recordFailure, clearFailures } from '../middleware/rate-limit.js';
-import { createSession, destroySession, requireStaff, CSRF_COOKIE, SESSION_COOKIE } from '../middleware/auth.js';
-import { generateTotpSecret, otpauthUrl, verifyTotp } from '../services/totp.js';
+import { createSession, destroyAllUserSessions, destroySession, requireStaff, CSRF_COOKIE, SESSION_COOKIE } from '../middleware/auth.js';
+import { generateTotpSecret, otpauthUrl, verifyTotp, verifyTotpCounter } from '../services/totp.js';
+
+/** Reject a TOTP counter already consumed by this user (replay guard, 90s TTL). */
+async function consumeTotpCounter(userId: string, counter: number): Promise<boolean> {
+  const set = await getRedis().set(`totp-used:${userId}:${counter}`, '1', 'EX', 90, 'NX');
+  return set === 'OK';
+}
 
 export const ARGON_OPTS = { memoryCost: 19456, timeCost: 2, parallelism: 1 } as const; // argon2id OWASP baseline
 
@@ -45,9 +51,11 @@ authRouter.post(
     if (user.totpEnabled) {
       if (!input.totp) throw new AppError(ErrorCodes.E_AUTH, 'TOTP code required', 401, { totpRequired: true });
       const secret = getCrypto().decrypt(user.totpSecretEncrypted ?? '');
-      if (!verifyTotp(secret, input.totp)) {
+      const counter = verifyTotpCounter(secret, input.totp);
+      // reject bad code OR a valid code already used within its window (replay)
+      if (counter === null || !(await consumeTotpCounter(user.id, counter))) {
         await recordFailure(lockKey);
-        throw new AppError(ErrorCodes.E_AUTH, 'Invalid TOTP code', 401, { totpRequired: true });
+        throw new AppError(ErrorCodes.E_AUTH, 'Invalid or already-used TOTP code', 401, { totpRequired: true });
       }
     }
 
@@ -147,6 +155,13 @@ authRouter.post(
     }
     await db.update(passwordResets).set({ usedAt: new Date() }).where(eq(passwordResets.id, row.id));
     await db.update(users).set({ passwordHash: await argonHash(password, ARGON_OPTS) }).where(eq(users.id, row.userId));
+    // kill any live sessions so a reset actually locks out an intruder, and
+    // burn other outstanding reset tokens for this user
+    await destroyAllUserSessions(row.userId);
+    await db
+      .update(passwordResets)
+      .set({ usedAt: new Date() })
+      .where(and(eq(passwordResets.userId, row.userId), isNull(passwordResets.usedAt)));
     res.json({ ok: true });
   }),
 );
@@ -245,6 +260,11 @@ authRouter.patch(
       .update(users)
       .set(patch)
       .where(and(eq(users.id, id), eq(users.firmId, req.staff!.firmId)));
+    // a deactivation or role change must take effect immediately: drop the
+    // target user's live sessions so the change can't be outrun by a stale session
+    if (patch.active === false || patch.role !== undefined) {
+      await destroyAllUserSessions(id);
+    }
     res.locals['audit'] = { action: 'user.update', entityType: 'user', entityId: id, detail: patch };
     res.json({ ok: true });
   }),

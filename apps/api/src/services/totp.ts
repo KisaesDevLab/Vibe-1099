@@ -56,12 +56,22 @@ export function totpCode(secretB32: string, timeStepMs = 30_000, at = Date.now()
   return String(code % 1_000_000).padStart(6, '0');
 }
 
-export function verifyTotp(secretB32: string, code: string, windowSteps = 1): boolean {
-  const now = Date.now();
-  for (let i = -windowSteps; i <= windowSteps; i++) {
-    if (totpCode(secretB32, 30_000, now + i * 30_000) === code) return true;
+/**
+ * Verify a TOTP code, returning the matched counter (or null). Only accepts the
+ * current and previous step by default (no future step) to shrink the guess
+ * surface. Callers must record the returned counter to prevent replay within the
+ * validity window.
+ */
+export function verifyTotpCounter(secretB32: string, code: string, backSteps = 1, fwdSteps = 0, at = Date.now()): number | null {
+  for (let i = -backSteps; i <= fwdSteps; i++) {
+    const t = at + i * 30_000;
+    if (totpCode(secretB32, 30_000, t) === code) return Math.floor(t / 30_000);
   }
-  return false;
+  return null;
+}
+
+export function verifyTotp(secretB32: string, code: string, windowSteps = 1): boolean {
+  return verifyTotpCounter(secretB32, code, windowSteps, windowSteps) !== null;
 }
 
 export function otpauthUrl(secretB32: string, account: string, issuer = 'Vibe 1099'): string {

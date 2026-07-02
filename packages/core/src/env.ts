@@ -43,6 +43,11 @@ const zEnv = z.object({
   IRIS_PROD_BASE_URL: z.string().default('https://la.www4.irs.gov/iris'),
   IRIS_MOCK_BASE_URL: z.string().default(''),
 
+  // Number of trusted reverse-proxy hops in front of the API (Express trust proxy).
+  // Per-IP rate limiting keys on the resolved client IP, so this MUST match the
+  // real topology or req.ip collapses to the proxy address (global throttle) or
+  // trusts a spoofable X-Forwarded-For. Cloudflare Tunnel + Caddy = 2 hops.
+  TRUST_PROXY_HOPS: z.coerce.number().int().min(0).max(10).default(2),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
   SESSION_INACTIVITY_MINUTES: z.coerce.number().int().default(30),
   STAFF_IP_ALLOWLIST: z.string().default(''),

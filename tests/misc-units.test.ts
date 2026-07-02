@@ -36,4 +36,7 @@ describe('PII redaction (never log TINs)', () => {
       'ssn [TIN-REDACTED] ein [TIN-REDACTED] raw [TIN-REDACTED]',
     );
   });
+  it('scrubs spaced SSNs too', () => {
+    expect(redactPii('ssn 400 11 1222 here')).toBe('ssn [TIN-REDACTED] here');
+  });
 });

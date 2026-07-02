@@ -12,7 +12,15 @@
  */
 import { and, eq } from 'drizzle-orm';
 import { AppError, isCorrectable, type FormStatus, type FormType } from '@vibe1099/shared';
-import { formRecords, getDb, type Db } from '@vibe1099/db';
+import { formRecords, getDb, recipients, type Db } from '@vibe1099/db';
+
+/** Ensure a body-supplied newRecipientId (Type-2 correction) belongs to the firm. */
+async function assertRecipientInFirm(db: Db, firmId: string, recipientId: string): Promise<void> {
+  const r = await db.query.recipients.findFirst({
+    where: and(eq(recipients.id, recipientId), eq(recipients.firmId, firmId)),
+  });
+  if (!r) throw AppError.validation('Correction recipient is not in this firm’s vault');
+}
 
 export type CorrectionClass = 'type1' | 'type2';
 
@@ -62,6 +70,7 @@ export async function correctionDiff(
   req: CorrectionRequest,
 ): Promise<{ classification: CorrectionClass; diff: CorrectionDiffEntry[] }> {
   const original = await loadCorrectable(db, firmId, req.originalId);
+  if (req.newRecipientId) await assertRecipientInFirm(db, firmId, req.newRecipientId);
   const snapshot = original.filedSnapshot as { boxValues: Record<string, unknown> };
   const diff: CorrectionDiffEntry[] = [];
   const classification = classifyCorrection(req);
@@ -114,6 +123,7 @@ export async function createCorrection(
   createdBy: string,
 ): Promise<CorrectionResult> {
   const original = await loadCorrectable(db, firmId, req.originalId);
+  if (req.newRecipientId) await assertRecipientInFirm(db, firmId, req.newRecipientId);
   const classification = classifyCorrection(req);
   const nextSeq = original.correctionSeq + 1;
   const createdIds: string[] = [];

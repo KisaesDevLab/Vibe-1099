@@ -38,9 +38,17 @@ describe('CryptoService — envelope AES-256-GCM + HMAC tin_hash (ADR-002)', () 
     const a = new CryptoService(k1);
     const b = new CryptoService(k1);
     const c = new CryptoService(key());
-    expect(a.tinHash('400111222')).toBe(b.tinHash('400111222'));
-    expect(a.tinHash('400111222')).not.toBe(c.tinHash('400111222'));
-    expect(a.tinHash('400111222')).not.toBe(a.tinHash('400111223'));
+    expect(a.tinHash('400111222', 'firm1', 'SSN')).toBe(b.tinHash('400111222', 'firm1', 'SSN'));
+    expect(a.tinHash('400111222', 'firm1', 'SSN')).not.toBe(c.tinHash('400111222', 'firm1', 'SSN'));
+    expect(a.tinHash('400111222', 'firm1', 'SSN')).not.toBe(a.tinHash('400111223', 'firm1', 'SSN'));
+  });
+
+  it('tin_hash is domain-separated by firm and TIN type (no cross-tenant correlation / SSN-EIN collision)', () => {
+    const a = new CryptoService(key());
+    // same digits, different firm → different hash
+    expect(a.tinHash('400111222', 'firmA', 'SSN')).not.toBe(a.tinHash('400111222', 'firmB', 'SSN'));
+    // same digits, different type → different hash
+    expect(a.tinHash('123456789', 'firmA', 'SSN')).not.toBe(a.tinHash('123456789', 'firmA', 'EIN'));
   });
 
   it('scoped tokens verify, expire, and reject cross-scope', () => {
@@ -52,6 +60,16 @@ describe('CryptoService — envelope AES-256-GCM + HMAC tin_hash (ADR-002)', () 
     const expired = svc.signScopedToken('recipient', 'abc-123', new Date(Date.now() - 1000));
     expect(svc.verifyScopedToken(expired, 'recipient')).toBeNull();
     expect(svc.verifyScopedToken(token + 'x', 'recipient')).toBeNull(); // tamper
+  });
+
+  it('scoped tokens carry a nonce: reissue at the same expiry second yields a different token', () => {
+    const svc = new CryptoService(key());
+    const exp = new Date(Date.now() + 60_000);
+    const t1 = svc.signScopedToken('recipient', 'abc-123', exp);
+    const t2 = svc.signScopedToken('recipient', 'abc-123', exp);
+    expect(t1).not.toBe(t2); // nonce makes each issuance unique (revoke+reissue actually rotates)
+    expect(svc.verifyScopedToken(t1, 'recipient')?.id).toBe('abc-123');
+    expect(svc.verifyScopedToken(t2, 'recipient')?.id).toBe('abc-123');
   });
 
   it('binary round-trip (encrypted blobs)', () => {

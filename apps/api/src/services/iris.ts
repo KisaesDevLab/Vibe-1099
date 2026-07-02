@@ -79,11 +79,18 @@ export async function composeTransmission(
   }
 
   const crypto = getCrypto();
+  // scope recipient decryption to the firm — never decrypt/transmit a foreign
+  // firm's TIN even if a record's recipientId was poisoned by an upstream write
   const recipientRows = await db
     .select()
     .from(recipients)
-    .where(inArray(recipients.id, [...new Set(records.map((r) => r.recipientId))]));
+    .where(and(eq(recipients.firmId, firmId), inArray(recipients.id, [...new Set(records.map((r) => r.recipientId))])));
   const rmap = new Map(recipientRows.map((r) => [r.id, r]));
+  for (const r of records) {
+    if (!rmap.has(r.recipientId)) {
+      throw AppError.validation(`Record ${r.id} references a recipient outside this firm`);
+    }
+  }
 
   const irisRecords: IrisFormRecord[] = records.map((r) => {
     const recip = rmap.get(r.recipientId);

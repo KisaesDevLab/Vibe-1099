@@ -74,9 +74,14 @@ export class CryptoService {
     return Buffer.concat([decipher.update(b64u.dec(ctS)), decipher.final()]);
   }
 
-  /** tin_hash — deterministic HMAC over normalized TIN digits (ADR-002). */
-  tinHash(normalizedTin: string): string {
-    return createHmac('sha256', this.hmacKey).update(normalizedTin).digest('hex');
+  /**
+   * tin_hash — deterministic keyed HMAC for encrypted-TIN lookup (ADR-002).
+   * Domain-separated by firmId + tinType so the same 9 digits produce different
+   * hashes across firms (no cross-tenant correlation from a DB dump) and an
+   * SSN cannot collide with an identical-digit EIN.
+   */
+  tinHash(normalizedTin: string, firmId: string, tinType: string): string {
+    return createHmac('sha256', this.hmacKey).update(`${firmId}:${tinType}:${normalizedTin}`).digest('hex');
   }
 
   /** Opaque one-way hash for stored tokens (invites, W-9, portal, resets). */
@@ -95,7 +100,11 @@ export class CryptoService {
    * Verified stateless; revocation via DB token_hash column.
    */
   signScopedToken(scope: string, id: string, expiresAt: Date): string {
-    const payload = `${scope}.${id}.${Math.floor(expiresAt.getTime() / 1000)}`;
+    // include a random nonce so every issued token (and its stored token_hash) is
+    // unique — a revoke+reissue at the same expiry second yields a NEW token, so a
+    // leaked link genuinely stops working after reissue
+    const nonce = randomBytes(9).toString('base64url');
+    const payload = `${scope}.${id}.${Math.floor(expiresAt.getTime() / 1000)}.${nonce}`;
     const sig = createHmac('sha256', this.tokenKey).update(payload).digest('base64url');
     return `${Buffer.from(payload, 'utf8').toString('base64url')}.${sig}`;
   }
@@ -116,7 +125,7 @@ export class CryptoService {
     const b = Buffer.from(expect);
     if (a.length !== b.length || !timingSafeEqual(a, b)) return null;
     const parts = payload.split('.');
-    if (parts.length !== 3) return null;
+    if (parts.length < 3) return null; // scope.id.exp[.nonce]
     const [scope, id, expS] = parts as [string, string, string];
     if (scope !== expectedScope) return null;
     const exp = parseInt(expS, 10);
@@ -125,6 +134,12 @@ export class CryptoService {
     if (expiresAt.getTime() < Date.now()) return null;
     return { id, expiresAt };
   }
+}
+
+/** Constant-time equality for equal-length hex digests (token_hash comparisons). */
+export function safeHexEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(Buffer.from(a), Buffer.from(b));
 }
 
 let instance: CryptoService | undefined;

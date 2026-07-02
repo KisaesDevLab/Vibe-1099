@@ -7,10 +7,10 @@ import { Router } from 'express';
 import { eq } from 'drizzle-orm';
 import { z } from 'zod';
 import { AppError, ErrorCodes } from '@vibe1099/shared';
-import { audit, getQueue, getRedis, QUEUE_NAMES, type DeliveryJob } from '@vibe1099/core';
+import { audit, getCrypto, getQueue, getRedis, loadEnv, QUEUE_NAMES, safeHexEqual, type DeliveryJob } from '@vibe1099/core';
 import { deliveries, firms, formRecords, getDb, payers, recipients, users } from '@vibe1099/db';
 import { h } from '../middleware/error.js';
-import { requireChallengePassed, requireRecipientToken } from '../middleware/auth.js';
+import { RECIPIENT_COOKIE, recipientChallengeKey, requireChallengePassed, requireRecipientToken } from '../middleware/auth.js';
 import { checkLockout, clearFailures, rateLimit, recordFailure } from '../middleware/rate-limit.js';
 import { renderPortalPdf } from '../services/render.js';
 
@@ -49,7 +49,7 @@ recipientPortalRouter.post(
     const recipient = await db.query.recipients.findFirst({ where: eq(recipients.id, scope.recipientId) });
     if (!recipient) throw AppError.notFound('Form');
 
-    if (recipient.tinLast4 !== last4) {
+    if (!safeHexEqual(recipient.tinLast4, last4)) {
       const attempts = await recordFailure(lockKey, 3600);
       if (attempts >= 5) {
         // lockout alert to staff (admin emails)
@@ -84,7 +84,13 @@ recipientPortalRouter.post(
     }
 
     await clearFailures(lockKey);
-    await getRedis().set(`recip-ok:${scope.deliveryId}`, '1', 'EX', 30 * 60); // 30-min verified window
+    // bind the 30-min verified window to a fresh, HttpOnly session cookie so only
+    // THIS browser (not any holder of the URL token) rides the passed challenge
+    const recipSid = getCrypto().newToken(24);
+    const env = loadEnv();
+    const secure = env.NODE_ENV === 'production' && env.PORTAL_BASE_URL.startsWith('https');
+    res.cookie(RECIPIENT_COOKIE, recipSid, { httpOnly: true, sameSite: 'strict', secure, path: '/', maxAge: 30 * 60 * 1000 });
+    await getRedis().set(recipientChallengeKey(scope.deliveryId, recipSid), '1', 'EX', 30 * 60);
 
     // first successful view marks viewed_at
     const db2 = getDb();

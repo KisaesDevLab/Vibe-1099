@@ -305,6 +305,9 @@ formsRouter.post(
     const db = getDb();
     const firmId = req.staff!.firmId;
     await assertYearOpen(db, firmId, taxYear);
+    // verify the payer belongs to this firm before inserting any records against it
+    const importPayer = await db.query.payers.findFirst({ where: and(eq(payers.id, payerId), eq(payers.firmId, firmId)) });
+    if (!importPayer) throw AppError.notFound('Payer');
     const def = getFormDef(formType, taxYear);
     const report: Array<{ row: number; status: 'created' | 'error'; message?: string }> = [];
 

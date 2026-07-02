@@ -7,3 +7,8 @@ services:
   redis:
     ports:
       - "56379:6379"
+  # dev only: expose the render sidecar to the host so locally-run api/worker (tsx)
+  # can reach it. In production it stays internal-only (see docker-compose.yml).
+  render:
+    ports:
+      - "8212:8212"

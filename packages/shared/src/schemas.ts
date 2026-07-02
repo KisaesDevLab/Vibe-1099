@@ -111,7 +111,15 @@ export const zW9SubmitInput = z.object({
   tinType: zTinType,
   signatureName: z.string().min(1).max(120),
   signatureKind: z.enum(['typed', 'drawn']),
-  signatureImage: z.string().max(200_000).optional().nullable(), // data URL when drawn
+  // drawn signature only — MUST be a base64 data URI. Rejecting other schemes
+  // prevents SSRF / file:// reads when the value is rendered as <img src> by the
+  // WeasyPrint sidecar (defense in depth with the render-side url_fetcher).
+  signatureImage: z
+    .string()
+    .max(200_000)
+    .regex(/^data:image\/(png|jpeg);base64,[A-Za-z0-9+/=]+$/, 'signature image must be a base64 PNG/JPEG data URI')
+    .optional()
+    .nullable(),
   esignConsent: z.literal(true),
 });
 export type W9SubmitInput = z.infer<typeof zW9SubmitInput>;

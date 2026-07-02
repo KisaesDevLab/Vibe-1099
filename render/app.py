@@ -18,7 +18,7 @@ import re
 from flask import Flask, jsonify, request
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 from pypdf import PdfReader, PdfWriter
-from weasyprint import HTML
+from weasyprint import HTML, default_url_fetcher
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 TEMPLATE_DIR = os.path.join(BASE_DIR, "templates")
@@ -49,6 +49,24 @@ jinja.filters["money"] = fmt_money
 ALLOWED_TEMPLATE = re.compile(r"^[a-z0-9_]+\.html$")
 
 
+def safe_url_fetcher(url):
+    """Restrict WeasyPrint resource loading to inline data: URIs and the local
+    CSS directory. Blocks file:// and http(s):// so attacker-controlled values
+    rendered as <img src> (e.g. a W-9 signature image) cannot trigger SSRF or
+    local-file disclosure."""
+    if url.startswith("data:"):
+        return default_url_fetcher(url)
+    if url.startswith("file://"):
+        # only permit files inside the bundled CSS dir (external stylesheets).
+        # Keep the absolute path as-is (WeasyPrint emits file:///app/css/base.css).
+        path = os.path.realpath(url[len("file://"):])
+        css_real = os.path.realpath(CSS_DIR)
+        # base_url resolves relative hrefs against CSS_DIR; allow those only
+        if path.startswith(css_real + os.sep) or os.path.dirname(path) == css_real:
+            return default_url_fetcher(url)
+    raise ValueError(f"blocked resource URL scheme: {url[:32]}")
+
+
 @app.get("/health")
 def health():
     return jsonify(ok=True, service="vibe1099-render")
@@ -67,7 +85,7 @@ def render_pdf():
         return jsonify(error=f"template not found: {exc}"), 404
     try:
         html = template.render(**data)
-        pdf = HTML(string=html, base_url=CSS_DIR).write_pdf()
+        pdf = HTML(string=html, base_url=CSS_DIR, url_fetcher=safe_url_fetcher).write_pdf()
     except Exception as exc:  # noqa: BLE001
         return jsonify(error=f"render failed: {exc}"), 500
     return app.response_class(pdf, mimetype="application/pdf")
@@ -107,9 +125,18 @@ def validate_xml():
                        note=f"no bundled XSD for TY{tax_year}; structural checks only")
     from lxml import etree  # lazy import
 
+    # hardened parser: no external entity resolution, no DTD loading, no network,
+    # bounded tree — prevents XXE / entity-expansion via posted XML
+    safe_parser = etree.XMLParser(
+        resolve_entities=False,
+        no_network=True,
+        load_dtd=False,
+        dtd_validation=False,
+        huge_tree=False,
+    )
     try:
-        schema = etree.XMLSchema(etree.parse(xsd_path))
-        doc = etree.fromstring(xml.encode())
+        schema = etree.XMLSchema(etree.parse(xsd_path, safe_parser))
+        doc = etree.fromstring(xml.encode(), safe_parser)
         valid = schema.validate(doc)
         errors = [str(e) for e in schema.error_log]
         return jsonify(valid=valid, errors=errors, skipped=False)
@@ -118,4 +145,7 @@ def validate_xml():
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "8212")))
+    # Bind to loopback by default; the appliance reaches the sidecar over the
+    # internal Docker network. Set RENDER_BIND=0.0.0.0 only when that is required
+    # and the port is NOT published to the host / public network.
+    app.run(host=os.environ.get("RENDER_BIND", "127.0.0.1"), port=int(os.environ.get("PORT", "8212")))
