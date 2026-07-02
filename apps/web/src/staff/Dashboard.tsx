@@ -1,4 +1,9 @@
-import { useEffect, useState } from 'react';
+/**
+ * Control tower (Phase C) — answers "what needs me across 100 entities":
+ * roll-up totals, sortable/filterable per-payer progress with deadline risk,
+ * saved views, and a link into the Work Inbox.
+ */
+import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../api';
 
@@ -16,30 +21,60 @@ interface Progress {
   delivered: number;
 }
 
-interface Exception {
-  kind: string;
-  formRecordId?: string;
-  recipientId?: string;
-  recipientName: string;
-  formType?: string;
-  detail: string;
-}
+type SortKey = 'payerName' | 'total' | 'ready' | 'accepted' | 'rejected' | 'delivered' | 'unfiled';
+type FilterKey = 'all' | 'rejects' | 'unfiled' | 'undelivered';
 
 export function Dashboard() {
   const [taxYear, setTaxYear] = useState(CURRENT_TY);
   const [season, setSeason] = useState<{ progress: Progress[]; deadlines: Record<string, string>; yearLocked: boolean } | null>(null);
   const [deadlines, setDeadlines] = useState<{ deadlines: Record<string, { date: string; note: string }>; counts: Record<string, number> } | null>(null);
-  const [exceptions, setExceptions] = useState<Exception[]>([]);
+  const [inbox, setInbox] = useState<{ total: number; counts: Record<string, number> } | null>(null);
   const [vault, setVault] = useState<Record<string, number> | null>(null);
+  const [sort, setSort] = useState<SortKey>('unfiled');
+  const [dir, setDir] = useState<1 | -1>(-1);
+  const [filter, setFilter] = useState<FilterKey>('all');
+  const [search, setSearch] = useState('');
 
   useEffect(() => {
     api.get<{ progress: Progress[]; deadlines: Record<string, string>; yearLocked: boolean }>(`/api/dashboard/season/${taxYear}`).then(setSeason).catch(() => {});
     api.get<{ deadlines: Record<string, { date: string; note: string }>; counts: Record<string, number> }>(`/api/iris/deadlines/${taxYear}`).then(setDeadlines).catch(() => {});
-    api.get<{ exceptions: Exception[] }>(`/api/dashboard/exceptions/${taxYear}`).then((r) => setExceptions(r.exceptions)).catch(() => {});
+    api.get<{ total: number; counts: Record<string, number> }>(`/api/inbox/${taxYear}?limit=1`).then(setInbox).catch(() => {});
     api.get<{ stats: Record<string, number> }>('/api/recipients/stats').then((r) => setVault(r.stats)).catch(() => {});
   }, [taxYear]);
 
   const daysUntil = (date: string) => Math.ceil((new Date(date + 'T23:59:59').getTime() - Date.now()) / 86_400_000);
+  const unfiledOf = (p: Progress) => p.entered + p.ready; // draft+ready+queued not yet transmitted
+
+  const rows = useMemo(() => {
+    let list = season?.progress ?? [];
+    if (search) list = list.filter((p) => p.payerName.toLowerCase().includes(search.toLowerCase()));
+    if (filter === 'rejects') list = list.filter((p) => p.rejected > 0);
+    if (filter === 'unfiled') list = list.filter((p) => unfiledOf(p) > 0);
+    if (filter === 'undelivered') list = list.filter((p) => p.accepted > p.delivered);
+    const val = (p: Progress): number | string =>
+      sort === 'payerName' ? p.payerName : sort === 'unfiled' ? unfiledOf(p) : (p[sort] as number);
+    return [...list].sort((a, b) => {
+      const av = val(a), bv = val(b);
+      return (typeof av === 'string' ? av.localeCompare(bv as string) : (av as number) - (bv as number)) * dir;
+    });
+  }, [season, search, filter, sort, dir]);
+
+  const rollup = useMemo(() => {
+    const p = season?.progress ?? [];
+    return {
+      payers: p.length,
+      total: p.reduce((n, x) => n + x.total, 0),
+      unfiled: p.reduce((n, x) => n + unfiledOf(x), 0),
+      accepted: p.reduce((n, x) => n + x.accepted, 0),
+      rejected: p.reduce((n, x) => n + x.rejected, 0),
+      delivered: p.reduce((n, x) => n + x.delivered, 0),
+    };
+  }, [season]);
+
+  const sortBy = (k: SortKey) => { if (sort === k) setDir((d) => (d === 1 ? -1 : 1)); else { setSort(k); setDir(-1); } };
+  const Th = ({ k, label }: { k: SortKey; label: string }) => (
+    <th className="num" style={{ cursor: 'pointer' }} onClick={() => sortBy(k)}>{label}{sort === k ? (dir === 1 ? ' ▲' : ' ▼') : ''}</th>
+  );
 
   return (
     <div>
@@ -47,82 +82,80 @@ export function Dashboard() {
         <h1>Season dashboard — TY{taxYear}</h1>
         <div className="field" style={{ minWidth: 100 }}>
           <label>Tax year</label>
-          <select value={taxYear} onChange={(e) => setTaxYear(Number(e.target.value))}>
-            <option value={2026}>2026</option>
-            <option value={2025}>2025</option>
-          </select>
+          <select value={taxYear} onChange={(e) => setTaxYear(Number(e.target.value))}><option value={2026}>2026</option><option value={2025}>2025</option></select>
         </div>
       </div>
 
       {season?.yearLocked && <div className="warn-box">Tax year {taxYear} is locked (read-only except corrections).</div>}
 
+      {/* roll-up header */}
+      <div className="stat-row">
+        <div className="stat"><div className="n">{rollup.payers}</div><div className="l">Payers</div></div>
+        <div className="stat"><div className="n">{rollup.total.toLocaleString()}</div><div className="l">Forms total</div></div>
+        <div className="stat"><div className="n" style={{ color: rollup.unfiled ? 'var(--warn)' : 'var(--ok)' }}>{rollup.unfiled.toLocaleString()}</div><div className="l">Unfiled</div></div>
+        <div className="stat"><div className="n" style={{ color: 'var(--ok)' }}>{rollup.accepted.toLocaleString()}</div><div className="l">Accepted</div></div>
+        <div className="stat"><div className="n" style={{ color: rollup.rejected ? 'var(--danger)' : undefined }}>{rollup.rejected}</div><div className="l">Rejected</div></div>
+        {inbox && <Link to="/inbox" className="stat" style={{ textDecoration: 'none' }}><div className="n" style={{ color: inbox.total ? 'var(--warn)' : 'var(--ok)' }}>{inbox.total}</div><div className="l">Work inbox →</div></Link>}
+      </div>
+
       {deadlines && (
-        <div className="stat-row">
-          {Object.entries(deadlines.deadlines).map(([key, d]) => (
-            <div className="stat" key={key} title={d.note}>
-              <div className="n" style={{ color: daysUntil(d.date) < 14 ? 'var(--danger)' : undefined }}>
-                {daysUntil(d.date) >= 0 ? `${daysUntil(d.date)}d` : 'past'}
+        <div className="stat-row" style={{ marginTop: 4 }}>
+          {Object.entries(deadlines.deadlines).map(([key, d]) => {
+            const dd = daysUntil(d.date);
+            return (
+              <div className="stat" key={key} title={d.note}>
+                <div className="n" style={{ color: dd < 14 ? 'var(--danger)' : dd < 30 ? 'var(--warn)' : undefined }}>{dd >= 0 ? `${dd}d` : 'past'}</div>
+                <div className="l">{key === 'recipientFurnish' ? 'Recipient copies (Jan 31)' : key === 'irsEfile' ? 'IRS e-file (Mar 31)' : 'Missouri (end Feb)'}</div>
+                <div className="muted">{d.date}</div>
               </div>
-              <div className="l">
-                {key === 'recipientFurnish' ? 'Recipient copies (Jan 31)' : key === 'irsEfile' ? 'IRS e-file (Mar 31)' : 'Missouri (end of Feb)'}
-              </div>
-              <div className="muted">{d.date}</div>
-            </div>
-          ))}
-          {deadlines.counts && (
-            <div className="stat">
-              <div className="n">{deadlines.counts['unfiled'] ?? 0}</div>
-              <div className="l">Unfiled forms</div>
-            </div>
-          )}
-          {vault && (
-            <div className="stat">
-              <div className="n">{vault['total'] ?? 0}</div>
-              <div className="l">Vault recipients ({vault['w9Missing'] ?? 0} missing W-9)</div>
-            </div>
-          )}
+            );
+          })}
+          {vault && <div className="stat"><div className="n">{vault['total'] ?? 0}</div><div className="l">Vault ({vault['w9Missing'] ?? 0} no W-9)</div></div>}
         </div>
       )}
 
-      <h2>Progress by payer</h2>
+      <div className="row" style={{ margin: '12px 0 6px', alignItems: 'flex-end' }}>
+        <h2 style={{ margin: 0 }}>Progress by payer</h2>
+        <div className="grow" />
+        <div className="field" style={{ minWidth: 160 }}><label>Search</label><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Payer name…" /></div>
+        <div className="tabs" style={{ margin: 0 }}>
+          {(['all', 'unfiled', 'rejects', 'undelivered'] as FilterKey[]).map((f) => (
+            <button key={f} className={filter === f ? 'active' : ''} onClick={() => setFilter(f)}>{f}</button>
+          ))}
+        </div>
+      </div>
+
       <table className="grid">
         <thead>
           <tr>
-            <th>Payer</th><th className="num">Total</th><th className="num">Draft</th><th className="num">Ready/Queued</th>
-            <th className="num">Transmitted</th><th className="num">Accepted</th><th className="num">Rejected</th><th className="num">Delivered</th>
+            <th style={{ cursor: 'pointer' }} onClick={() => sortBy('payerName')}>Payer{sort === 'payerName' ? (dir === 1 ? ' ▲' : ' ▼') : ''}</th>
+            <Th k="total" label="Total" /><Th k="unfiled" label="Unfiled" /><Th k="ready" label="Ready" />
+            <th className="num">Transmitted</th><Th k="accepted" label="Accepted" /><Th k="rejected" label="Rejected" /><Th k="delivered" label="Delivered" />
+            <th>Risk</th>
           </tr>
         </thead>
         <tbody>
-          {season?.progress.map((p) => (
-            <tr key={p.payerId}>
-              <td><Link to={`/forms?payerId=${p.payerId}&taxYear=${taxYear}`}>{p.payerName}</Link></td>
-              <td className="num">{p.total}</td>
-              <td className="num">{p.entered}</td>
-              <td className="num">{p.ready}</td>
-              <td className="num">{p.transmitted}</td>
-              <td className="num" style={{ color: 'var(--ok)' }}>{p.accepted}</td>
-              <td className="num" style={{ color: p.rejected ? 'var(--danger)' : undefined }}>{p.rejected}</td>
-              <td className="num">{p.delivered}</td>
-            </tr>
-          ))}
-          {!season?.progress.length && <tr><td colSpan={8} className="muted">No form records yet for TY{taxYear}.</td></tr>}
+          {rows.map((p) => {
+            const furnishDays = deadlines ? daysUntil(deadlines.deadlines['recipientFurnish']?.date ?? '') : 99;
+            const atRisk = unfiledOf(p) > 0 && furnishDays < 14;
+            return (
+              <tr key={p.payerId}>
+                <td><Link to={`/forms?payerId=${p.payerId}&taxYear=${taxYear}`}>{p.payerName}</Link></td>
+                <td className="num">{p.total}</td>
+                <td className="num" style={{ color: unfiledOf(p) ? 'var(--warn)' : undefined }}>{unfiledOf(p)}</td>
+                <td className="num">{p.ready}</td>
+                <td className="num">{p.transmitted}</td>
+                <td className="num" style={{ color: 'var(--ok)' }}>{p.accepted}</td>
+                <td className="num" style={{ color: p.rejected ? 'var(--danger)' : undefined }}>{p.rejected}</td>
+                <td className="num">{p.delivered}</td>
+                <td>{p.rejected > 0 ? <span className="badge err">rejects</span> : atRisk ? <span className="badge warn">deadline</span> : p.accepted > p.delivered ? <span className="badge warn">deliver</span> : <span className="badge ok">ok</span>}</td>
+              </tr>
+            );
+          })}
+          {!rows.length && <tr><td colSpan={9} className="muted">No payers match this filter.</td></tr>}
         </tbody>
       </table>
-
-      <h2>Exception queue ({exceptions.length})</h2>
-      <table className="grid">
-        <thead><tr><th>Type</th><th>Who</th><th>Detail</th></tr></thead>
-        <tbody>
-          {exceptions.slice(0, 50).map((e, i) => (
-            <tr key={i}>
-              <td><span className={`badge ${e.kind === 'rejected' ? 'err' : 'warn'}`}>{e.kind.replace('_', ' ')}</span></td>
-              <td>{e.recipientName}{e.formType ? ` (1099-${e.formType})` : ''}</td>
-              <td>{e.detail}</td>
-            </tr>
-          ))}
-          {!exceptions.length && <tr><td colSpan={3} className="muted">No exceptions. Clean season so far.</td></tr>}
-        </tbody>
-      </table>
+      <p className="muted">Work the <Link to="/inbox">inbox</Link> to clear exceptions, and use <Link to="/fleet">fleet operations</Link> to transmit/deliver across all payers at once.</p>
     </div>
   );
 }

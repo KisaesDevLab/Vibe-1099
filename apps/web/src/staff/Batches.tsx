@@ -1,5 +1,6 @@
 import { FormEvent, useEffect, useState } from 'react';
 import { api, ApiError, downloadBlob } from '../api';
+import { MultiSelect } from '../components/MultiSelect';
 
 interface Batch {
   id: string;
@@ -103,14 +104,8 @@ export function Batches() {
           </div>
         </div>
         <div className="field">
-          <label>Payers ({payerIds.length} selected)</label>
-          <div className="row" style={{ gap: 8 }}>
-            {payers.map((p) => (
-              <label key={p.id} style={{ display: 'flex', gap: 4, alignItems: 'center', fontSize: 13, color: 'var(--text)' }}>
-                <input type="checkbox" style={{ width: 'auto' }} checked={payerIds.includes(p.id)} onChange={() => toggle(payerIds, setPayerIds, p.id)} /> {p.legalName}
-              </label>
-            ))}
-          </div>
+          <label>Payers</label>
+          <MultiSelect options={payers.map((p) => ({ value: p.id, label: p.legalName }))} selected={payerIds} onChange={setPayerIds} unit="payers" />
         </div>
         <button type="submit" disabled={!payerIds.length || !formTypes.length}>Build print-ready PDF</button>
         <p className="muted">One sheet per form, duplex (front: mailer face + form; back: instructions). Order: payer → recipient name. Sheet 1 is the manifest.</p>

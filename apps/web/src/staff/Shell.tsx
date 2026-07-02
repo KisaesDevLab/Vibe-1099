@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { api, ApiError } from '../api';
+import { NotificationBell } from '../components/NotificationBell';
+import { CommandPalette } from '../components/CommandPalette';
 
 export interface Me {
   userId: string;
@@ -38,6 +40,8 @@ export function StaffShell() {
         <div className="brand">Vibe 1099</div>
         <div className="section">Season</div>
         <NavLink to="/" end>Dashboard</NavLink>
+        <NavLink to="/inbox">Work inbox</NavLink>
+        <NavLink to="/fleet">Fleet operations</NavLink>
         <NavLink to="/forms">Form entry</NavLink>
         <NavLink to="/review">Client review queue</NavLink>
         <NavLink to="/corrections">Corrections</NavLink>
@@ -59,8 +63,13 @@ export function StaffShell() {
         </div>
       </nav>
       <main className="main">
+        <div className="row" style={{ justifyContent: 'flex-end', alignItems: 'center', gap: 10, marginBottom: 4 }}>
+          <span className="muted" style={{ fontSize: 12 }}>Press <kbd>Ctrl/⌘-K</kbd> to search</span>
+          <NotificationBell />
+        </div>
         <Outlet context={me} />
       </main>
+      <CommandPalette />
     </div>
   );
 }

@@ -4,10 +4,10 @@
  * Public router: tokenized W-9 form open/submit with e-sign capture.
  */
 import { Router } from 'express';
-import { and, desc, eq, isNull, lt, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, lt, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { AppError, ErrorCodes, maskTin, normalizeTin, zW9RequestInput, zW9SubmitInput } from '@vibe1099/shared';
-import { audit, getBlob, getCrypto, getQueue, getRenderClient, loadEnv, putBlob, QUEUE_NAMES, safeHexEqual, type DeliveryJob } from '@vibe1099/core';
+import { audit, getBlob, getCrypto, getQueue, getRenderClient, loadEnv, notify, putBlob, QUEUE_NAMES, safeHexEqual, type DeliveryJob } from '@vibe1099/core';
 import { firms, getDb, recipients, w9Requests } from '@vibe1099/db';
 import { h } from '../middleware/error.js';
 import { requireStaff } from '../middleware/auth.js';
@@ -184,6 +184,60 @@ w9StaffRouter.post(
     }
     res.locals['audit'] = { action: 'w9.resend', entityType: 'w9_request', entityId: id };
     res.json({ ok: true, link });
+  }),
+);
+
+/**
+ * W-9 campaign: request a W-9 from every vault recipient missing/stale on W-9
+ * that has an email or mobile — one action instead of dozens of individual asks.
+ */
+w9StaffRouter.post(
+  '/campaign',
+  h(async (req, res) => {
+    const { limit } = z.object({ limit: z.number().int().min(1).max(1000).default(500) }).parse(req.body ?? {});
+    const db = getDb();
+    const firmId = req.staff!.firmId;
+    const targets = await db
+      .select()
+      .from(recipients)
+      .where(
+        and(
+          eq(recipients.firmId, firmId),
+          isNull(recipients.mergedIntoId),
+          inArray(recipients.w9Status, ['none', 'stale']),
+          sql`(${recipients.email} IS NOT NULL OR ${recipients.mobile} IS NOT NULL)`,
+        ),
+      )
+      .limit(limit);
+    let requested = 0;
+    const skipped: string[] = [];
+    for (const r of targets) {
+      // skip if an open request already exists
+      const open = await db.query.w9Requests.findFirst({
+        where: and(eq(w9Requests.recipientId, r.id), inArray(w9Requests.status, ['sent', 'opened'])),
+      });
+      if (open) { skipped.push(r.id); continue; }
+      await createW9Request({
+        firmId,
+        recipientId: r.id,
+        requestedName: r.name1,
+        email: r.email,
+        mobile: r.mobile,
+        requestedBy: req.staff!.userId,
+        requestedVia: 'staff',
+      });
+      requested++;
+    }
+    await notify(db, {
+      firmId,
+      kind: 'w9',
+      severity: 'success',
+      title: 'W-9 campaign sent',
+      body: `${requested} W-9 request(s) sent${skipped.length ? `, ${skipped.length} skipped (already open)` : ''}.`,
+      link: '/w9',
+    });
+    res.locals['audit'] = { action: 'w9.campaign', entityType: 'w9_request', detail: { requested, skipped: skipped.length } };
+    res.json({ requested, skipped: skipped.length, eligible: targets.length });
   }),
 );
 

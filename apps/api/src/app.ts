@@ -29,6 +29,10 @@ import { correctionsRouter } from './routes/corrections.js';
 import { dashboardRouter } from './routes/dashboard.js';
 import { adminRouter } from './routes/admin.js';
 import { healthRouter } from './routes/health.js';
+import { runsRouter } from './routes/runs.js';
+import { inboxRouter } from './routes/inbox.js';
+import { notificationsRouter } from './routes/notifications.js';
+import { searchRouter, viewsRouter } from './routes/views.js';
 
 export function createApp(): express.Express {
   const app = express();
@@ -92,6 +96,11 @@ export function createApp(): express.Express {
   staff.use('/corrections', correctionsRouter);
   staff.use('/dashboard', dashboardRouter);
   staff.use('/admin', adminRouter);
+  staff.use('/runs', runsRouter);
+  staff.use('/inbox', inboxRouter);
+  staff.use('/notifications', notificationsRouter);
+  staff.use('/views', viewsRouter);
+  staff.use('/search', searchRouter);
   app.use('/api', staff);
 
   app.use((_req, res) => {

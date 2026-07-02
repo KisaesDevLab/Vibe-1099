@@ -1,5 +1,6 @@
 import { FormEvent, useEffect, useState } from 'react';
 import { api, ApiError, downloadBlob } from '../api';
+import { MultiSelect } from '../components/MultiSelect';
 
 interface StateFile {
   id: string;
@@ -105,14 +106,7 @@ export function MoFiles() {
           </div>
           <div className="field grow">
             <label>Payers</label>
-            <div className="row" style={{ gap: 8 }}>
-              {payers.map((p) => (
-                <label key={p.id} style={{ display: 'flex', gap: 4, alignItems: 'center', fontSize: 13, color: 'var(--text)' }}>
-                  <input type="checkbox" style={{ width: 'auto' }} checked={payerIds.includes(p.id)}
-                    onChange={() => setPayerIds((cur) => (cur.includes(p.id) ? cur.filter((x) => x !== p.id) : [...cur, p.id]))} /> {p.legalName}
-                </label>
-              ))}
-            </div>
+            <MultiSelect options={payers.map((p) => ({ value: p.id, label: p.legalName }))} selected={payerIds} onChange={setPayerIds} unit="payers" />
           </div>
           <button type="submit" className="secondary">Preview counts & totals</button>
         </div>

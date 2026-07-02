@@ -103,6 +103,7 @@ export const payers = pgTable('payers', {
   contactMobile: text('contact_mobile'),
   moWithholdingId: text('mo_withholding_id'), // nullable
   moSourceDefault: boolean('mo_source_default').notNull().default(false),
+  defaultFormTypes: jsonb('default_form_types').notNull().default(['NEC']).$type<string[]>(),
   active: boolean('active').notNull().default(true),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
@@ -418,3 +419,68 @@ export const appSettings = pgTable('app_settings', {
   value: jsonb('value').notNull().$type<unknown>(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
+
+/** Filing Run — a bulk fleet operation with dry-run preview, progress, per-item result. */
+export const filingRuns = pgTable(
+  'filing_runs',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id),
+    kind: text('kind').notNull().$type<'transmit' | 'mo_file' | 'paper_batch' | 'summary_zip' | 'invite' | 'w9'>(),
+    taxYear: integer('tax_year').notNull(),
+    status: text('status').notNull().default('preview').$type<'preview' | 'running' | 'completed' | 'partial' | 'failed'>(),
+    scope: jsonb('scope').notNull().$type<Record<string, unknown>>(),
+    total: integer('total').notNull().default(0),
+    succeeded: integer('succeeded').notNull().default(0),
+    failed: integer('failed').notNull().default(0),
+    items: jsonb('items').$type<Array<{ payerId?: string; label: string; ok: boolean; message?: string; refId?: string }>>(),
+    resultBlobId: uuid('result_blob_id'),
+    createdBy: uuid('created_by').references(() => users.id),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    resolvedAt: timestamp('resolved_at', { withTimezone: true }),
+  },
+  (t) => [index('filing_runs_firm_idx').on(t.firmId, t.taxYear, t.createdAt)],
+);
+
+/** Notifications — persistent async job completions + alerts. */
+export const notifications = pgTable(
+  'notifications',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id),
+    userId: uuid('user_id').references(() => users.id), // null = all staff
+    kind: text('kind').notNull(),
+    severity: text('severity').notNull().default('info').$type<'info' | 'success' | 'warning' | 'error'>(),
+    title: text('title').notNull(),
+    body: text('body').notNull().default(''),
+    link: text('link').notNull().default(''),
+    entityType: text('entity_type'),
+    entityId: text('entity_id'),
+    readAt: timestamp('read_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('notifications_firm_idx').on(t.firmId, t.createdAt)],
+);
+
+/** Saved views — per-user named filter/sort presets for list screens. */
+export const savedViews = pgTable(
+  'saved_views',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id),
+    screen: text('screen').notNull(),
+    name: text('name').notNull(),
+    config: jsonb('config').notNull().$type<Record<string, unknown>>(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('saved_views_user_idx').on(t.firmId, t.userId, t.screen)],
+);

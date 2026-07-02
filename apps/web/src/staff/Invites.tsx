@@ -1,5 +1,6 @@
 import { FormEvent, useEffect, useState } from 'react';
 import { api, ApiError } from '../api';
+import { Combobox } from '../components/Combobox';
 
 interface Invite {
   id: string;
@@ -69,9 +70,7 @@ export function Invites() {
       <form className="panel" onSubmit={create}>
         <div className="row">
           <div className="field grow"><label>Payer</label>
-            <select value={payerId} onChange={(e) => setPayerId(e.target.value)}>
-              {payers.map((p) => <option key={p.id} value={p.id}>{p.legalName}</option>)}
-            </select></div>
+            <Combobox options={payers.map((p) => ({ value: p.id, label: p.legalName }))} value={payerId} onChange={setPayerId} placeholder="Search payers…" /></div>
           <div className="field"><label>Tax year</label>
             <select value={taxYear} onChange={(e) => setTaxYear(Number(e.target.value))}>
               <option value={2026}>2026</option><option value={2025}>2025</option>

@@ -64,14 +64,17 @@ recipientsRouter.get(
       conds.push(sql`${recipients.id} IN ${sub}`);
     }
 
-    const rows = await db
-      .select()
-      .from(recipients)
-      .where(and(...conds))
-      .orderBy(recipients.name1)
-      .limit(q.limit)
-      .offset(q.offset);
-    res.json({ recipients: rows.map(toPublicRecipient) });
+    const [rows, [countRow]] = await Promise.all([
+      db
+        .select()
+        .from(recipients)
+        .where(and(...conds))
+        .orderBy(recipients.name1)
+        .limit(q.limit)
+        .offset(q.offset),
+      db.select({ n: sql<number>`count(*)::int` }).from(recipients).where(and(...conds)),
+    ]);
+    res.json({ recipients: rows.map(toPublicRecipient), total: countRow?.n ?? 0, limit: q.limit, offset: q.offset });
   }),
 );
 

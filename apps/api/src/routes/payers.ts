@@ -2,9 +2,9 @@
  * Payers (the firm's clients issuing 1099s).
  */
 import { Router } from 'express';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, ilike, or, sql } from 'drizzle-orm';
 import { z } from 'zod';
-import { AppError, formatTin, maskTin, zPayerInput } from '@vibe1099/shared';
+import { AppError, formatTin, maskTin, normalizeTin, zPayerInput } from '@vibe1099/shared';
 import { audit, getCrypto } from '@vibe1099/core';
 import { getDb, payers } from '@vibe1099/db';
 import { h } from '../middleware/error.js';
@@ -27,6 +27,7 @@ function toPublicPayer(p: typeof payers.$inferSelect) {
     contactMobile: p.contactMobile,
     moWithholdingId: p.moWithholdingId,
     moSourceDefault: p.moSourceDefault,
+    defaultFormTypes: p.defaultFormTypes,
     active: p.active,
     createdAt: p.createdAt,
   };
@@ -35,11 +36,27 @@ function toPublicPayer(p: typeof payers.$inferSelect) {
 payersRouter.get(
   '/',
   h(async (req, res) => {
-    const rows = await getDb().query.payers.findMany({
-      where: eq(payers.firmId, req.staff!.firmId),
-      orderBy: (t, { asc }) => [asc(t.legalName)],
-    });
-    res.json({ payers: rows.map(toPublicPayer) });
+    const q = z
+      .object({
+        search: z.string().optional(),
+        limit: z.coerce.number().int().min(1).max(1000).default(1000),
+        offset: z.coerce.number().int().min(0).default(0),
+      })
+      .parse(req.query);
+    const conds = [eq(payers.firmId, req.staff!.firmId)];
+    if (q.search) conds.push(or(ilike(payers.legalName, `%${q.search}%`), ilike(payers.dbaName, `%${q.search}%`))!);
+    const db = getDb();
+    const [rows, [countRow]] = await Promise.all([
+      db
+        .select()
+        .from(payers)
+        .where(and(...conds))
+        .orderBy(payers.legalName)
+        .limit(q.limit)
+        .offset(q.offset),
+      db.select({ n: sql<number>`count(*)::int` }).from(payers).where(and(...conds)),
+    ]);
+    res.json({ payers: rows.map(toPublicPayer), total: countRow?.n ?? 0, limit: q.limit, offset: q.offset });
   }),
 );
 
@@ -68,6 +85,87 @@ payersRouter.post(
       .returning({ id: payers.id });
     res.locals['audit'] = { action: 'payer.create', entityType: 'payer', entityId: created?.id };
     res.status(201).json({ id: created?.id });
+  }),
+);
+
+// --- CSV bulk import (onboard 100 payers at once) ------------------------------------
+
+const zPayerImportRow = z.object({
+  legalName: z.string().min(1),
+  dbaName: z.string().optional().default(''),
+  tin: z.string(),
+  tinType: z.enum(['SSN', 'EIN']).optional().default('EIN'),
+  line1: z.string().min(1),
+  line2: z.string().optional().default(''),
+  city: z.string().min(1),
+  state: z.string().length(2),
+  zip: z.string(),
+  phone: z.string().optional().default(''),
+  contactEmail: z.string().optional().default(''),
+  contactMobile: z.string().optional().default(''),
+  moWithholdingId: z.string().optional().default(''),
+  defaultFormTypes: z.string().optional().default('NEC'), // e.g. "NEC|MISC"
+});
+
+payersRouter.post(
+  '/import/preview',
+  h(async (req, res) => {
+    const { rows } = z.object({ rows: z.array(z.record(z.string())).max(2000) }).parse(req.body);
+    const db = getDb();
+    const firmId = req.staff!.firmId;
+    const existing = await db.select({ tinLast4: payers.tinLast4, legalName: payers.legalName }).from(payers).where(eq(payers.firmId, firmId));
+    const existingByName = new Set(existing.map((e) => e.legalName.toLowerCase()));
+    const preview = rows.map((raw, i) => {
+      const parsed = zPayerImportRow.safeParse(raw);
+      if (!parsed.success) return { row: i + 1, status: 'invalid' as const, reason: parsed.error.issues[0]?.message };
+      const d = parsed.data;
+      const digits = normalizeTin(d.tin);
+      if (digits.length !== 9) return { row: i + 1, status: 'invalid' as const, name: d.legalName, reason: 'TIN must be 9 digits' };
+      const dup = existingByName.has(d.legalName.toLowerCase());
+      return { row: i + 1, status: dup ? ('existing' as const) : ('new' as const), name: d.legalName };
+    });
+    res.json({ preview });
+  }),
+);
+
+payersRouter.post(
+  '/import',
+  h(async (req, res) => {
+    const { rows } = z.object({ rows: z.array(z.record(z.string())).max(2000) }).parse(req.body);
+    const db = getDb();
+    const firmId = req.staff!.firmId;
+    const crypto = getCrypto();
+    let created = 0;
+    const errors: Array<{ row: number; reason: string }> = [];
+    for (let i = 0; i < rows.length; i++) {
+      const parsed = zPayerImportRow.safeParse(rows[i]);
+      if (!parsed.success) { errors.push({ row: i + 1, reason: parsed.error.issues[0]?.message ?? 'invalid' }); continue; }
+      const d = parsed.data;
+      try {
+        const { tin } = checkTin(d.tin, d.tinType);
+        const formTypes = d.defaultFormTypes.split(/[|,;]/).map((s) => s.trim().toUpperCase()).filter((s) => ['NEC', 'MISC', 'INT', 'DIV'].includes(s));
+        await db.insert(payers).values({
+          firmId,
+          legalName: d.legalName,
+          dbaName: d.dbaName,
+          tinEncrypted: crypto.encrypt(tin),
+          tinType: d.tinType,
+          tinLast4: tin.slice(-4),
+          address: { line1: d.line1, line2: d.line2, city: d.city, state: d.state.toUpperCase(), zip: d.zip },
+          phone: d.phone,
+          contactEmail: d.contactEmail || null,
+          contactMobile: d.contactMobile || null,
+          moWithholdingId: d.moWithholdingId || null,
+          moSourceDefault: true,
+          defaultFormTypes: formTypes.length ? formTypes : ['NEC'],
+        });
+        created++;
+      } catch (err) {
+        errors.push({ row: i + 1, reason: (err as Error).message });
+      }
+    }
+    res.locals['audit'] = { action: 'payer.import', entityType: 'payer', detail: { created, errorCount: errors.length } };
+    res.json({ created, errors });
   }),
 );
 

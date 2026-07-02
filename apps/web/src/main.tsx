@@ -6,6 +6,8 @@ import { StaffShell } from './staff/Shell';
 import { Login } from './staff/Login';
 import { ResetPassword } from './staff/ResetPassword';
 import { Dashboard } from './staff/Dashboard';
+import { Fleet } from './staff/Fleet';
+import { Inbox } from './staff/Inbox';
 import { Payers } from './staff/Payers';
 import { Recipients } from './staff/Recipients';
 import { FormsGrid } from './staff/FormsGrid';
@@ -35,6 +37,8 @@ const router = createBrowserRouter([
     element: <StaffShell />,
     children: [
       { index: true, element: <Dashboard /> },
+      { path: 'inbox', element: <Inbox /> },
+      { path: 'fleet', element: <Fleet /> },
       { path: 'payers', element: <Payers /> },
       { path: 'recipients', element: <Recipients /> },
       { path: 'forms', element: <FormsGrid /> },

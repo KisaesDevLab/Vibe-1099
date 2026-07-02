@@ -6,6 +6,9 @@
 import { useCallback, useEffect, useMemo, useState, KeyboardEvent } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { api, ApiError, downloadBlob, formatCents, parseCentsInput } from '../api';
+import { Combobox } from '../components/Combobox';
+import { RecipientPicker } from '../components/RecipientPicker';
+import { Paginator } from '../components/Paginator';
 
 interface BoxMeta { id: string; boxNumber: string; label: string; kind: string; stateField: boolean }
 interface RegistryForm { formType: string; title: string; boxes: BoxMeta[]; federalThresholdCents: number | null }
@@ -31,6 +34,10 @@ export function FormsGrid() {
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [drafts, setDrafts] = useState<Record<string, Record<string, string>>>({}); // formId -> boxId -> raw input
+  const [total, setTotal] = useState(0);
+  const [offset, setOffset] = useState(0);
+  const [showPicker, setShowPicker] = useState(false);
+  const LIMIT = 250;
 
   const payerId = params.get('payerId') ?? '';
   const taxYear = Number(params.get('taxYear') ?? 2026);
@@ -51,13 +58,13 @@ export function FormsGrid() {
     api.get<{ forms: RegistryForm[] }>(`/api/forms/registry/${taxYear}`).then((r) => setRegistry(r.forms)).catch(() => setRegistry([]));
   }, [taxYear]);
 
-  const load = useCallback(() => {
+  const load = useCallback((off = 0) => {
     if (!payerId) return;
     api
-      .get<{ forms: FormRow[] }>(`/api/forms?payerId=${payerId}&taxYear=${taxYear}&formType=${formType}`)
-      .then((r) => setRows(r.forms));
+      .get<{ forms: FormRow[]; total: number }>(`/api/forms?payerId=${payerId}&taxYear=${taxYear}&formType=${formType}&limit=${LIMIT}&offset=${off}`)
+      .then((r) => { setRows(r.forms); setTotal(r.total); setOffset(off); });
   }, [payerId, taxYear, formType]);
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => { void load(0); }, [load]);
 
   const setParam = (key: string, value: string) => setParams((p) => { p.set(key, value); return p; });
 
@@ -133,11 +140,11 @@ export function FormsGrid() {
     }
   };
 
-  const addRow = async () => {
-    const recipientId = prompt('Recipient ID (add via Recipients page, or paste uuid):');
-    if (!recipientId) return;
+  const addRecipientRow = async (recipientId: string, name: string) => {
+    setShowPicker(false);
     try {
-      await api.post('/api/forms', { payerId, recipientId: recipientId.trim(), taxYear, formType, boxValues: { [moneyBoxes[0]?.id ?? 'box1']: 1 } });
+      await api.post('/api/forms', { payerId, recipientId, taxYear, formType, boxValues: { [moneyBoxes[0]?.id ?? 'box1']: 1 } });
+      setNotice(`Added ${name} — enter amounts.`);
       load();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : String(err));
@@ -181,10 +188,13 @@ export function FormsGrid() {
 
       <div className="panel">
         <div className="row">
-          <div className="field grow"><label>Payer</label>
-            <select value={payerId} onChange={(e) => setParam('payerId', e.target.value)}>
-              {payers.map((p) => <option key={p.id} value={p.id}>{p.legalName}</option>)}
-            </select></div>
+          <div className="field grow" style={{ position: 'relative' }}><label>Payer (type to search {payers.length})</label>
+            <Combobox
+              options={payers.map((p) => ({ value: p.id, label: p.legalName }))}
+              value={payerId}
+              onChange={(v) => setParam('payerId', v)}
+              placeholder="Search payers…"
+            /></div>
           <div className="field"><label>Tax year</label>
             <select value={taxYear} onChange={(e) => setParam('taxYear', e.target.value)}>
               <option value={2026}>2026</option><option value={2025}>2025</option>
@@ -193,7 +203,10 @@ export function FormsGrid() {
             <select value={formType} onChange={(e) => setParam('formType', e.target.value)}>
               {registry.map((r) => <option key={r.formType} value={r.formType}>1099-{r.formType}</option>)}
             </select></div>
-          <button className="secondary" onClick={addRow}>+ Row</button>
+          <div style={{ position: 'relative' }}>
+            <button className="secondary" onClick={() => setShowPicker((s) => !s)}>+ Recipient row</button>
+            {showPicker && <RecipientPicker onPick={addRecipientRow} onClose={() => setShowPicker(false)} />}
+          </div>
           <button className="secondary" onClick={rollforward}>Rollforward TY{taxYear - 1}</button>
         </div>
         <div className="row" style={{ marginTop: 8 }}>
@@ -271,6 +284,7 @@ export function FormsGrid() {
           </tfoot>
         )}
       </table>
+      <Paginator total={total} limit={LIMIT} offset={offset} onChange={(o) => load(o)} unit={`1099-${formType} forms`} />
       <p className="muted">Enter moves down the column (ten-key friendly). Amounts commit on blur/Enter. Sub-threshold NEC amounts warn but never block.</p>
     </div>
   );

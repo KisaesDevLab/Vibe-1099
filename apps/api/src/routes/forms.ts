@@ -111,13 +111,16 @@ formsRouter.get(
     if (q.status) conds.push(inArray(formRecords.status, q.status.split(',') as FormStatus[]));
     if (q.clientSubmitted !== undefined) conds.push(eq(formRecords.clientSubmitted, q.clientSubmitted));
 
-    const rows = await getDb()
-      .select()
-      .from(formRecords)
-      .where(and(...conds))
-      .orderBy(desc(formRecords.updatedAt))
-      .limit(q.limit)
-      .offset(q.offset);
+    const [rows, [countRow]] = await Promise.all([
+      getDb()
+        .select()
+        .from(formRecords)
+        .where(and(...conds))
+        .orderBy(desc(formRecords.updatedAt))
+        .limit(q.limit)
+        .offset(q.offset),
+      getDb().select({ n: sql<number>`count(*)::int` }).from(formRecords).where(and(...conds)),
+    ]);
 
     // join recipient display names for the grid
     const recipientIds = [...new Set(rows.map((r) => r.recipientId))];
@@ -125,7 +128,12 @@ formsRouter.get(
       ? await getDb().select().from(recipients).where(inArray(recipients.id, recipientIds))
       : [];
     const rmap = new Map(recips.map((r) => [r.id, toPublicRecipient(r)]));
-    res.json({ forms: rows.map((f) => ({ ...toPublicForm(f), recipient: rmap.get(f.recipientId) ?? null })) });
+    res.json({
+      forms: rows.map((f) => ({ ...toPublicForm(f), recipient: rmap.get(f.recipientId) ?? null })),
+      total: countRow?.n ?? 0,
+      limit: q.limit,
+      offset: q.offset,
+    });
   }),
 );
 

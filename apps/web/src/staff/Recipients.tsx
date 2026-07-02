@@ -1,5 +1,6 @@
 import { FormEvent, useEffect, useState } from 'react';
 import { api, ApiError } from '../api';
+import { Paginator } from '../components/Paginator';
 
 export interface Recipient {
   id: string;
@@ -45,13 +46,18 @@ export function Recipients() {
   const [mergeFrom, setMergeFrom] = useState('');
   const [mergeTo, setMergeTo] = useState('');
   const [history, setHistory] = useState<Array<{ name1: string; address: Record<string, string>; source: string; createdAt: string }> | null>(null);
+  const [total, setTotal] = useState(0);
+  const [offset, setOffset] = useState(0);
+  const LIMIT = 100;
 
-  const load = () =>
+  const load = (off = offset) =>
     api
-      .get<{ recipients: Recipient[] }>(`/api/recipients?filter=${filter}${search ? `&search=${encodeURIComponent(search)}` : ''}`)
-      .then((r) => setRecipients(r.recipients));
+      .get<{ recipients: Recipient[]; total: number }>(
+        `/api/recipients?filter=${filter}&limit=${LIMIT}&offset=${off}${search ? `&search=${encodeURIComponent(search)}` : ''}`,
+      )
+      .then((r) => { setRecipients(r.recipients); setTotal(r.total); setOffset(off); });
   // reload on filter change; search triggers explicitly
-  useEffect(() => { void load(); }, [filter]);
+  useEffect(() => { setOffset(0); void load(0); }, [filter]);
 
   const set = (k: keyof typeof emptyForm) => (e: { target: { value: string } }) => setForm((f) => ({ ...f, [k]: e.target.value }));
 
@@ -241,7 +247,7 @@ export function Recipients() {
       <div className="panel">
         <div className="row">
           <div className="field grow"><label>Search (name or last-4)</label>
-            <input value={search} onChange={(e) => setSearch(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && load()} /></div>
+            <input value={search} onChange={(e) => setSearch(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && load(0)} /></div>
           <div className="field"><label>Filter</label>
             <select value={filter} onChange={(e) => setFilter(e.target.value)}>
               <option value="all">All</option>
@@ -251,7 +257,7 @@ export function Recipients() {
               <option value="stale_w9">Stale W-9</option>
               <option value="backup_wh">Backup withholding</option>
             </select></div>
-          <button className="secondary" onClick={load}>Search</button>
+          <button className="secondary" onClick={() => load(0)}>Search</button>
         </div>
         <div className="row" style={{ marginTop: 8 }}>
           <div className="field"><label>Merge duplicate (loser id)</label><input value={mergeFrom} onChange={(e) => setMergeFrom(e.target.value)} placeholder="uuid" /></div>
@@ -308,6 +314,7 @@ export function Recipients() {
           ))}
         </tbody>
       </table>
+      <Paginator total={total} limit={LIMIT} offset={offset} onChange={(o) => load(o)} unit="recipients" />
     </div>
   );
 }

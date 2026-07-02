@@ -5,6 +5,7 @@ export * from './redis.js';
 export * from './queues.js';
 export * from './blobs.js';
 export * from './audit.js';
+export * from './notify.js';
 export * from './render-client.js';
 export * from './delivery/index.js';
 export * from './iris/index.js';

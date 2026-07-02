@@ -19,7 +19,7 @@ import {
   type IrisPollJob,
   type IrisTransmitJob,
 } from '@vibe1099/core';
-import { applyAckToRecords } from '@vibe1099/core';
+import { applyAckToRecords, notify } from '@vibe1099/core';
 import { firms, formRecords, getDb, transmissions, users } from '@vibe1099/db';
 
 const log = createLogger('worker:iris');
@@ -149,6 +149,16 @@ export async function handleIrisPoll(job: Job): Promise<void> {
 
   await applyAckToRecords(db, tx.id, overall, result.errors);
   log.info({ tx: tx.id, status: overall, errors: result.errors.length }, 'ack applied');
+  await notify(db, {
+    firmId: data.firmId,
+    kind: 'transmission',
+    severity: overall === 'accepted' ? 'success' : overall === 'rejected' ? 'error' : 'warning',
+    title: `IRIS ${overall.replace('_', ' ')}`,
+    body: `Transmission ${tx.utid.slice(0, 12)}… — ${result.errors.length} record error(s).`,
+    link: '/transmissions',
+    entityType: 'transmission',
+    entityId: tx.id,
+  });
 
   if (overall === 'rejected') {
     await alertStaff(data.firmId, 'IRIS transmission rejected', `Transmission ${tx.utid} was rejected. ${result.errors.length} record error(s) — see the transmission log.`);

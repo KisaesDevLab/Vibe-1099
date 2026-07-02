@@ -1,5 +1,6 @@
 import { FormEvent, useEffect, useState } from 'react';
 import { api, ApiError } from '../api';
+import { Paginator } from '../components/Paginator';
 
 interface Payer {
   id: string;
@@ -27,9 +28,37 @@ export function Payers() {
   const [editing, setEditing] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
   const [error, setError] = useState('');
+  const [search, setSearch] = useState('');
+  const [total, setTotal] = useState(0);
+  const [offset, setOffset] = useState(0);
+  const [showImport, setShowImport] = useState(false);
+  const [importText, setImportText] = useState('');
+  const [importPreview, setImportPreview] = useState<Array<{ row: number; status: string; name?: string; reason?: string }> | null>(null);
+  const LIMIT = 100;
 
-  const load = () => api.get<{ payers: Payer[] }>('/api/payers').then((r) => setPayers(r.payers));
-  useEffect(() => { void load(); }, []);
+  const load = (off = offset, s = search) =>
+    api.get<{ payers: Payer[]; total: number }>(`/api/payers?limit=${LIMIT}&offset=${off}${s ? `&search=${encodeURIComponent(s)}` : ''}`)
+      .then((r) => { setPayers(r.payers); setTotal(r.total); setOffset(off); });
+  useEffect(() => { void load(0); }, []);
+
+  const parseCsv = (text: string): Array<Record<string, string>> => {
+    const lines = text.trim().split(/\r?\n/);
+    const headers = (lines[0] ?? '').split(',').map((h) => h.trim());
+    return lines.slice(1).map((line) => {
+      const cells = line.split(',').map((c) => c.trim());
+      return Object.fromEntries(headers.map((h, i) => [h, cells[i] ?? '']));
+    });
+  };
+  const previewImport = async () => {
+    const r = await api.post<{ preview: Array<{ row: number; status: string; name?: string; reason?: string }> }>('/api/payers/import/preview', { rows: parseCsv(importText) });
+    setImportPreview(r.preview);
+  };
+  const runImport = async () => {
+    const r = await api.post<{ created: number; errors: Array<{ row: number; reason: string }> }>('/api/payers/import', { rows: parseCsv(importText) });
+    alert(`Imported ${r.created} payers, ${r.errors.length} errors`);
+    setShowImport(false); setImportPreview(null); setImportText('');
+    await load(0);
+  };
 
   const set = (k: keyof typeof emptyForm) => (e: { target: { value: string } }) => setForm((f) => ({ ...f, [k]: e.target.value }));
 
@@ -80,11 +109,46 @@ export function Payers() {
     <div>
       <div className="row" style={{ justifyContent: 'space-between' }}>
         <h1>Payers</h1>
-        <button onClick={() => { setShowForm(!showForm); setEditing(null); setForm(emptyForm); }}>
-          {showForm ? 'Cancel' : '+ Add payer'}
-        </button>
+        <div>
+          <button className="secondary" style={{ marginRight: 8 }} onClick={() => setShowImport(!showImport)}>CSV import</button>
+          <button onClick={() => { setShowForm(!showForm); setEditing(null); setForm(emptyForm); }}>
+            {showForm ? 'Cancel' : '+ Add payer'}
+          </button>
+        </div>
       </div>
       {error && <div className="error-box">{error}</div>}
+
+      <div className="panel">
+        <div className="row">
+          <div className="field grow"><label>Search payers</label>
+            <input value={search} onChange={(e) => setSearch(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && load(0, search)} placeholder="Legal name or DBA…" /></div>
+          <button className="secondary" onClick={() => load(0, search)}>Search</button>
+        </div>
+      </div>
+
+      {showImport && (
+        <div className="panel">
+          <h2 style={{ marginTop: 0 }}>Payer CSV import (onboard many at once)</h2>
+          <p className="muted">Header row: legalName,dbaName,tin,tinType,line1,line2,city,state,zip,phone,contactEmail,contactMobile,moWithholdingId,defaultFormTypes (e.g. NEC|MISC)</p>
+          <textarea rows={6} value={importText} onChange={(e) => setImportText(e.target.value)} placeholder="legalName,dbaName,tin,..." />
+          <div className="row" style={{ marginTop: 8 }}>
+            <button className="secondary" onClick={previewImport}>Preview</button>
+            {importPreview && <button onClick={runImport}>Import {importPreview.filter((p) => p.status !== 'invalid').length} payers</button>}
+          </div>
+          {importPreview && (
+            <table className="grid" style={{ marginTop: 8 }}>
+              <thead><tr><th>Row</th><th>Status</th><th>Name</th><th>Note</th></tr></thead>
+              <tbody>
+                {importPreview.map((p) => (
+                  <tr key={p.row}><td>{p.row}</td>
+                    <td><span className={`badge ${p.status === 'invalid' ? 'err' : p.status === 'existing' ? 'warn' : 'ok'}`}>{p.status}</span></td>
+                    <td>{p.name}</td><td>{p.reason}</td></tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
 
       {showForm && (
         <form className="panel" onSubmit={submit}>
@@ -137,6 +201,7 @@ export function Payers() {
           ))}
         </tbody>
       </table>
+      <Paginator total={total} limit={LIMIT} offset={offset} onChange={(o) => load(o, search)} unit="payers" />
     </div>
   );
 }

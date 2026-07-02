@@ -5,7 +5,7 @@
  */
 import { and, eq, inArray } from 'drizzle-orm';
 import { Job } from 'bullmq';
-import { createLogger, getRedis, getRenderClient, putBlob, type RenderBatchJob } from '@vibe1099/core';
+import { createLogger, getRedis, getRenderClient, notify, putBlob, type RenderBatchJob } from '@vibe1099/core';
 import { formRecords, getDb, paperBatches, payers, recipients, firms } from '@vibe1099/db';
 import { maskTin, type FormType, formatCents, getFormDef, formatTin } from '@vibe1099/shared';
 import { getCrypto } from '@vibe1099/core';
@@ -185,6 +185,16 @@ export async function handleRenderJob(job: Job): Promise<void> {
       .where(eq(paperBatches.id, data.paperBatchId));
     await redis.del(chunkKey);
     log.info({ batch: data.paperBatchId, pages: pageCount }, 'batch built');
+    await notify(db, {
+      firmId: data.firmId,
+      kind: 'batch',
+      severity: 'success',
+      title: 'Paper batch ready',
+      body: `${batch.label} — ${batch.formCount} form(s), ${pageCount} pages. Download & print.`,
+      link: '/batches',
+      entityType: 'paper_batch',
+      entityId: data.paperBatchId,
+    });
   } catch (err) {
     await db.update(paperBatches).set({ status: 'failed' }).where(eq(paperBatches.id, data.paperBatchId));
     throw err;
