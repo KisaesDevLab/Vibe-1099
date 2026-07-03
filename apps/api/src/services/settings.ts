@@ -40,10 +40,13 @@ export async function setSetting(key: string, value: unknown): Promise<void> {
     .onConflictDoUpdate({ target: appSettings.key, set: { value, updatedAt: new Date() } });
 }
 
+/** Keys holding secrets that must never appear in the generic settings dump. */
+const SECRET_SETTING_KEYS = new Set(['cloudflare_tunnel_token']);
+
 export async function allSettings(): Promise<Record<string, unknown>> {
   const rows = await getDb().select().from(appSettings);
   const out: Record<string, unknown> = { ...SETTING_DEFAULTS };
-  for (const r of rows) out[r.key] = r.value;
+  for (const r of rows) if (!SECRET_SETTING_KEYS.has(r.key)) out[r.key] = r.value;
   return out;
 }
 

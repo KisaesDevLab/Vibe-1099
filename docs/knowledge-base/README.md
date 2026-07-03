@@ -31,6 +31,7 @@ Vibe 1099 is a self-hosted appliance for CPA firms to **prepare, deliver, and e-
 
 ### Admin
 - [Settings & admin](settings-and-admin.md) — firm profile, e-file backends, email/SMS, users.
+- [Public access (Cloudflare Tunnel)](public-access-cloudflare.md) — expose the portals to the internet with no open ports.
 - [Creating a new filing year (rollover)](tax-year-rollover.md).
 
 ### Reference

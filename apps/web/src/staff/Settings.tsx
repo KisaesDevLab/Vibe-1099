@@ -42,13 +42,21 @@ interface WebhookEvent {
   receivedAt: string;
   processedAt: string | null;
 }
+interface CloudflareInfo {
+  hasToken: boolean;
+  hostname: string;
+  status: { running: boolean; readyConnections: number | null; detail: string };
+  publicPaths: Array<{ path: string; desc: string }>;
+  portalBaseUrl: string;
+  token?: string; // transient input
+}
 interface User { id: string; email: string; name: string; role: string; active: boolean; totpEnabled: boolean; lastLoginAt: string | null }
 interface AuditEntry { id: number; createdAt: string; actorType: string; actorId: string | null; action: string; entityType: string; entityId: string | null; ip: string | null }
 
 export function Settings() {
   const me = useOutletContext<Me>();
   const dialogs = useDialogs();
-  const [tab, setTab] = useState<'firm' | 'efile' | 'delivery' | 'users' | 'advanced'>('firm');
+  const [tab, setTab] = useState<'firm' | 'efile' | 'delivery' | 'users' | 'network' | 'advanced'>('firm');
   const [firm, setFirm] = useState<Firm | null>(null);
   const [iris, setIris] = useState<IrisSettings | null>(null);
   const [users, setUsers] = useState<User[]>([]);
@@ -61,6 +69,7 @@ export function Settings() {
   const [notice, setNotice] = useState('');
   const [newUser, setNewUser] = useState({ email: '', name: '', role: 'preparer', password: '' });
   const [webhookEvents, setWebhookEvents] = useState<WebhookEvent[]>([]);
+  const [cf, setCf] = useState<CloudflareInfo | null>(null);
   const [totpSetup, setTotpSetup] = useState<{ secret: string; otpauthUrl: string } | null>(null);
   const [totpCode, setTotpCode] = useState('');
   const [sms, setSms] = useState({ provider: 'env', textlinkApiKey: '', twilioAccountSid: '', twilioAuthToken: '', twilioFromNumber: '', hasTextlinkKey: false, hasTwilioAuth: false, envProvider: 'none' });
@@ -225,6 +234,19 @@ export function Settings() {
     downloadBlob(blob, 'audit-log.csv');
   };
 
+  const loadCloudflare = async () => {
+    try { setCf(await api.get<CloudflareInfo>('/api/admin/cloudflare')); }
+    catch (err) { setError(err instanceof ApiError ? err.message : String(err)); }
+  };
+  const saveCloudflare = async () => {
+    if (!cf) return;
+    try {
+      await api.put('/api/admin/cloudflare', { ...(cf.token ? { token: cf.token } : {}), hostname: cf.hostname });
+      dialogs.toast('Saved. If you changed the token, restart the tunnel: docker compose restart cloudflared', 'success');
+      await loadCloudflare();
+    } catch (err) { setError(err instanceof ApiError ? err.message : String(err)); }
+  };
+
   const loadWebhookEvents = async () => {
     try {
       const r = await api.get<{ events: WebhookEvent[] }>('/api/iris/taxbandits/webhook-events');
@@ -296,9 +318,10 @@ export function Settings() {
           ['efile', 'IRS e-file'],
           ['delivery', 'Delivery & SMS'],
           ['users', 'Users'],
+          ['network', 'Public access'],
           ['advanced', 'Advanced'],
         ] as const).map(([t, label]) => (
-          <button key={t} className={tab === t ? 'active' : ''} onClick={() => { setTab(t); if (t === 'advanced') void loadAudit(); }}>{label}</button>
+          <button key={t} className={tab === t ? 'active' : ''} onClick={() => { setTab(t); if (t === 'advanced') void loadAudit(); if (t === 'network') void loadCloudflare(); }}>{label}</button>
         ))}
       </div>
 
@@ -659,6 +682,47 @@ export function Settings() {
             <div className="field"><label>Password (12+)</label><input type="password" value={newUser.password} onChange={(e) => setNewUser({ ...newUser, password: e.target.value })} /></div>
             <button onClick={addUser}>Create</button>
           </div>
+        </div>
+      )}
+
+      {tab === 'network' && isAdmin && cf && (
+        <div className="panel">
+          <h2 style={{ marginTop: 0 }}>Public access (Cloudflare Tunnel)</h2>
+          <p className="muted">The recipient portal, W-9 links, client portal, and provider webhooks are reachable from the internet only through a Cloudflare Tunnel — no inbound ports are opened on the appliance. Configure a remotely-managed tunnel token below.</p>
+
+          <div className="panel" style={{ background: cf.status.running ? '#f0fdf4' : '#fef2f2', borderColor: cf.status.running ? '#bbf7d0' : '#fecaca' }}>
+            <strong>Tunnel status:</strong>{' '}
+            {cf.status.running ? <span style={{ color: '#15803d' }}>connected ✓</span> : <span style={{ color: '#b91c1c' }}>not connected</span>}
+            <div className="muted" style={{ fontSize: 12 }}>{cf.status.detail}</div>
+            <button type="button" className="secondary" style={{ marginTop: 6 }} onClick={loadCloudflare}>Refresh</button>
+          </div>
+
+          <h3>Setup</h3>
+          <ol className="muted" style={{ lineHeight: 1.6 }}>
+            <li>In the <strong>Cloudflare Zero Trust dashboard</strong> → Networks → Tunnels, create a tunnel (choose <em>cloudflared</em>) and copy its <strong>token</strong>.</li>
+            <li>Add a <strong>public hostname</strong> for the tunnel (e.g. <span className="mono">{cf.hostname || '1099.yourfirm.com'}</span>) routing to the web service <span className="mono">http://web:8211</span>. Cloudflare manages DNS automatically.</li>
+            <li>Paste the token here and Save, then restart the tunnel: <span className="mono">docker compose restart cloudflared</span>.</li>
+            <li>Set <span className="mono">PORTAL_BASE_URL</span> and <span className="mono">APP_BASE_URL</span> to <span className="mono">https://{cf.hostname || 'your-hostname'}</span> so emailed links and webhook URLs use it.</li>
+          </ol>
+
+          <div className="row" style={{ alignItems: 'flex-end' }}>
+            <div className="field grow"><label>Tunnel token {cf.hasToken && <span className="muted">(saved — leave blank to keep)</span>}</label>
+              <input type="password" placeholder={cf.hasToken ? '••••••••' : 'Cloudflare tunnel token'} value={cf.token ?? ''}
+                onChange={(e) => setCf({ ...cf, token: e.target.value })} /></div>
+            <div className="field grow"><label>Public hostname</label>
+              <input placeholder="1099.yourfirm.com" value={cf.hostname} onChange={(e) => setCf({ ...cf, hostname: e.target.value })} /></div>
+            <button onClick={saveCloudflare}>Save</button>
+          </div>
+
+          <h3>Public paths routed through the tunnel</h3>
+          <p className="muted">Cloudflare routes the whole hostname to the web service; these are the only paths that serve public (non-session) traffic:</p>
+          <table className="grid" style={{ maxWidth: 560 }}>
+            <thead><tr><th>Path</th><th>Purpose</th></tr></thead>
+            <tbody>{cf.publicPaths.map((p) => (
+              <tr key={p.path}><td className="mono">{p.path}</td><td>{p.desc}</td></tr>
+            ))}</tbody>
+          </table>
+          <p className="muted" style={{ fontSize: 12 }}>Current PORTAL_BASE_URL: <span className="mono">{cf.portalBaseUrl}</span></p>
         </div>
       )}
 

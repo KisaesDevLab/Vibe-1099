@@ -97,6 +97,9 @@ services:
     # public + staff API surface directly on the host interface.
     expose:
       - "8210"
+    volumes:
+      # shared with the cloudflared sidecar: the app writes the tunnel token here
+      - vibe1099-cloudflared:/shared/cloudflared
     depends_on:
       postgres:
         condition: service_healthy
@@ -136,7 +139,26 @@ services:
       - api
     restart: unless-stopped
 
+  # Cloudflare Tunnel — the ONLY public ingress (no inbound host ports for the
+  # portals). The tunnel token is managed in the app (Settings → Public access),
+  # which writes it to the shared volume; this sidecar waits for the token, then
+  # runs the remotely-managed tunnel and exposes metrics for the app's status view.
+  # Restart this service after changing the token: `docker compose restart cloudflared`.
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - 'while [ ! -s /shared/cloudflared/token ]; do echo "waiting for Cloudflare tunnel token (set it in Settings → Public access)"; sleep 10; done; exec cloudflared tunnel --no-autoupdate --metrics 0.0.0.0:2000 run --token "$(cat /shared/cloudflared/token)"'
+    volumes:
+      - vibe1099-cloudflared:/shared/cloudflared:ro
+    expose:
+      - "2000"
+    depends_on:
+      - web
+    restart: unless-stopped
+
 volumes:
   vibe1099-pgdata:
   vibe1099-redisdata:
   vibe1099-backups:
+  vibe1099-cloudflared:

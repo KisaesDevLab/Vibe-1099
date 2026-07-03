@@ -12,8 +12,42 @@ import { h } from '../middleware/error.js';
 import { requireStaff } from '../middleware/auth.js';
 import { addFilingYear, allSettings, getFilingYears, setCurrentFilingYear, setSetting } from '../services/settings.js';
 import { resetFirmData } from '../services/reset-data.js';
+import { getCloudflareConfig, PUBLIC_PATHS, saveCloudflareConfig, tunnelStatus } from '../services/cloudflare.js';
 
 export const adminRouter = Router();
+
+// --- Cloudflare Tunnel (public ingress) -----------------------------------------
+adminRouter.get(
+  '/cloudflare',
+  requireStaff('admin'),
+  h(async (_req, res) => {
+    const [config, status] = await Promise.all([getCloudflareConfig(), tunnelStatus()]);
+    res.json({
+      ...config,
+      status,
+      publicPaths: PUBLIC_PATHS,
+      portalBaseUrl: loadEnv().PORTAL_BASE_URL,
+    });
+  }),
+);
+
+adminRouter.put(
+  '/cloudflare',
+  requireStaff('admin'),
+  h(async (req, res) => {
+    const input = z
+      .object({ token: z.string().max(4000).optional(), hostname: z.string().max(253).optional() })
+      .parse(req.body);
+    const result = await saveCloudflareConfig(input);
+    res.locals['audit'] = {
+      action: 'cloudflare.config',
+      entityType: 'app_settings',
+      entityId: 'cloudflare',
+      detail: { tokenSet: !!input.token, tokenWritten: result.tokenWritten, hostnameSet: input.hostname !== undefined },
+    };
+    res.json({ ok: true, ...result });
+  }),
+);
 
 const RESET_CONFIRM_PHRASE = 'REMOVE TEST DATA';
 
@@ -269,6 +303,10 @@ adminRouter.put(
   h(async (req, res) => {
     const key = z.string().min(1).max(100).parse(req.params['key']);
     const { value } = z.object({ value: z.unknown() }).parse(req.body);
+    // Secrets have dedicated encrypting routes — never accept them here in plaintext.
+    if (key === 'cloudflare_tunnel_token') {
+      throw AppError.validation('Use the Public access (Cloudflare Tunnel) settings to set this — it is stored encrypted.');
+    }
     // Validate settings whose values drive filing correctness — the generic
     // z.unknown() would otherwise let a bad year through into created/filed records.
     if (key === 'filing_years') {
