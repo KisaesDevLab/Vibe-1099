@@ -61,6 +61,9 @@ const zEnv = z.object({
   TAXBANDITS_SANDBOX_BASE_URL: z.string().default('https://testapi.taxbandits.com'),
   TAXBANDITS_PROD_BASE_URL: z.string().default('https://api.taxbandits.com'),
   TAXBANDITS_MOCK_BASE_URL: z.string().default(''),
+  // OAuth token server is a SEPARATE host from the API (per TaxBandits spec).
+  TAXBANDITS_SANDBOX_OAUTH_URL: z.string().default('https://testoauth.expressauth.net/v2/tbsauth'),
+  TAXBANDITS_PROD_OAUTH_URL: z.string().default('https://oauth.expressauth.net/v2/tbsauth'),
   // Documented webhook source IPs (comma-separated; overridable via config, not code).
   TAXBANDITS_WEBHOOK_IPS: z.string().default('34.239.209.88,129.213.79.42,34.194.208.36'),
   TAXBANDITS_WEBHOOK_SECRET: z.string().default(''),

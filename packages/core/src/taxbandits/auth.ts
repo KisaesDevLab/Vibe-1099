@@ -23,16 +23,19 @@ function b64url(input: Buffer | string): string {
   return Buffer.from(input).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
-/** Build a short-lived JWS assertion (HS256) for the token exchange. */
+/**
+ * Build the JWS assertion for the token request, exactly per the TaxBandits
+ * OAuth 2.0 spec: header {alg:HS256,typ:JWT}; payload {iss,sub = ClientId, aud =
+ * UserToken, iat = unix seconds} with NO exp; HMAC-SHA256 signed with the
+ * ClientSecret. https://developer.taxbandits.com/docs/oauth2.0authentication/
+ */
 export function buildAssertion(creds: TaxBanditsCredentials, now: number): string {
   const header = { alg: 'HS256', typ: 'JWT' };
-  const iat = Math.floor(now / 1000);
   const claims = {
     iss: creds.clientId,
     sub: creds.clientId,
     aud: creds.userToken,
-    iat,
-    exp: iat + 300, // 5-minute assertion
+    iat: Math.floor(now / 1000),
   };
   const signingInput = `${b64url(JSON.stringify(header))}.${b64url(JSON.stringify(claims))}`;
   const sig = b64url(createHmac('sha256', creds.clientSecret).update(signingInput).digest());
@@ -70,10 +73,11 @@ export class TaxBanditsAuth {
     const assertion = buildAssertion(this.creds, this.now());
     let res: Response;
     try {
+      // GET with the JWS in the custom `Authentication` header (NOT Authorization,
+      // and no scheme prefix) — per the TaxBandits OAuth spec.
       res = await this.fetchImpl(this.tokenUrl, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', Authorization: assertion },
-        body: JSON.stringify({ grant_type: 'client_credentials' }),
+        method: 'GET',
+        headers: { Authentication: assertion },
         signal: AbortSignal.timeout(30_000),
       });
     } catch (err) {

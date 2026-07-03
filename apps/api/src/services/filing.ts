@@ -155,10 +155,14 @@ export async function loadTaxBanditsConfig(db: Db, firmId: string): Promise<TaxB
 export async function buildTaxBanditsClient(db: Db, firmId: string): Promise<TaxBanditsClient> {
   const cfg = await loadTaxBanditsConfig(db, firmId);
   const env = loadEnv();
-  const base =
-    env.TAXBANDITS_MOCK_BASE_URL ||
-    (cfg.environment === 'production' ? env.TAXBANDITS_PROD_BASE_URL : env.TAXBANDITS_SANDBOX_BASE_URL);
-  return new TaxBanditsClient(taxbanditsEndpoints(base), {
+  const mock = env.TAXBANDITS_MOCK_BASE_URL;
+  const base = mock || (cfg.environment === 'production' ? env.TAXBANDITS_PROD_BASE_URL : env.TAXBANDITS_SANDBOX_BASE_URL);
+  const oauthUrl = mock
+    ? `${mock.replace(/\/$/, '')}/v2/tbsauth`
+    : cfg.environment === 'production'
+      ? env.TAXBANDITS_PROD_OAUTH_URL
+      : env.TAXBANDITS_SANDBOX_OAUTH_URL;
+  return new TaxBanditsClient(taxbanditsEndpoints(base, oauthUrl), {
     clientId: cfg.clientId,
     clientSecret: cfg.clientSecret,
     userToken: cfg.userToken,

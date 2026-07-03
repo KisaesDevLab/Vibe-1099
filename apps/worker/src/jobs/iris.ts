@@ -60,10 +60,14 @@ async function providerFor(firmId: string, kind: FilingProviderKind): Promise<Fi
     // §7216 gate — mirror loadTaxBanditsConfig.
     if (!firm.taxbanditsDisclosureAckAt) throw new Error('TaxBandits disclosure not acknowledged');
     const crypto = getCrypto();
-    const base =
-      env.TAXBANDITS_MOCK_BASE_URL ||
-      (firm.taxbanditsEnvironment === 'production' ? env.TAXBANDITS_PROD_BASE_URL : env.TAXBANDITS_SANDBOX_BASE_URL);
-    return new TaxBanditsClient(taxbanditsEndpoints(base), {
+    const mock = env.TAXBANDITS_MOCK_BASE_URL;
+    const base = mock || (firm.taxbanditsEnvironment === 'production' ? env.TAXBANDITS_PROD_BASE_URL : env.TAXBANDITS_SANDBOX_BASE_URL);
+    const oauthUrl = mock
+      ? `${mock.replace(/\/$/, '')}/v2/tbsauth`
+      : firm.taxbanditsEnvironment === 'production'
+        ? env.TAXBANDITS_PROD_OAUTH_URL
+        : env.TAXBANDITS_SANDBOX_OAUTH_URL;
+    return new TaxBanditsClient(taxbanditsEndpoints(base, oauthUrl), {
       clientId: crypto.decrypt(firm.taxbanditsClientIdEncrypted),
       clientSecret: crypto.decrypt(firm.taxbanditsClientSecretEncrypted),
       userToken: crypto.decrypt(firm.taxbanditsUserTokenEncrypted),

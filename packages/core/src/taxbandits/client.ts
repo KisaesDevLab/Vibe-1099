@@ -23,16 +23,19 @@ export interface TaxBanditsEndpoints {
   creditsUrl: string;
 }
 
-export function taxbanditsEndpoints(base: string): TaxBanditsEndpoints {
+export function taxbanditsEndpoints(base: string, oauthUrl: string): TaxBanditsEndpoints {
   const b = base.replace(/\/$/, '');
   return {
     base: b,
-    tokenUrl: `${b}/v1.7.3/oauth/tokens`,
-    efileUrl: `${b}/v1.7.3/form1099/create`,
-    statusUrl: `${b}/v1.7.3/form1099/status`,
-    correctionUrl: `${b}/v1.7.3/form1099/correction`,
-    tinMatchUrl: `${b}/v1.7.3/tinmatching/request`,
-    creditsUrl: `${b}/v1.7.3/account/prepaidcredits`,
+    // OAuth token server is a separate host (expressauth.net), passed in.
+    tokenUrl: oauthUrl,
+    // Verified against the TaxBandits API reference (v1.7.3, lowercase). NEC create
+    // is the concrete 1099 create endpoint; the correction/status forms mirror it.
+    efileUrl: `${b}/v1.7.3/Form1099NEC/Create`,
+    statusUrl: `${b}/v1.7.3/Form1099NEC/Status`,
+    correctionUrl: `${b}/v1.7.3/Form1099NEC/Correction`,
+    tinMatchUrl: `${b}/v1.7.3/TINMatchingRecipients/Request`,
+    creditsUrl: `${b}/v1.7.3/Account/GetCredits`,
   };
 }
 

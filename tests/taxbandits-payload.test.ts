@@ -82,7 +82,7 @@ describe('TaxBandits payload builder', () => {
 });
 
 describe('TaxBandits auth assertion', () => {
-  it('builds a three-segment HS256 JWS with the expected claims', () => {
+  it('builds a three-segment HS256 JWS with the TaxBandits claim set (iss/sub/aud/iat, no exp)', () => {
     const jws = buildAssertion({ clientId: 'cid', clientSecret: 'secret', userToken: 'utok' }, 1_700_000_000_000);
     const parts = jws.split('.');
     expect(parts).toHaveLength(3);
@@ -90,8 +90,10 @@ describe('TaxBandits auth assertion', () => {
     const claims = JSON.parse(Buffer.from(parts[1]!, 'base64').toString());
     expect(header.alg).toBe('HS256');
     expect(claims.iss).toBe('cid');
+    expect(claims.sub).toBe('cid');
     expect(claims.aud).toBe('utok');
-    expect(claims.exp - claims.iat).toBe(300);
+    expect(claims.iat).toBe(1_700_000_000); // unix seconds
+    expect(claims.exp).toBeUndefined(); // spec: no exp in the request assertion
   });
 
   it('is deterministic for the same inputs and changes with the secret', () => {
