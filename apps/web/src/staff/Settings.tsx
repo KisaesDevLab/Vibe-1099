@@ -714,14 +714,17 @@ export function Settings() {
             <button onClick={saveCloudflare}>Save</button>
           </div>
 
-          <h3>Public paths routed through the tunnel</h3>
-          <p className="muted">Cloudflare routes the whole hostname to the web service; these are the only paths that serve public (non-session) traffic:</p>
-          <table className="grid" style={{ maxWidth: 560 }}>
-            <thead><tr><th>Path</th><th>Purpose</th></tr></thead>
+          <h3>Public surface</h3>
+          <p className="muted">Recipients and clients open the <strong>browser pages</strong> below; each page then calls its matching <span className="mono">/api</span> route (nginx proxies <span className="mono">/api</span> to the API). Webhooks are server-to-server. Everything else — the staff app and its APIs — needs a login.</p>
+          <table className="grid" style={{ maxWidth: 600 }}>
+            <thead><tr><th>Path</th><th>What it is</th></tr></thead>
             <tbody>{cf.publicPaths.map((p) => (
               <tr key={p.path}><td className="mono">{p.path}</td><td>{p.desc}</td></tr>
             ))}</tbody>
           </table>
+          <div className="warn-box" style={{ marginTop: 8 }}>
+            Cloudflare routes the whole hostname to the web service, so the <strong>staff app is also reachable</strong> at this hostname (behind login). To keep staff private, add a <strong>Cloudflare Access</strong> policy on this hostname that <em>bypasses</em> only the public paths above and requires authentication for the rest — or serve staff on a separate, non-tunneled hostname (LAN/Tailscale).
+          </div>
           <p className="muted" style={{ fontSize: 12 }}>Current PORTAL_BASE_URL: <span className="mono">{cf.portalBaseUrl}</span></p>
         </div>
       )}

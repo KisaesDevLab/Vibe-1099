@@ -145,8 +145,10 @@ services:
   # runs the remotely-managed tunnel and exposes metrics for the app's status view.
   # Restart this service after changing the token: `docker compose restart cloudflared`.
   cloudflared:
-    image: cloudflare/cloudflared:latest
-    entrypoint: ["/bin/sh", "-c"]
+    # Thin shell-capable wrapper (the official cloudflared image is distroless);
+    # ENTRYPOINT is ["/bin/sh","-c"] so the command below is a single script.
+    build: ./cloudflared
+    image: vibe1099-cloudflared:latest
     command:
       - 'while [ ! -s /shared/cloudflared/token ]; do echo "waiting for Cloudflare tunnel token (set it in Settings → Public access)"; sleep 10; done; exec cloudflared tunnel --no-autoupdate --metrics 0.0.0.0:2000 run --token "$(cat /shared/cloudflared/token)"'
     volumes:

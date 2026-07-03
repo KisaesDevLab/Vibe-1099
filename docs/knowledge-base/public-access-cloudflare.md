@@ -20,14 +20,17 @@ The **Tunnel status** panel shows *connected ✓* once the sidecar has live edge
 
 ## What's exposed
 
-Cloudflare routes the whole hostname to the web service, but only these paths serve public (non-session) traffic — everything else requires a staff session and should stay on the internal network:
+Recipients and clients open the **browser pages**; each page then calls its matching `/api` route (nginx proxies `/api` to the API). Webhooks are server-to-server. Everything else — the staff app and its APIs — requires a login.
 
-| Path | Purpose |
+| Path | What it is |
 |---|---|
-| `/api/portal` | Recipient portal (Copy B, identity-challenged) |
-| `/api/w9-public` | W-9 collection portal |
-| `/api/client-portal` | Client (payer) portal |
-| `/api/webhooks/taxbandits` | TaxBandits status webhooks |
+| `/f/<token>` | Recipient portal — Copy B (browser page) |
+| `/w9/<token>` | W-9 collection (browser page) |
+| `/client` | Client (payer) portal (browser page) |
+| `/api/portal`, `/api/w9-public`, `/api/client-portal` | APIs those pages call |
+| `/api/webhooks/taxbandits` | TaxBandits status webhooks (server-to-server) |
+
+**Keeping the staff app private.** Cloudflare routes the whole hostname to the web service, so the staff app (at `/`, `/payers`, …) is also reachable at this hostname behind login. To keep staff off the public internet, either add a **Cloudflare Access** policy on this hostname that bypasses only the public paths above and requires authentication for everything else, or serve the staff app on a separate, non-tunneled hostname (LAN/Tailscale).
 
 ## Security notes
 

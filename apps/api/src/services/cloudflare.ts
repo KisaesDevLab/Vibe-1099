@@ -18,12 +18,21 @@ import { getSetting, setSetting } from './settings.js';
 const TOKEN_KEY = 'cloudflare_tunnel_token'; // stored ENCRYPTED
 const HOSTNAME_KEY = 'cloudflare_public_hostname';
 
-/** The public path prefixes that must be routed to this app (port 8210/8211). */
+/**
+ * The public surface. Recipients/clients visit the BROWSER routes (served by the
+ * web SPA); those pages then call the matching /api routes (nginx proxies /api to
+ * the API). Webhooks are server-to-server POSTs. Everything else (the staff app at
+ * `/`, `/payers`, …, and the staff /api/* routes) requires a session and should be
+ * kept off the public hostname — see the note in the UI about Cloudflare Access.
+ */
 export const PUBLIC_PATHS = [
-  { path: '/api/portal', desc: 'Recipient portal (Copy B access, identity-challenged)' },
-  { path: '/api/w9-public', desc: 'W-9 collection portal' },
-  { path: '/api/client-portal', desc: 'Client (payer) portal' },
-  { path: '/api/webhooks/taxbandits', desc: 'TaxBandits status webhooks' },
+  { path: '/f/<token>', desc: 'Recipient portal — Copy B (browser page)' },
+  { path: '/w9/<token>', desc: 'W-9 collection (browser page)' },
+  { path: '/client', desc: 'Client (payer) portal (browser page)' },
+  { path: '/api/portal', desc: '↳ API the recipient page calls' },
+  { path: '/api/w9-public', desc: '↳ API the W-9 page calls' },
+  { path: '/api/client-portal', desc: '↳ API the client page calls' },
+  { path: '/api/webhooks/taxbandits', desc: 'TaxBandits status webhooks (server-to-server)' },
 ];
 
 export interface CloudflareConfig {
