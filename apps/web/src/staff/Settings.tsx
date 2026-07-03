@@ -215,6 +215,22 @@ export function Settings() {
     downloadBlob(blob, 'audit-log.csv');
   };
 
+  const resetTestData = async () => {
+    const ok = await dialogs.confirm(
+      'This permanently deletes ALL payers, recipients, forms, transmissions, deliveries, batches, W-9s, and generated documents for this firm. Your firm settings, users, and audit log are kept. This cannot be undone.',
+      { title: 'Remove test data', danger: true },
+    );
+    if (!ok) return;
+    const phrase = await dialogs.prompt('Type REMOVE TEST DATA to confirm:', { title: 'Confirm removal' });
+    if (phrase !== 'REMOVE TEST DATA') { if (phrase !== null) dialogs.toast('Confirmation phrase did not match — nothing deleted.', 'warning'); return; }
+    try {
+      const r = await api.post<{ deleted: Record<string, number> }>('/api/admin/reset-test-data', { confirm: phrase });
+      const d = r.deleted;
+      dialogs.toast(`Removed ${d.payers} payers, ${d.recipients} recipients, ${d.formRecords} forms, ${d.transmissions} transmissions, ${d.blobs} documents.`, 'success');
+      loadAll();
+    } catch (err) { setError(err instanceof ApiError ? err.message : String(err)); }
+  };
+
   const startTotp = async () => {
     const password = await dialogs.prompt('Confirm your account password to set up 2FA:', { title: 'Confirm password', password: true });
     if (!password) return;
@@ -679,6 +695,14 @@ export function Settings() {
         <div className="panel">
           <h2 style={{ marginTop: 0 }}>Appliance status</h2>
           <pre className="mono" style={{ background: '#f1f5f9', padding: 10, overflow: 'auto', fontSize: 11 }}>{JSON.stringify(status, null, 2)}</pre>
+        </div>
+      )}
+
+      {tab === 'advanced' && isAdmin && (
+        <div className="panel" style={{ borderColor: '#fecaca', background: '#fef2f2' }}>
+          <h2 style={{ marginTop: 0, color: '#b91c1c' }}>Danger zone</h2>
+          <p className="muted">Remove all test data before starting a real filing season. Deletes every payer, recipient, form, transmission, delivery, batch, W-9, and generated document for this firm. Keeps your firm settings, e-file credentials, users, and the audit log.</p>
+          <button className="danger" onClick={resetTestData}>Remove test data</button>
         </div>
       )}
     </div>

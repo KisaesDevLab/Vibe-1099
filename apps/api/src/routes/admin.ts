@@ -11,8 +11,26 @@ import { auditLog, firms, getDb } from '@vibe1099/db';
 import { h } from '../middleware/error.js';
 import { requireStaff } from '../middleware/auth.js';
 import { addFilingYear, allSettings, getFilingYears, setCurrentFilingYear, setSetting } from '../services/settings.js';
+import { resetFirmData } from '../services/reset-data.js';
 
 export const adminRouter = Router();
+
+const RESET_CONFIRM_PHRASE = 'REMOVE TEST DATA';
+
+// --- remove test data (admin, destructive, confirmation-gated) -------------------
+adminRouter.post(
+  '/reset-test-data',
+  requireStaff('admin'),
+  h(async (req, res) => {
+    const { confirm } = z.object({ confirm: z.string() }).parse(req.body);
+    if (confirm !== RESET_CONFIRM_PHRASE) {
+      throw AppError.validation(`Type "${RESET_CONFIRM_PHRASE}" to confirm — this permanently deletes all payers, recipients, forms, and filings for this firm.`);
+    }
+    const counts = await resetFirmData(getDb(), req.staff!.firmId);
+    res.locals['audit'] = { action: 'firm.reset-test-data', entityType: 'firm', entityId: req.staff!.firmId, detail: counts };
+    res.json({ ok: true, deleted: counts });
+  }),
+);
 
 // --- firm profile (any staff can read; admin writes) ------------------------------
 
