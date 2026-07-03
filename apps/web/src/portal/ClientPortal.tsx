@@ -4,6 +4,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { api, ApiError, formatCents, parseCentsInput } from '../api';
+import { useDialogs } from '../components/Dialogs';
 
 interface Session {
   firmName: string;
@@ -18,6 +19,7 @@ interface Contractor { recipientId: string; name1: string; maskedAddress: string
 interface Entry { recipientId: string; formType: string; boxValues: Record<string, number | boolean | string | null> }
 
 export function ClientPortal() {
+  const dialogs = useDialogs();
   const [params] = useSearchParams();
   const token = params.get('token') ?? '';
   const opts = useMemo(() => ({ token }), [token]);
@@ -98,10 +100,10 @@ export function ClientPortal() {
   };
 
   const requestW9 = async (name: string) => {
-    const email = prompt(`We'll email ${name || 'them'} a secure W-9 form. Their email:`);
+    const email = await dialogs.prompt(`We'll email ${name || 'them'} a secure W-9 form. Their email:`, { title: 'Request a W-9' });
     if (!email) return;
     await api.post('/api/client-portal/w9-request', { name, email }, opts).catch(() => {});
-    alert('W-9 request sent — your accountant will see the result.');
+    dialogs.toast('W-9 request sent — your accountant will see the result.', 'success');
   };
 
   const buildEntries = (): Entry[] =>

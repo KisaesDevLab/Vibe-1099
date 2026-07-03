@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useState } from 'react';
 import { api, ApiError, downloadBlob } from '../api';
 import { MultiSelect } from '../components/MultiSelect';
+import { useDialogs } from '../components/Dialogs';
 
 interface StateFile {
   id: string;
@@ -27,6 +28,7 @@ interface PreviewRow {
 interface Payer { id: string; legalName: string }
 
 export function MoFiles() {
+  const dialogs = useDialogs();
   const [files, setFiles] = useState<StateFile[]>([]);
   const [payers, setPayers] = useState<Payer[]>([]);
   const [payerIds, setPayerIds] = useState<string[]>([]);
@@ -73,7 +75,7 @@ export function MoFiles() {
   };
 
   const setStatus = async (id: string, status: 'uploaded' | 'accepted' | 'rejected') => {
-    const notes = status === 'rejected' ? prompt('Rejection notes from MO DOR:') ?? '' : '';
+    const notes = status === 'rejected' ? (await dialogs.prompt('Rejection notes from MO DOR:', { title: 'Mark rejected' })) ?? '' : '';
     const r = await api.post<{ guidance?: string }>(`/api/mo/files/${id}/status`, { status, notes });
     if (r.guidance) setNotice(r.guidance);
     load();

@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useState } from 'react';
 import { api, ApiError } from '../api';
 import { Paginator } from '../components/Paginator';
+import { useDialogs } from '../components/Dialogs';
 
 interface Payer {
   id: string;
@@ -23,6 +24,7 @@ const emptyForm = {
 };
 
 export function Payers() {
+  const dialogs = useDialogs();
   const [payers, setPayers] = useState<Payer[]>([]);
   const [form, setForm] = useState(emptyForm);
   const [editing, setEditing] = useState<string | null>(null);
@@ -55,7 +57,7 @@ export function Payers() {
   };
   const runImport = async () => {
     const r = await api.post<{ created: number; errors: Array<{ row: number; reason: string }> }>('/api/payers/import', { rows: parseCsv(importText) });
-    alert(`Imported ${r.created} payers, ${r.errors.length} errors`);
+    dialogs.toast(`Imported ${r.created} payers${r.errors.length ? `, ${r.errors.length} errors` : ''}`, r.errors.length ? 'warning' : 'success');
     setShowImport(false); setImportPreview(null); setImportText('');
     await load(0);
   };
@@ -102,7 +104,7 @@ export function Payers() {
 
   const revealTin = async (id: string) => {
     const r = await api.post<{ tin: string }>(`/api/payers/${id}/reveal-tin`);
-    alert(`Payer TIN: ${r.tin}\n(reveal recorded in the audit log)`);
+    await dialogs.reveal('Payer TIN (reveal recorded in the audit log)', r.tin);
   };
 
   return (

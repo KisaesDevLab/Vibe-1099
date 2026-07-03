@@ -99,18 +99,21 @@ export function Dashboard() {
       </div>
 
       {deadlines && (
-        <div className="stat-row" style={{ marginTop: 4 }}>
-          {Object.entries(deadlines.deadlines).map(([key, d]) => {
-            const dd = daysUntil(d.date);
-            return (
-              <div className="stat" key={key} title={d.note}>
-                <div className="n" style={{ color: dd < 14 ? 'var(--danger)' : dd < 30 ? 'var(--warn)' : undefined }}>{dd >= 0 ? `${dd}d` : 'past'}</div>
-                <div className="l">{key === 'recipientFurnish' ? 'Recipient copies (Jan 31)' : key === 'irsEfile' ? 'IRS e-file (Mar 31)' : 'Missouri (end Feb)'}</div>
-                <div className="muted">{d.date}</div>
-              </div>
-            );
-          })}
-          {vault && <div className="stat"><div className="n">{vault['total'] ?? 0}</div><div className="l">Vault ({vault['w9Missing'] ?? 0} no W-9)</div></div>}
+        <div className="panel" style={{ padding: '8px 14px', marginTop: 6 }}>
+          <div className="row" style={{ gap: 20, alignItems: 'center' }}>
+            <span className="group-label">Deadlines</span>
+            {Object.entries(deadlines.deadlines).map(([key, d]) => {
+              const dd = daysUntil(d.date);
+              const label = key === 'recipientFurnish' ? 'Recipient copies' : key === 'irsEfile' ? 'IRS e-file' : 'Missouri';
+              return (
+                <span key={key} title={d.note}>
+                  {label}: <strong style={{ color: dd < 14 ? 'var(--danger)' : dd < 30 ? 'var(--warn)' : 'var(--ok)' }}>{dd >= 0 ? `${dd}d` : 'past'}</strong>{' '}
+                  <span className="muted">({d.date})</span>
+                </span>
+              );
+            })}
+            {vault && <span className="muted" style={{ marginLeft: 'auto' }}>Vault {vault['total'] ?? 0} · {vault['w9Missing'] ?? 0} no W-9</span>}
+          </div>
         </div>
       )}
 

@@ -6,6 +6,7 @@
 import { useEffect, useState } from 'react';
 import { api, ApiError, downloadBlob } from '../api';
 import { MultiSelect } from '../components/MultiSelect';
+import { useDialogs } from '../components/Dialogs';
 
 interface Payer { id: string; legalName: string }
 interface PreviewItem { payerId?: string; label: string; ok: boolean; message?: string }
@@ -15,6 +16,7 @@ interface Run {
 }
 
 export function Fleet() {
+  const dialogs = useDialogs();
   const [payers, setPayers] = useState<Payer[]>([]);
   const [payerIds, setPayerIds] = useState<string[]>([]);
   const [taxYear, setTaxYear] = useState(2026);
@@ -41,7 +43,7 @@ export function Fleet() {
   };
   const runTransmit = async () => {
     if (!guard()) return;
-    if (!confirm(`Transmit all QUEUED records for ${payerIds.length} payer(s) to the IRS? This files real (or ATS) returns.`)) return;
+    if (!(await dialogs.confirm(`Transmit all QUEUED records for ${payerIds.length} payer(s) to the IRS? This files real (or ATS) returns.`, { title: 'Transmit all queued', danger: true }))) return;
     setBusy(true);
     try {
       await api.post('/api/runs/transmit', scope());

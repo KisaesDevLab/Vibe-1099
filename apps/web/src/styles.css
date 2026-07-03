@@ -100,3 +100,32 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .tabs { display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; }
 .tabs button { background: #fff; color: var(--text); border-color: var(--border); }
 .tabs button.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* --- modal --- */
+.modal-overlay { position: fixed; inset: 0; background: rgba(17,24,39,0.42); z-index: 90; display: flex; align-items: flex-start; justify-content: center; padding-top: 10vh; }
+.modal { background: #fff; border-radius: 10px; box-shadow: 0 16px 48px rgba(0,0,0,0.3); max-height: 80vh; display: flex; flex-direction: column; }
+.modal-head { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; border-bottom: 1px solid var(--border); }
+.modal-body { padding: 16px; overflow-y: auto; }
+
+/* --- toasts --- */
+.toast-stack { position: fixed; right: 16px; bottom: 16px; z-index: 120; display: flex; flex-direction: column; gap: 8px; max-width: 380px; }
+.toast { background: #101827; color: #fff; padding: 10px 14px; border-radius: 8px; box-shadow: 0 6px 20px rgba(0,0,0,0.25); font-size: 13px; cursor: pointer; border-left: 4px solid #64748b; }
+.toast-success { border-left-color: #22c55e; }
+.toast-error { border-left-color: #ef4444; }
+.toast-warning { border-left-color: #f59e0b; }
+
+/* --- action bar: separate entry from filing actions --- */
+.actionbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.actionbar .spacer { flex: 1; }
+.actionbar .group-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-right: 2px; }
+
+/* --- wide table scroll container with frozen first column --- */
+.table-scroll { overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; }
+.table-scroll table.grid { border: none; }
+table.grid td.sticky, table.grid th.sticky { position: sticky; left: 0; background: #fff; z-index: 1; }
+table.grid th.sticky { background: #eef1f5; }
+table.grid tr:hover td.sticky { background: #f8fafc; }
+
+kbd { background: #e2e8f0; border-radius: 4px; padding: 1px 5px; font-size: 11px; font-family: ui-monospace, monospace; }
+.combo-opt:hover { background: #eef2ff; }
+.section-toggle { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }

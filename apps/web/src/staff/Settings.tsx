@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useOutletContext } from 'react-router-dom';
 import { api, ApiError, downloadBlob } from '../api';
+import { useDialogs } from '../components/Dialogs';
 import type { Me } from './Shell';
 
 interface Firm {
@@ -14,7 +15,8 @@ interface AuditEntry { id: number; createdAt: string; actorType: string; actorId
 
 export function Settings() {
   const me = useOutletContext<Me>();
-  const [tab, setTab] = useState<'firm' | 'iris' | 'users' | 'templates' | 'audit' | 'queues' | 'license' | 'status'>('firm');
+  const dialogs = useDialogs();
+  const [tab, setTab] = useState<'firm' | 'efile' | 'delivery' | 'users' | 'advanced'>('firm');
   const [firm, setFirm] = useState<Firm | null>(null);
   const [iris, setIris] = useState<IrisSettings | null>(null);
   const [users, setUsers] = useState<User[]>([]);
@@ -116,16 +118,16 @@ export function Settings() {
 
   const saveSetting = async (key: string, value: unknown) => {
     await api.put(`/api/admin/settings/${key}`, { value });
-    setNotice(`Setting ${key} saved.`);
+    dialogs.toast('Setting saved.', 'success');
     loadAll();
   };
 
   const yearLock = async (lock: boolean) => {
-    const year = prompt('Tax year:');
+    const year = await dialogs.prompt('Tax year to ' + (lock ? 'lock' : 'unlock') + ':', { title: lock ? 'Lock tax year' : 'Unlock tax year', defaultValue: '2026' });
     if (!year) return;
     if (lock) await api.post(`/api/dashboard/year-lock/${year}`);
     else await api.del(`/api/dashboard/year-lock/${year}`);
-    setNotice(`Tax year ${year} ${lock ? 'locked' : 'unlocked'}.`);
+    dialogs.toast(`Tax year ${year} ${lock ? 'locked' : 'unlocked'}.`, 'success');
   };
 
   const calibration = async () => {
@@ -140,10 +142,14 @@ export function Settings() {
       {notice && <div className="ok-box" onClick={() => setNotice('')}>{notice}</div>}
 
       <div className="tabs">
-        {(['firm', 'iris', 'users', 'templates', 'audit', 'queues', 'license', 'status'] as const).map((t) => (
-          <button key={t} className={tab === t ? 'active' : ''} onClick={() => { setTab(t); if (t === 'audit') void loadAudit(); }}>
-            {t === 'firm' ? 'Firm & printing' : t === 'iris' ? 'IRIS e-file' : t.charAt(0).toUpperCase() + t.slice(1)}
-          </button>
+        {([
+          ['firm', 'Firm & printing'],
+          ['efile', 'IRS e-file'],
+          ['delivery', 'Delivery & SMS'],
+          ['users', 'Users'],
+          ['advanced', 'Advanced'],
+        ] as const).map(([t, label]) => (
+          <button key={t} className={tab === t ? 'active' : ''} onClick={() => { setTab(t); if (t === 'advanced') void loadAudit(); }}>{label}</button>
         ))}
       </div>
 
@@ -165,70 +171,6 @@ export function Settings() {
                 onChange={(e) => setFirm({ ...firm, impositionOffsetY16: Number(e.target.value) })} /></div>
             <button className="secondary" onClick={calibration}>Print calibration sheet</button>
           </div>
-          <h2>Federal filing thresholds (warn-only, per form type & year)</h2>
-          <p className="muted">Amounts below the threshold warn but never block (LOCKED decision). Blank = registry default (TY2026 NEC/MISC: $2,000 per OBBBA).</p>
-          <div className="row">
-            {['NEC:2026', 'MISC:2026', 'NEC:2025', 'MISC:2025'].map((key) => (
-              <div className="field" key={key}>
-                <label>1099-{key.replace(':', ' TY')} ($)</label>
-                <input className="num" disabled={!isAdmin} value={thresholds[key] ?? ''} placeholder="registry default"
-                  onChange={(e) => setThresholds((t) => ({ ...t, [key]: e.target.value }))} />
-              </div>
-            ))}
-            {isAdmin && (
-              <button className="secondary" onClick={() => {
-                const map: Record<string, number> = {};
-                for (const [k, v] of Object.entries(thresholds)) {
-                  if (v.trim() !== '') map[k] = Math.round(parseFloat(v) * 100);
-                }
-                void saveSetting('federal_thresholds', map);
-              }}>Save thresholds</button>
-            )}
-          </div>
-
-          {isAdmin && (
-            <>
-              <h2>SMS provider (firm-level; overrides appliance env: {sms.envProvider})</h2>
-              <div className="row">
-                <div className="field"><label>Provider</label>
-                  <select value={sms.provider} onChange={(e) => setSms((s) => ({ ...s, provider: e.target.value }))}>
-                    <option value="env">Use appliance env config</option>
-                    <option value="textlink">TextLink</option>
-                    <option value="twilio">Twilio</option>
-                    <option value="none">Disabled</option>
-                  </select></div>
-                {sms.provider === 'textlink' && (
-                  <div className="field grow"><label>TextLink API key {sms.hasTextlinkKey && '(saved — blank keeps current)'}</label>
-                    <input type="password" value={sms.textlinkApiKey} onChange={(e) => setSms((s) => ({ ...s, textlinkApiKey: e.target.value }))} /></div>
-                )}
-                {sms.provider === 'twilio' && (
-                  <>
-                    <div className="field"><label>Account SID</label>
-                      <input value={sms.twilioAccountSid} onChange={(e) => setSms((s) => ({ ...s, twilioAccountSid: e.target.value }))} /></div>
-                    <div className="field"><label>Auth token {sms.hasTwilioAuth && '(saved)'}</label>
-                      <input type="password" value={sms.twilioAuthToken} onChange={(e) => setSms((s) => ({ ...s, twilioAuthToken: e.target.value }))} /></div>
-                    <div className="field"><label>From number</label>
-                      <input value={sms.twilioFromNumber} onChange={(e) => setSms((s) => ({ ...s, twilioFromNumber: e.target.value }))} /></div>
-                  </>
-                )}
-                <button className="secondary" onClick={async () => {
-                  try {
-                    await api.put('/api/admin/sms', {
-                      provider: sms.provider,
-                      ...(sms.textlinkApiKey ? { textlinkApiKey: sms.textlinkApiKey } : {}),
-                      ...(sms.twilioAccountSid ? { twilioAccountSid: sms.twilioAccountSid } : {}),
-                      ...(sms.twilioAuthToken ? { twilioAuthToken: sms.twilioAuthToken } : {}),
-                      ...(sms.twilioFromNumber ? { twilioFromNumber: sms.twilioFromNumber } : {}),
-                    });
-                    setNotice('SMS settings saved (credentials stored encrypted).');
-                    setSms((s) => ({ ...s, textlinkApiKey: '', twilioAuthToken: '' }));
-                    loadAll();
-                  } catch (err) { setError(err instanceof ApiError ? err.message : String(err)); }
-                }}>Save SMS settings</button>
-              </div>
-            </>
-          )}
-
           <h2>Reviewer gate</h2>
           <div className="row">
             <div className="field"><label>Require reviewer approval before queue/transmit</label>
@@ -258,7 +200,7 @@ export function Settings() {
         </div>
       )}
 
-      {tab === 'iris' && isAdmin && iris && (
+      {tab === 'efile' && isAdmin && iris && (
         <div className="panel">
           <div className="row">
             <div className="field"><label>TCC (Transmitter Control Code)</label><input value={iris.tcc} onChange={(e) => setIris({ ...iris, tcc: e.target.value })} /></div>
@@ -286,6 +228,68 @@ export function Settings() {
             <li>Pass ATS communication/scenario testing in ATS mode</li>
             <li>IRS flips the TCC to Production → switch the environment above</li>
           </ol>
+          <h2>Federal filing thresholds (warn-only, per form type & year)</h2>
+          <p className="muted">Amounts below the threshold warn but never block (LOCKED decision). Blank = registry default (TY2026 NEC/MISC: $2,000 per OBBBA).</p>
+          <div className="row">
+            {['NEC:2026', 'MISC:2026', 'NEC:2025', 'MISC:2025'].map((key) => (
+              <div className="field" key={key}>
+                <label>1099-{key.replace(':', ' TY')} ($)</label>
+                <input className="num" value={thresholds[key] ?? ''} placeholder="registry default"
+                  onChange={(e) => setThresholds((t) => ({ ...t, [key]: e.target.value }))} />
+              </div>
+            ))}
+            <button className="secondary" onClick={() => {
+              const map: Record<string, number> = {};
+              for (const [k, v] of Object.entries(thresholds)) if (v.trim() !== '') map[k] = Math.round(parseFloat(v) * 100);
+              void saveSetting('federal_thresholds', map);
+            }}>Save thresholds</button>
+          </div>
+        </div>
+      )}
+
+      {tab === 'delivery' && isAdmin && (
+        <div className="panel">
+          <h2 style={{ marginTop: 0 }}>SMS provider <span className="muted" style={{ fontWeight: 400 }}>(firm-level; overrides appliance env: {sms.envProvider})</span></h2>
+          <div className="row">
+            <div className="field"><label>Provider</label>
+              <select value={sms.provider} onChange={(e) => setSms((s) => ({ ...s, provider: e.target.value }))}>
+                <option value="env">Use appliance env config</option>
+                <option value="textlink">TextLink</option>
+                <option value="twilio">Twilio</option>
+                <option value="none">Disabled</option>
+              </select></div>
+            {sms.provider === 'textlink' && (
+              <div className="field grow"><label>TextLink API key {sms.hasTextlinkKey && '(saved — blank keeps current)'}</label>
+                <input type="password" value={sms.textlinkApiKey} onChange={(e) => setSms((s) => ({ ...s, textlinkApiKey: e.target.value }))} /></div>
+            )}
+            {sms.provider === 'twilio' && (
+              <>
+                <div className="field"><label>Account SID</label>
+                  <input value={sms.twilioAccountSid} onChange={(e) => setSms((s) => ({ ...s, twilioAccountSid: e.target.value }))} /></div>
+                <div className="field"><label>Auth token {sms.hasTwilioAuth && '(saved)'}</label>
+                  <input type="password" value={sms.twilioAuthToken} onChange={(e) => setSms((s) => ({ ...s, twilioAuthToken: e.target.value }))} /></div>
+                <div className="field"><label>From number</label>
+                  <input value={sms.twilioFromNumber} onChange={(e) => setSms((s) => ({ ...s, twilioFromNumber: e.target.value }))} /></div>
+              </>
+            )}
+            <button className="secondary" onClick={async () => {
+              try {
+                await api.put('/api/admin/sms', {
+                  provider: sms.provider,
+                  ...(sms.textlinkApiKey ? { textlinkApiKey: sms.textlinkApiKey } : {}),
+                  ...(sms.twilioAccountSid ? { twilioAccountSid: sms.twilioAccountSid } : {}),
+                  ...(sms.twilioAuthToken ? { twilioAuthToken: sms.twilioAuthToken } : {}),
+                  ...(sms.twilioFromNumber ? { twilioFromNumber: sms.twilioFromNumber } : {}),
+                });
+                dialogs.toast('SMS settings saved (credentials stored encrypted).', 'success');
+                setSms((s) => ({ ...s, textlinkApiKey: '', twilioAuthToken: '' }));
+                loadAll();
+              } catch (err) { setError(err instanceof ApiError ? err.message : String(err)); }
+            }}>Save SMS settings</button>
+          </div>
+          <h2>Message templates</h2>
+          <p className="muted">Placeholders use {'{{var}}'}. Links always carry opaque tokens — never a TIN or a name. Edit as JSON:</p>
+          <TemplateEditor disabled={!isAdmin} value={settings['message_templates']} onSave={(v) => saveSetting('message_templates', v)} />
         </div>
       )}
 
@@ -318,14 +322,7 @@ export function Settings() {
         </div>
       )}
 
-      {tab === 'templates' && (
-        <div className="panel">
-          <p className="muted">Message templates use {'{{var}}'} placeholders. Links always carry opaque tokens — never a TIN or a name. Edit as JSON (admin only):</p>
-          <TemplateEditor disabled={!isAdmin} value={settings['message_templates']} onSave={(v) => saveSetting('message_templates', v)} />
-        </div>
-      )}
-
-      {tab === 'audit' && (
+      {tab === 'advanced' && (
         <div className="panel">
           <div className="row" style={{ justifyContent: 'space-between' }}>
             <h2 style={{ margin: 0 }}>Audit log (latest 200)</h2>
@@ -348,8 +345,9 @@ export function Settings() {
         </div>
       )}
 
-      {tab === 'queues' && (
+      {tab === 'advanced' && (
         <div className="panel">
+          <h2 style={{ marginTop: 0 }}>Background queues</h2>
           <table className="grid">
             <thead><tr><th>Queue</th><th className="num">Waiting</th><th className="num">Active</th><th className="num">Completed</th><th className="num">Failed</th></tr></thead>
             <tbody>
@@ -368,16 +366,18 @@ export function Settings() {
         </div>
       )}
 
-      {tab === 'license' && isAdmin && license && (
+      {tab === 'advanced' && isAdmin && license && (
         <div className="panel">
+          <h2 style={{ marginTop: 0 }}>License</h2>
           <p><strong>Tier:</strong> {String(license['tier'])} &nbsp; <strong>Enforcement:</strong> {license['licenseRequired'] ? 'ON' : 'off (license_required=0)'}</p>
           <p><strong>Usage metering:</strong> {JSON.stringify(license['usage'])}</p>
           {typeof license['note'] === 'string' && <p className="muted">{license['note'] as string}</p>}
         </div>
       )}
 
-      {tab === 'status' && status && (
+      {tab === 'advanced' && status && (
         <div className="panel">
+          <h2 style={{ marginTop: 0 }}>Appliance status</h2>
           <pre className="mono" style={{ background: '#f1f5f9', padding: 10, overflow: 'auto', fontSize: 11 }}>{JSON.stringify(status, null, 2)}</pre>
         </div>
       )}

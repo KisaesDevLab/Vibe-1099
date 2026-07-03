@@ -9,6 +9,7 @@ import { api, ApiError, downloadBlob, formatCents, parseCentsInput } from '../ap
 import { Combobox } from '../components/Combobox';
 import { RecipientPicker } from '../components/RecipientPicker';
 import { Paginator } from '../components/Paginator';
+import { useDialogs } from '../components/Dialogs';
 
 interface BoxMeta { id: string; boxNumber: string; label: string; kind: string; stateField: boolean }
 interface RegistryForm { formType: string; title: string; boxes: BoxMeta[]; federalThresholdCents: number | null }
@@ -26,6 +27,7 @@ interface FormRow {
 }
 
 export function FormsGrid() {
+  const dialogs = useDialogs();
   const [params, setParams] = useSearchParams();
   const [payers, setPayers] = useState<Payer[]>([]);
   const [registry, setRegistry] = useState<RegistryForm[]>([]);
@@ -158,7 +160,7 @@ export function FormsGrid() {
   };
 
   const deleteRow = async (row: FormRow) => {
-    if (!confirm(`Delete this ${row.status} form for ${row.recipient?.name1}?`)) return;
+    if (!(await dialogs.confirm(`Delete this ${row.status} form for ${row.recipient?.name1}?`, { danger: true, title: 'Delete form' }))) return;
     await api.del(`/api/forms/${row.id}`).catch((err: ApiError) => setError(err.message));
     load();
   };
@@ -186,42 +188,42 @@ export function FormsGrid() {
       {error && <div className="error-box" onClick={() => setError('')}>{error}</div>}
       {notice && <div className="ok-box" onClick={() => setNotice('')}>{notice}</div>}
 
+      {/* context selectors */}
       <div className="panel">
         <div className="row">
           <div className="field grow" style={{ position: 'relative' }}><label>Payer (type to search {payers.length})</label>
-            <Combobox
-              options={payers.map((p) => ({ value: p.id, label: p.legalName }))}
-              value={payerId}
-              onChange={(v) => setParam('payerId', v)}
-              placeholder="Search payers…"
-            /></div>
+            <Combobox options={payers.map((p) => ({ value: p.id, label: p.legalName }))} value={payerId} onChange={(v) => setParam('payerId', v)} placeholder="Search payers…" /></div>
           <div className="field"><label>Tax year</label>
-            <select value={taxYear} onChange={(e) => setParam('taxYear', e.target.value)}>
-              <option value={2026}>2026</option><option value={2025}>2025</option>
-            </select></div>
+            <select value={taxYear} onChange={(e) => setParam('taxYear', e.target.value)}><option value={2026}>2026</option><option value={2025}>2025</option></select></div>
           <div className="field"><label>Form type</label>
             <select value={formType} onChange={(e) => setParam('formType', e.target.value)}>
               {registry.map((r) => <option key={r.formType} value={r.formType}>1099-{r.formType}</option>)}
             </select></div>
+        </div>
+        {/* entry actions on the left; filing actions grouped on the right so a
+            transmit can't be fat-fingered while keying amounts */}
+        <div className="actionbar" style={{ marginTop: 8 }}>
+          <span className="group-label">Entry</span>
           <div style={{ position: 'relative' }}>
             <button className="secondary" onClick={() => setShowPicker((s) => !s)}>+ Recipient row</button>
             {showPicker && <RecipientPicker onPick={addRecipientRow} onClose={() => setShowPicker(false)} />}
           </div>
           <button className="secondary" onClick={rollforward}>Rollforward TY{taxYear - 1}</button>
-        </div>
-        <div className="row" style={{ marginTop: 8 }}>
-          <button className="secondary" onClick={() => bulkStatus('ready')}>Mark ready</button>
-          <button className="secondary" onClick={() => bulkStatus('queued')}>Queue for e-file</button>
-          <button className="secondary" onClick={() => bulkStatus('draft')}>Back to draft</button>
-          <button onClick={transmit}>Transmit queued → IRS</button>
+          <div className="spacer" />
+          <span className="group-label">Filing {selected.size > 0 ? `(${selected.size} selected)` : ''}</span>
+          <button className="secondary" disabled={!selected.size} onClick={() => bulkStatus('ready')}>Mark ready</button>
+          <button className="secondary" disabled={!selected.size} onClick={() => bulkStatus('queued')}>Queue</button>
+          <button className="secondary" disabled={!selected.size} onClick={() => bulkStatus('draft')}>↩ Draft</button>
+          <button onClick={transmit} title="Transmit this payer's queued records to the IRS">Transmit queued →</button>
         </div>
       </div>
 
+      <div className="table-scroll">
       <table className="grid">
         <thead>
           <tr>
-            <th><input type="checkbox" onChange={(e) => setSelected(e.target.checked ? new Set(rows.map((r) => r.id)) : new Set())} /></th>
-            <th>Recipient</th>
+            <th className="sticky" style={{ left: 0 }}><input type="checkbox" onChange={(e) => setSelected(e.target.checked ? new Set(rows.map((r) => r.id)) : new Set())} /></th>
+            <th className="sticky" style={{ left: 34 }}>Recipient</th>
             {moneyBoxes.map((b) => <th key={b.id} className="num" title={b.label}>{b.boxNumber || '·'} {b.label.length > 22 ? b.label.slice(0, 20) + '…' : b.label}</th>)}
             {checkBoxes.map((b) => <th key={b.id} title={b.label}>{b.boxNumber || '·'} ☐</th>)}
             <th>Status</th>
@@ -231,12 +233,12 @@ export function FormsGrid() {
         <tbody>
           {rows.map((row, ri) => (
             <tr key={row.id}>
-              <td><input type="checkbox" checked={selected.has(row.id)} onChange={(e) => {
+              <td className="sticky" style={{ left: 0 }}><input type="checkbox" checked={selected.has(row.id)} onChange={(e) => {
                 const next = new Set(selected);
                 if (e.target.checked) next.add(row.id); else next.delete(row.id);
                 setSelected(next);
               }} /></td>
-              <td>
+              <td className="sticky" style={{ left: 34, minWidth: 180 }}>
                 {row.recipient?.name1 ?? '?'} <span className="mono muted">{row.recipient?.tinMasked}</span>
                 {row.correctionType && <span className="badge corrected" style={{ marginLeft: 4 }}>CORR</span>}
                 {row.recordErrors?.length ? (
@@ -284,6 +286,7 @@ export function FormsGrid() {
           </tfoot>
         )}
       </table>
+      </div>
       <Paginator total={total} limit={LIMIT} offset={offset} onChange={(o) => load(o)} unit={`1099-${formType} forms`} />
       <p className="muted">Enter moves down the column (ten-key friendly). Amounts commit on blur/Enter. Sub-threshold NEC amounts warn but never block.</p>
     </div>
