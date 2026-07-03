@@ -16,7 +16,7 @@ export const runsRouter = Router();
 runsRouter.use(requireStaff());
 
 const zScope = z.object({
-  payerIds: z.array(z.string().uuid()).min(1),
+  payerIds: z.array(z.string().uuid()).min(1).max(2000).transform((a) => [...new Set(a)]),
   taxYear: zTaxYear,
   isCorrection: z.boolean().optional(),
 });

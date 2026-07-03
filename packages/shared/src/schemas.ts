@@ -46,6 +46,7 @@ export const zPayerInput = z.object({
   contactMobile: z.string().optional().nullable(),
   moWithholdingId: z.string().max(14).optional().nullable(),
   moSourceDefault: z.boolean().optional().default(false),
+  defaultFormTypes: z.array(zFormType).optional(), // preset for invites/grid
 });
 export type PayerInput = z.infer<typeof zPayerInput>;
 

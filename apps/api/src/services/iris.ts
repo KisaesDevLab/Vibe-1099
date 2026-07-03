@@ -3,7 +3,7 @@
  * submissions per payer, size caps), snapshot-on-transmit, UTID idempotency,
  * XML build + pre-checks, and ack application to record level.
  */
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { AppError, ErrorCodes, maskTin, type FormType } from '@vibe1099/shared';
 import {
   buildTransmissionXml,
@@ -174,46 +174,63 @@ export async function composeTransmission(
     bytes: Buffer.from(xml, 'utf8'),
   });
 
-  const [tx] = await db
-    .insert(transmissions)
-    .values({
-      firmId,
-      taxYear,
-      environment: config.environment,
-      utid,
-      status: 'building',
-      isCorrection: !!opts.isCorrection,
-      recordCount: records.length,
-      xmlBlobId,
-      cfsfStates: input.cfsfStates,
-      createdBy,
-    })
-    .returning({ id: transmissions.id });
-  if (!tx) throw new Error('transmission insert failed');
-
-  // snapshot-on-transmit + link records
-  for (const r of records) {
-    await db
-      .update(formRecords)
-      .set({
-        transmissionId: tx.id,
-        filedSnapshot: {
-          boxValues: r.boxValues,
-          accountNumber: r.accountNumber,
-          recipientId: r.recipientId,
-          recipientName: rmap.get(r.recipientId)?.name1,
-          recipientTinMasked: maskTin(rmap.get(r.recipientId)?.tinLast4 ?? '', rmap.get(r.recipientId)?.tinType ?? 'SSN'),
-          taxYear: r.taxYear,
-          formType: r.formType,
-          snapshotAt: new Date().toISOString(),
-          utid,
-        },
-        updatedAt: new Date(),
+  // CLAIM the records atomically to prevent a double-file race (concurrent
+  // transmit-all + single transmit, or a double-click). An advisory xact lock
+  // serializes composes for this (firm, payer, year); the FOR UPDATE re-read
+  // rejects records already claimed by a transmission that landed first.
+  const recordIds = records.map((r) => r.id);
+  const txId = await db.transaction(async (dbx) => {
+    await dbx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`${firmId}:${payerId}:${taxYear}`}, 0))`);
+    const locked = await dbx
+      .select({ id: formRecords.id, transmissionId: formRecords.transmissionId, status: formRecords.status })
+      .from(formRecords)
+      .where(inArray(formRecords.id, recordIds))
+      .for('update');
+    const claimed = locked.filter((r) => r.transmissionId != null || r.status !== 'queued');
+    if (claimed.length) {
+      throw AppError.conflict(`${claimed.length} record(s) were already transmitted by a concurrent run — re-check the transmission log`);
+    }
+    const [tx] = await dbx
+      .insert(transmissions)
+      .values({
+        firmId,
+        taxYear,
+        environment: config.environment,
+        utid,
+        status: 'building',
+        isCorrection: !!opts.isCorrection,
+        recordCount: records.length,
+        xmlBlobId,
+        cfsfStates: input.cfsfStates,
+        createdBy,
       })
-      .where(eq(formRecords.id, r.id));
-  }
+      .returning({ id: transmissions.id });
+    if (!tx) throw new Error('transmission insert failed');
+    // snapshot-on-transmit + link records
+    for (const r of records) {
+      await dbx
+        .update(formRecords)
+        .set({
+          transmissionId: tx.id,
+          filedSnapshot: {
+            boxValues: r.boxValues,
+            accountNumber: r.accountNumber,
+            recipientId: r.recipientId,
+            recipientName: rmap.get(r.recipientId)?.name1,
+            recipientTinMasked: maskTin(rmap.get(r.recipientId)?.tinLast4 ?? '', rmap.get(r.recipientId)?.tinType ?? 'SSN'),
+            taxYear: r.taxYear,
+            formType: r.formType,
+            snapshotAt: new Date().toISOString(),
+            utid,
+          },
+          updatedAt: new Date(),
+        })
+        .where(eq(formRecords.id, r.id));
+    }
+    return tx.id;
+  });
 
-  return { transmissionId: tx.id, recordCount: records.length, problems: [] };
+  return { transmissionId: txId, recordCount: records.length, problems: [] };
 }
 
 // applyAckToRecords lives in @vibe1099/core (shared with the worker).

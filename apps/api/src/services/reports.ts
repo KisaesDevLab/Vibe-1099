@@ -66,4 +66,17 @@ export async function renderPayerSummary(db: Db, firmId: string, payerId: string
   return getRenderClient().render({ template: 'report_summary.html', data });
 }
 
+/** Render only if the payer has forms this year — skip blank pages in bulk packets. */
+export async function renderPayerSummaryIfAny(
+  db: Db,
+  firmId: string,
+  payerId: string,
+  taxYear: number,
+): Promise<{ hasForms: boolean; pdf: Buffer | null }> {
+  const data = await buildSummaryData(db, firmId, payerId, taxYear);
+  if (!data.hasForms) return { hasForms: false, pdf: null };
+  const pdf = await getRenderClient().render({ template: 'report_summary.html', data });
+  return { hasForms: true, pdf };
+}
+
 export { getDb };

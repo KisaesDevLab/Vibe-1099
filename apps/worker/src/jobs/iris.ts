@@ -149,6 +149,7 @@ export async function handleIrisPoll(job: Job): Promise<void> {
 
   await applyAckToRecords(db, tx.id, overall, result.errors);
   log.info({ tx: tx.id, status: overall, errors: result.errors.length }, 'ack applied');
+  // best-effort — a notify failure must not skip the staff rejection alert below
   await notify(db, {
     firmId: data.firmId,
     kind: 'transmission',
@@ -158,7 +159,7 @@ export async function handleIrisPoll(job: Job): Promise<void> {
     link: '/transmissions',
     entityType: 'transmission',
     entityId: tx.id,
-  });
+  }).catch((e) => log.warn({ err: (e as Error).message }, 'transmission notify failed (non-fatal)'));
 
   if (overall === 'rejected') {
     await alertStaff(data.firmId, 'IRIS transmission rejected', `Transmission ${tx.utid} was rejected. ${result.errors.length} record error(s) — see the transmission log.`);

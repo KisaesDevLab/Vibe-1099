@@ -81,6 +81,7 @@ payersRouter.post(
         contactMobile: input.contactMobile ?? null,
         moWithholdingId: input.moWithholdingId ?? null,
         moSourceDefault: input.moSourceDefault ?? false,
+        defaultFormTypes: input.defaultFormTypes?.length ? input.defaultFormTypes : ['NEC'],
       })
       .returning({ id: payers.id });
     res.locals['audit'] = { action: 'payer.create', entityType: 'payer', entityId: created?.id };
@@ -104,8 +105,11 @@ const zPayerImportRow = z.object({
   contactEmail: z.string().optional().default(''),
   contactMobile: z.string().optional().default(''),
   moWithholdingId: z.string().optional().default(''),
+  moSource: z.string().optional().default(''), // "1"/"true"/"yes" → MO-source default on
   defaultFormTypes: z.string().optional().default('NEC'), // e.g. "NEC|MISC"
 });
+
+const truthy = (s: string) => ['1', 'true', 'yes', 'y'].includes(s.trim().toLowerCase());
 
 payersRouter.post(
   '/import/preview',
@@ -135,12 +139,19 @@ payersRouter.post(
     const db = getDb();
     const firmId = req.staff!.firmId;
     const crypto = getCrypto();
+    // dedupe against existing payers (by legal name) so a re-run doesn't create
+    // duplicate payer records with duplicate encrypted TINs
+    const existing = await db.select({ legalName: payers.legalName }).from(payers).where(eq(payers.firmId, firmId));
+    const seen = new Set(existing.map((e) => e.legalName.toLowerCase()));
     let created = 0;
+    let skipped = 0;
     const errors: Array<{ row: number; reason: string }> = [];
     for (let i = 0; i < rows.length; i++) {
       const parsed = zPayerImportRow.safeParse(rows[i]);
       if (!parsed.success) { errors.push({ row: i + 1, reason: parsed.error.issues[0]?.message ?? 'invalid' }); continue; }
       const d = parsed.data;
+      const nameKey = d.legalName.toLowerCase();
+      if (seen.has(nameKey)) { skipped++; continue; } // already exists or duplicated within the file
       try {
         const { tin } = checkTin(d.tin, d.tinType);
         const formTypes = d.defaultFormTypes.split(/[|,;]/).map((s) => s.trim().toUpperCase()).filter((s) => ['NEC', 'MISC', 'INT', 'DIV'].includes(s));
@@ -156,16 +167,17 @@ payersRouter.post(
           contactEmail: d.contactEmail || null,
           contactMobile: d.contactMobile || null,
           moWithholdingId: d.moWithholdingId || null,
-          moSourceDefault: true,
+          moSourceDefault: truthy(d.moSource),
           defaultFormTypes: formTypes.length ? formTypes : ['NEC'],
         });
+        seen.add(nameKey);
         created++;
       } catch (err) {
         errors.push({ row: i + 1, reason: (err as Error).message });
       }
     }
-    res.locals['audit'] = { action: 'payer.import', entityType: 'payer', detail: { created, errorCount: errors.length } };
-    res.json({ created, errors });
+    res.locals['audit'] = { action: 'payer.import', entityType: 'payer', detail: { created, skipped, errorCount: errors.length } };
+    res.json({ created, skipped, errors });
   }),
 );
 
@@ -199,6 +211,7 @@ payersRouter.patch(
     if (input.contactMobile !== undefined) patch.contactMobile = input.contactMobile;
     if (input.moWithholdingId !== undefined) patch.moWithholdingId = input.moWithholdingId;
     if (input.moSourceDefault !== undefined) patch.moSourceDefault = input.moSourceDefault;
+    if (input.defaultFormTypes !== undefined) patch.defaultFormTypes = input.defaultFormTypes.length ? input.defaultFormTypes : ['NEC'];
     if (input.tin !== undefined) {
       const { tin } = checkTin(input.tin, input.tinType ?? row.tinType);
       patch.tinEncrypted = getCrypto().encrypt(tin);

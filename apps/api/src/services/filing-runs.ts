@@ -14,7 +14,7 @@ import { AppError, formatCents } from '@vibe1099/shared';
 import { getQueue, getRenderClient, notify, putBlob, QUEUE_NAMES, type IrisTransmitJob } from '@vibe1099/core';
 import { filingRuns, formRecords, getDb, payers, type Db } from '@vibe1099/db';
 import { composeTransmission } from './iris.js';
-import { renderPayerSummary } from './reports.js';
+import { renderPayerSummaryIfAny } from './reports.js';
 import { getSetting } from './settings.js';
 
 export type RunKind = 'transmit' | 'mo_file' | 'paper_batch' | 'summary_zip' | 'invite' | 'w9';
@@ -168,8 +168,9 @@ export async function runSummaryAll(db: Db, firmId: string, scope: RunScope, cre
   const pdfs: Buffer[] = [];
   for (const payerId of scope.payerIds) {
     try {
-      const pdf = await renderPayerSummary(db, firmId, payerId, scope.taxYear);
-      pdfs.push(pdf);
+      const { hasForms, pdf } = await renderPayerSummaryIfAny(db, firmId, payerId, scope.taxYear);
+      if (!hasForms) { items.push({ payerId, label: payerId, ok: true, message: 'no forms — skipped' }); continue; }
+      if (pdf) pdfs.push(pdf);
       items.push({ payerId, label: payerId, ok: true, message: 'summary rendered' });
     } catch (err) {
       items.push({ payerId, label: payerId, ok: false, message: err instanceof AppError ? err.message : String(err) });

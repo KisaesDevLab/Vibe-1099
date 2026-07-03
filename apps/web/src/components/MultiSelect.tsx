@@ -31,7 +31,7 @@ export function MultiSelect({
         <input style={{ flex: 1 }} placeholder={`Search ${options.length.toLocaleString()} ${unit}…`} value={query} onChange={(e) => setQuery(e.target.value)} />
         <button type="button" className="small secondary" onClick={() => onChange(options.map((o) => o.value))}>All</button>
         <button type="button" className="small secondary" onClick={() => onChange([])}>None</button>
-        <button type="button" className="small secondary" onClick={() => onChange(filtered.map((o) => o.value))} disabled={!query}>Matches</button>
+        <button type="button" className="small secondary" title="Add all current matches to the selection" onClick={() => onChange([...new Set([...selected, ...filtered.map((o) => o.value)])])} disabled={!query}>+ Matches</button>
         <span className="muted">{selected.length} selected</span>
       </div>
       <div style={{ maxHeight: 200, overflowY: 'auto', display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 2 }}>

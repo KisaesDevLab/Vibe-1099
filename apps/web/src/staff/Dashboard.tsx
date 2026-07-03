@@ -6,6 +6,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../api';
+import { useDialogs } from '../components/Dialogs';
+
+interface SavedView { id: string; name: string; config: { sort?: string; dir?: number; filter?: string; search?: string } }
 
 const CURRENT_TY = 2026;
 
@@ -34,6 +37,26 @@ export function Dashboard() {
   const [dir, setDir] = useState<1 | -1>(-1);
   const [filter, setFilter] = useState<FilterKey>('all');
   const [search, setSearch] = useState('');
+  const [views, setViews] = useState<SavedView[]>([]);
+  const dialogs = useDialogs();
+
+  const loadViews = () => api.get<{ views: SavedView[] }>('/api/views/dashboard').then((r) => setViews(r.views)).catch(() => {});
+  useEffect(() => { void loadViews(); }, []);
+
+  const applyView = (v: SavedView) => {
+    if (v.config.sort) setSort(v.config.sort as SortKey);
+    if (v.config.dir) setDir(v.config.dir as 1 | -1);
+    if (v.config.filter) setFilter(v.config.filter as FilterKey);
+    setSearch(v.config.search ?? '');
+  };
+  const saveView = async () => {
+    const name = await dialogs.prompt('Name this view:', { title: 'Save dashboard view' });
+    if (!name) return;
+    await api.post('/api/views', { screen: 'dashboard', name, config: { sort, dir, filter, search } });
+    dialogs.toast('View saved.', 'success');
+    loadViews();
+  };
+  const deleteView = async (id: string) => { await api.del(`/api/views/${id}`); loadViews(); };
 
   useEffect(() => {
     api.get<{ progress: Progress[]; deadlines: Record<string, string>; yearLocked: boolean }>(`/api/dashboard/season/${taxYear}`).then(setSeason).catch(() => {});
@@ -126,6 +149,16 @@ export function Dashboard() {
             <button key={f} className={filter === f ? 'active' : ''} onClick={() => setFilter(f)}>{f}</button>
           ))}
         </div>
+      </div>
+
+      <div className="row" style={{ gap: 6, alignItems: 'center', margin: '4px 0 8px' }}>
+        <span className="group-label">Saved views</span>
+        {views.map((v) => (
+          <span key={v.id} className="badge" style={{ cursor: 'pointer', background: '#eef2ff', color: 'var(--accent-dark)' }} onClick={() => applyView(v)}>
+            {v.name} <span onClick={(e) => { e.stopPropagation(); deleteView(v.id); }} style={{ marginLeft: 4, color: 'var(--muted)' }}>✕</span>
+          </span>
+        ))}
+        <button className="small secondary" onClick={saveView}>+ Save current view</button>
       </div>
 
       <table className="grid">

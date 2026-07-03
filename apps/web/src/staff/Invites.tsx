@@ -16,7 +16,7 @@ interface Invite {
   lastActivityAt: string | null;
 }
 
-interface Payer { id: string; legalName: string; contactEmail: string | null }
+interface Payer { id: string; legalName: string; contactEmail: string | null; defaultFormTypes?: string[] }
 
 export function Invites() {
   const [invites, setInvites] = useState<Invite[]>([]);
@@ -30,11 +30,18 @@ export function Invites() {
   const load = () => api.get<{ invites: Invite[] }>('/api/invites').then((r) => setInvites(r.invites));
   useEffect(() => {
     void load();
-    api.get<{ payers: Payer[] }>('/api/payers').then((r) => {
+    api.get<{ payers: Payer[] }>('/api/payers?limit=1000').then((r) => {
       setPayers(r.payers);
-      if (r.payers[0]) setPayerId(r.payers[0].id);
+      if (r.payers[0]) { setPayerId(r.payers[0].id); if (r.payers[0].defaultFormTypes?.length) setFormTypes(r.payers[0].defaultFormTypes); }
     });
   }, []);
+
+  // when the selected payer changes, default the form-type picker to its preset
+  const onPayerChange = (id: string) => {
+    setPayerId(id);
+    const p = payers.find((x) => x.id === id);
+    if (p?.defaultFormTypes?.length) setFormTypes(p.defaultFormTypes);
+  };
 
   const toggleType = (t: string) =>
     setFormTypes((cur) => (cur.includes(t) ? cur.filter((x) => x !== t) : [...cur, t]));
@@ -70,7 +77,7 @@ export function Invites() {
       <form className="panel" onSubmit={create}>
         <div className="row">
           <div className="field grow"><label>Payer</label>
-            <Combobox options={payers.map((p) => ({ value: p.id, label: p.legalName }))} value={payerId} onChange={setPayerId} placeholder="Search payers…" /></div>
+            <Combobox options={payers.map((p) => ({ value: p.id, label: p.legalName }))} value={payerId} onChange={onPayerChange} placeholder="Search payers…" /></div>
           <div className="field"><label>Tax year</label>
             <select value={taxYear} onChange={(e) => setTaxYear(Number(e.target.value))}>
               <option value={2026}>2026</option><option value={2025}>2025</option>

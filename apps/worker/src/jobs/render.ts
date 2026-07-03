@@ -185,6 +185,7 @@ export async function handleRenderJob(job: Job): Promise<void> {
       .where(eq(paperBatches.id, data.paperBatchId));
     await redis.del(chunkKey);
     log.info({ batch: data.paperBatchId, pages: pageCount }, 'batch built');
+    // notification is best-effort — never let it fail a successfully-built batch
     await notify(db, {
       firmId: data.firmId,
       kind: 'batch',
@@ -194,7 +195,7 @@ export async function handleRenderJob(job: Job): Promise<void> {
       link: '/batches',
       entityType: 'paper_batch',
       entityId: data.paperBatchId,
-    });
+    }).catch((e) => log.warn({ err: (e as Error).message }, 'batch notify failed (non-fatal)'));
   } catch (err) {
     await db.update(paperBatches).set({ status: 'failed' }).where(eq(paperBatches.id, data.paperBatchId));
     throw err;

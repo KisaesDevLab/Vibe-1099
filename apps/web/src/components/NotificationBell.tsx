@@ -38,9 +38,14 @@ export function NotificationBell() {
       setNotes(r.notifications);
     }
   };
-  const markAll = async () => { await api.post('/api/notifications/read-all'); setCount(0); poll(); };
+  const markAll = async () => {
+    await api.post('/api/notifications/read-all');
+    setNotes((ns) => ns.map((n) => ({ ...n, readAt: n.readAt ?? new Date().toISOString() })));
+    setCount(0);
+  };
   const clickNote = async (n: Note) => {
     await api.post(`/api/notifications/${n.id}/read`).catch(() => {});
+    setNotes((ns) => ns.map((x) => (x.id === n.id ? { ...x, readAt: x.readAt ?? new Date().toISOString() } : x)));
     setOpen(false); poll();
     if (n.link) navigate(n.link);
   };

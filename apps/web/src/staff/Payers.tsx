@@ -15,12 +15,14 @@ interface Payer {
   contactMobile: string | null;
   moWithholdingId: string | null;
   moSourceDefault: boolean;
+  defaultFormTypes: string[];
 }
 
 const emptyForm = {
   legalName: '', dbaName: '', tin: '', tinType: 'EIN' as 'SSN' | 'EIN',
   line1: '', line2: '', city: '', state: 'MO', zip: '',
   phone: '', contactEmail: '', contactMobile: '', moWithholdingId: '', moSourceDefault: true,
+  defaultFormTypes: ['NEC'] as string[],
 };
 
 export function Payers() {
@@ -77,6 +79,7 @@ export function Payers() {
       contactMobile: form.contactMobile || null,
       moWithholdingId: form.moWithholdingId || null,
       moSourceDefault: form.moSourceDefault,
+      defaultFormTypes: form.defaultFormTypes.length ? form.defaultFormTypes : ['NEC'],
     };
     try {
       if (editing) await api.patch(`/api/payers/${editing}`, body);
@@ -99,8 +102,12 @@ export function Payers() {
       state: p.address['state'] ?? 'MO', zip: p.address['zip'] ?? '',
       phone: p.phone, contactEmail: p.contactEmail ?? '', contactMobile: p.contactMobile ?? '',
       moWithholdingId: p.moWithholdingId ?? '', moSourceDefault: p.moSourceDefault,
+      defaultFormTypes: p.defaultFormTypes ?? ['NEC'],
     });
   };
+
+  const toggleFormType = (t: string) =>
+    setForm((f) => ({ ...f, defaultFormTypes: f.defaultFormTypes.includes(t) ? f.defaultFormTypes.filter((x) => x !== t) : [...f.defaultFormTypes, t] }));
 
   const revealTin = async (id: string) => {
     const r = await api.post<{ tin: string }>(`/api/payers/${id}/reveal-tin`);
@@ -168,6 +175,16 @@ export function Payers() {
               <select value={form.moSourceDefault ? '1' : '0'} onChange={(e) => setForm((f) => ({ ...f, moSourceDefault: e.target.value === '1' }))}>
                 <option value="1">Yes</option><option value="0">No</option>
               </select>
+            </div>
+            <div className="field">
+              <label>Default form types (preset for invites)</label>
+              <div className="row" style={{ gap: 8 }}>
+                {['NEC', 'MISC', 'INT', 'DIV'].map((t) => (
+                  <label key={t} style={{ display: 'flex', gap: 4, alignItems: 'center', fontSize: 13, color: 'var(--text)' }}>
+                    <input type="checkbox" style={{ width: 'auto' }} checked={form.defaultFormTypes.includes(t)} onChange={() => toggleFormType(t)} /> {t}
+                  </label>
+                ))}
+              </div>
             </div>
           </div>
           <div className="row">

@@ -74,10 +74,12 @@ export async function createW9Request(opts: {
   await db.update(w9Requests).set({ tokenHash: crypto.tokenHash(token) }).where(eq(w9Requests.id, created.id));
 
   if (opts.recipientId) {
+    // mark requested from either 'none' or 'stale' so a campaign doesn't re-select
+    // the same recipient forever
     await db
       .update(recipients)
       .set({ w9Status: 'requested', updatedAt: new Date() })
-      .where(and(eq(recipients.id, opts.recipientId), eq(recipients.w9Status, 'none')));
+      .where(and(eq(recipients.id, opts.recipientId), inArray(recipients.w9Status, ['none', 'stale'])));
   }
 
   const link = `${env.PORTAL_BASE_URL}/w9/${encodeURIComponent(token)}`;
@@ -197,36 +199,37 @@ w9StaffRouter.post(
     const { limit } = z.object({ limit: z.number().int().min(1).max(1000).default(500) }).parse(req.body ?? {});
     const db = getDb();
     const firmId = req.staff!.firmId;
-    const targets = await db
-      .select()
-      .from(recipients)
-      .where(
-        and(
-          eq(recipients.firmId, firmId),
-          isNull(recipients.mergedIntoId),
-          inArray(recipients.w9Status, ['none', 'stale']),
-          sql`(${recipients.email} IS NOT NULL OR ${recipients.mobile} IS NOT NULL)`,
-        ),
-      )
-      .limit(limit);
+    const eligibleWhere = and(
+      eq(recipients.firmId, firmId),
+      isNull(recipients.mergedIntoId),
+      inArray(recipients.w9Status, ['none', 'stale']),
+      sql`(${recipients.email} IS NOT NULL OR ${recipients.mobile} IS NOT NULL)`,
+    );
+    const [eligibleRow] = await db.select({ n: sql<number>`count(*)::int` }).from(recipients).where(eligibleWhere);
+    const targets = await db.select().from(recipients).where(eligibleWhere).limit(limit);
     let requested = 0;
     const skipped: string[] = [];
+    const failed: Array<{ id: string; reason: string }> = [];
     for (const r of targets) {
-      // skip if an open request already exists
-      const open = await db.query.w9Requests.findFirst({
-        where: and(eq(w9Requests.recipientId, r.id), inArray(w9Requests.status, ['sent', 'opened'])),
-      });
-      if (open) { skipped.push(r.id); continue; }
-      await createW9Request({
-        firmId,
-        recipientId: r.id,
-        requestedName: r.name1,
-        email: r.email,
-        mobile: r.mobile,
-        requestedBy: req.staff!.userId,
-        requestedVia: 'staff',
-      });
-      requested++;
+      try {
+        // skip if an open request already exists (firm-scoped)
+        const open = await db.query.w9Requests.findFirst({
+          where: and(eq(w9Requests.firmId, firmId), eq(w9Requests.recipientId, r.id), inArray(w9Requests.status, ['sent', 'opened'])),
+        });
+        if (open) { skipped.push(r.id); continue; }
+        await createW9Request({
+          firmId,
+          recipientId: r.id,
+          requestedName: r.name1,
+          email: r.email,
+          mobile: r.mobile,
+          requestedBy: req.staff!.userId,
+          requestedVia: 'staff',
+        });
+        requested++;
+      } catch (err) {
+        failed.push({ id: r.id, reason: (err as Error).message });
+      }
     }
     await notify(db, {
       firmId,
@@ -236,8 +239,15 @@ w9StaffRouter.post(
       body: `${requested} W-9 request(s) sent${skipped.length ? `, ${skipped.length} skipped (already open)` : ''}.`,
       link: '/w9',
     });
-    res.locals['audit'] = { action: 'w9.campaign', entityType: 'w9_request', detail: { requested, skipped: skipped.length } };
-    res.json({ requested, skipped: skipped.length, eligible: targets.length });
+    res.locals['audit'] = { action: 'w9.campaign', entityType: 'w9_request', detail: { requested, skipped: skipped.length, failed: failed.length } };
+    res.json({
+      requested,
+      skipped: skipped.length,
+      failed: failed.length,
+      eligible: eligibleRow?.n ?? targets.length,
+      processed: targets.length,
+      more: (eligibleRow?.n ?? 0) > targets.length,
+    });
   }),
 );
 

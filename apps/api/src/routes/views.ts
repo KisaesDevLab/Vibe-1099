@@ -41,7 +41,7 @@ viewsRouter.delete(
   '/:id',
   h(async (req, res) => {
     const id = z.string().uuid().parse(req.params['id']);
-    await getDb().delete(savedViews).where(and(eq(savedViews.id, id), eq(savedViews.userId, req.staff!.userId)));
+    await getDb().delete(savedViews).where(and(eq(savedViews.id, id), eq(savedViews.firmId, req.staff!.firmId), eq(savedViews.userId, req.staff!.userId)));
     res.json({ ok: true });
   }),
 );
@@ -65,9 +65,11 @@ searchRouter.get(
         .where(and(eq(recipients.firmId, firmId), or(ilike(recipients.name1, term), ilike(recipients.name2, term), eq(recipients.tinLast4, q.q))))
         .limit(8),
     ]);
+    // default filing season = the tax year currently being prepared (prior calendar year)
+    const season = new Date().getUTCFullYear() - 1;
     res.json({
       results: [
-        ...payerRows.map((p) => ({ type: 'payer' as const, id: p.id, label: p.legalName, link: `/forms?payerId=${p.id}&taxYear=2026` })),
+        ...payerRows.map((p) => ({ type: 'payer' as const, id: p.id, label: p.legalName, link: `/forms?payerId=${p.id}&taxYear=${season}` })),
         ...recipRows.map((r) => ({ type: 'recipient' as const, id: r.id, label: r.name1, sub: maskTin(r.tinLast4, r.tinType), link: `/recipients` })),
       ],
     });

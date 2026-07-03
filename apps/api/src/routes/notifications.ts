@@ -45,7 +45,8 @@ notificationsRouter.post(
   '/:id/read',
   h(async (req, res) => {
     const id = z.string().uuid().parse(req.params['id']);
-    await getDb().update(notifications).set({ readAt: new Date() }).where(and(eq(notifications.id, id), eq(notifications.firmId, req.staff!.firmId)));
+    // only mark notifications visible to THIS user (firm-wide or addressed to them)
+    await getDb().update(notifications).set({ readAt: new Date() }).where(and(eq(notifications.id, id), mine(req.staff!.firmId, req.staff!.userId)));
     res.json({ ok: true });
   }),
 );

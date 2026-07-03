@@ -50,7 +50,9 @@ export function Settings() {
       api.get<Record<string, unknown>>('/api/admin/license').then(setLicense).catch(() => {});
     }
     api.get<{ queues: Record<string, Record<string, number>> }>('/api/admin/queues').then((r) => setQueues(r.queues)).catch(() => {});
-    api.get<Record<string, unknown>>('/api/status').then(setStatus).catch(() => {});
+    // /api/status returns 503 when a dependency is down — read the body regardless
+    // so the panel shows the degraded detail exactly when it's most useful
+    fetch('/api/status', { credentials: 'same-origin' }).then((r) => r.json()).then(setStatus).catch(() => {});
   };
   useEffect(loadAll, [isAdmin]);
 

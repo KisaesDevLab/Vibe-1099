@@ -3,9 +3,9 @@
  * review queue for client-submitted records, re-open flow.
  */
 import { Router } from 'express';
-import { and, desc, eq, inArray } from 'drizzle-orm';
+import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { z } from 'zod';
-import { AppError, zClientInviteInput } from '@vibe1099/shared';
+import { AppError, zClientInviteInput, zTaxYear } from '@vibe1099/shared';
 import { getCrypto, getQueue, loadEnv, notify, QUEUE_NAMES, type DeliveryJob } from '@vibe1099/core';
 import { clientInvites, firms, formRecords, getDb, payers } from '@vibe1099/db';
 import { h } from '../middleware/error.js';
@@ -136,8 +136,8 @@ invitesRouter.post(
   h(async (req, res) => {
     const input = z
       .object({
-        payerIds: z.array(z.string().uuid()).min(1).max(1000),
-        taxYear: z.number().int(),
+        payerIds: z.array(z.string().uuid()).min(1).max(1000).transform((a) => [...new Set(a)]),
+        taxYear: zTaxYear,
         formTypes: z.array(z.enum(['NEC', 'MISC', 'INT', 'DIV'])).optional(), // override presets
         onlyUninvited: z.boolean().default(true),
       })
@@ -190,7 +190,7 @@ invitesRouter.post(
 invitesRouter.post(
   '/resend-outstanding',
   h(async (req, res) => {
-    const { taxYear } = z.object({ taxYear: z.number().int() }).parse(req.body);
+    const { taxYear } = z.object({ taxYear: zTaxYear }).parse(req.body);
     const db = getDb();
     const firmId = req.staff!.firmId;
     const rows = await db
@@ -201,23 +201,33 @@ invitesRouter.post(
     const outstanding = rows.filter(({ invite }) => !invite.submittedAt && !invite.revokedAt);
     const env = loadEnv();
     const firm = await db.query.firms.findFirst({ where: eq(firms.id, firmId) });
+    const expiryDays = (await getSetting<number>('invite_expiry_days')) ?? 30; // hoisted out of the loop
     let resent = 0;
+    const failed: string[] = [];
     for (const { invite, payer } of outstanding) {
-      const expiresAt = new Date(Date.now() + ((await getSetting<number>('invite_expiry_days')) ?? 30) * 86_400_000);
-      await db.update(clientInvites).set({ expiresAt }).where(eq(clientInvites.id, invite.id));
-      const token = await issueInviteToken(invite.id, expiresAt);
-      const vars = {
-        firmName: firm?.name ?? '',
-        payerName: payer.legalName,
-        taxYear: String(taxYear),
-        link: `${env.APP_BASE_URL}/client?token=${encodeURIComponent(token)}`,
-        expires: expiresAt.toISOString().slice(0, 10),
-      };
-      const to = invite.email ?? payer.contactEmail;
-      if (to) { await getQueue(QUEUE_NAMES.delivery).add('client_invite', { kind: 'client_invite', channel: 'email', firmId, to, templateKey: 'client_invite', vars } as DeliveryJob); resent++; }
+      try {
+        const expiresAt = new Date(Date.now() + expiryDays * 86_400_000);
+        await db.update(clientInvites).set({ expiresAt }).where(eq(clientInvites.id, invite.id));
+        const token = await issueInviteToken(invite.id, expiresAt);
+        const vars = {
+          firmName: firm?.name ?? '',
+          payerName: payer.legalName,
+          taxYear: String(taxYear),
+          link: `${env.APP_BASE_URL}/client?token=${encodeURIComponent(token)}`,
+          expires: expiresAt.toISOString().slice(0, 10),
+        };
+        const to = invite.email ?? payer.contactEmail;
+        const toMobile = invite.mobile ?? payer.contactMobile;
+        if (to) await getQueue(QUEUE_NAMES.delivery).add('client_invite', { kind: 'client_invite', channel: 'email', firmId, to, templateKey: 'client_invite', vars } as DeliveryJob);
+        if (toMobile) await getQueue(QUEUE_NAMES.delivery).add('client_invite', { kind: 'client_invite', channel: 'sms', firmId, to: toMobile, templateKey: 'client_invite', vars } as DeliveryJob);
+        if (to || toMobile) resent++;
+      } catch (err) {
+        failed.push(invite.id);
+        void err;
+      }
     }
-    res.locals['audit'] = { action: 'invite.resend-outstanding', entityType: 'client_invite', detail: { resent } };
-    res.json({ outstanding: outstanding.length, resent });
+    res.locals['audit'] = { action: 'invite.resend-outstanding', entityType: 'client_invite', detail: { resent, failed: failed.length } };
+    res.json({ outstanding: outstanding.length, resent, failed: failed.length });
   }),
 );
 
@@ -271,19 +281,54 @@ invitesRouter.post(
 invitesRouter.get(
   '/review-queue',
   h(async (req, res) => {
-    const q = z.object({ taxYear: z.coerce.number().int().optional() }).parse(req.query);
+    const q = z
+      .object({
+        taxYear: z.coerce.number().int().optional(),
+        payerId: z.string().uuid().optional(),
+        limit: z.coerce.number().int().min(1).max(500).default(200),
+        offset: z.coerce.number().int().min(0).default(0),
+      })
+      .parse(req.query);
     const conds = [
       eq(formRecords.firmId, req.staff!.firmId),
       eq(formRecords.clientSubmitted, true),
       eq(formRecords.status, 'draft'),
     ];
     if (q.taxYear) conds.push(eq(formRecords.taxYear, q.taxYear));
-    const rows = await getDb()
-      .select()
+    if (q.payerId) conds.push(eq(formRecords.payerId, q.payerId));
+    const db = getDb();
+    const [rows, [countRow]] = await Promise.all([
+      db.select().from(formRecords).where(and(...conds)).orderBy(desc(formRecords.updatedAt)).limit(q.limit).offset(q.offset),
+      db.select({ n: sql<number>`count(*)::int` }).from(formRecords).where(and(...conds)),
+    ]);
+    res.json({ queue: rows, total: countRow?.n ?? 0, limit: q.limit, offset: q.offset });
+  }),
+);
+
+/** Accept an entire engagement: promote all a payer's client-submitted drafts to ready. */
+invitesRouter.post(
+  '/review-queue/promote-payer',
+  h(async (req, res) => {
+    const { payerId, taxYear } = z.object({ payerId: z.string().uuid(), taxYear: zTaxYear }).parse(req.body);
+    const db = getDb();
+    const firmId = req.staff!.firmId;
+    const reviewerGate = (await getSetting<boolean>('reviewer_gate_enabled')) ?? false;
+    const rows = await db
+      .select({ id: formRecords.id })
       .from(formRecords)
-      .where(and(...conds))
-      .orderBy(desc(formRecords.updatedAt));
-    res.json({ queue: rows });
+      .where(and(eq(formRecords.firmId, firmId), eq(formRecords.payerId, payerId), eq(formRecords.taxYear, taxYear), eq(formRecords.clientSubmitted, true), eq(formRecords.status, 'draft')));
+    let promoted = 0;
+    const failed: Array<{ id: string; reason: string }> = [];
+    for (const r of rows) {
+      try {
+        await transitionStatus(db, firmId, r.id, 'ready', { actorId: req.staff!.userId, actorRole: req.staff!.role, reviewerGateEnabled: reviewerGate });
+        promoted++;
+      } catch (err) {
+        failed.push({ id: r.id, reason: (err as Error).message });
+      }
+    }
+    res.locals['audit'] = { action: 'review.promote-payer', entityType: 'form_record', entityId: payerId, detail: { promoted, failed: failed.length } };
+    res.json({ promoted, failed });
   }),
 );
 

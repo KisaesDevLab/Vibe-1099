@@ -45,8 +45,11 @@ inboxRouter.get(
 
     const payerFilter = q.payerId ? [eq(formRecords.payerId, q.payerId)] : [];
 
+    // Build ALL kinds unconditionally so the count tiles stay accurate even when
+    // the caller filters to one kind; the `kinds` filter is applied to the
+    // returned items only (below).
     // rejected records (most urgent)
-    if (!wantKinds || wantKinds.has('rejected')) {
+    {
       const rows = await db
         .select({ f: formRecords, recipientName: recipients.name1, payerName: payers.legalName })
         .from(formRecords)
@@ -66,7 +69,7 @@ inboxRouter.get(
     }
 
     // client submissions to review
-    if (!wantKinds || wantKinds.has('review')) {
+    {
       const rows = await db
         .select({ f: formRecords, payerName: payers.legalName })
         .from(formRecords)
@@ -90,14 +93,14 @@ inboxRouter.get(
       .from(formRecords)
       .where(and(eq(formRecords.firmId, firmId), eq(formRecords.taxYear, taxYear), ...payerFilter));
 
-    if (!wantKinds || wantKinds.has('missing_w9')) {
+    {
       const rows = await db
         .select({ id: recipients.id, name1: recipients.name1, w9Status: recipients.w9Status })
         .from(recipients)
         .where(and(eq(recipients.firmId, firmId), isNull(recipients.mergedIntoId), inArray(recipients.w9Status, ['none', 'stale']), sql`${recipients.id} IN ${activeRecipientIds}`));
       for (const r of rows) items.push({ kind: 'missing_w9', priority: 2, recipientId: r.id, title: `W-9 ${r.w9Status === 'stale' ? 'stale' : 'missing'}: ${r.name1}`, detail: 'Request a W-9' });
     }
-    if (!wantKinds || wantKinds.has('missing_address')) {
+    {
       const rows = await db
         .select({ id: recipients.id, name1: recipients.name1 })
         .from(recipients)
@@ -106,7 +109,9 @@ inboxRouter.get(
     }
 
     items.sort((a, b) => a.priority - b.priority || a.title.localeCompare(b.title));
+    // counts reflect ALL kinds (for the tiles); items are filtered to the requested kinds
     const counts = items.reduce<Record<string, number>>((acc, it) => { acc[it.kind] = (acc[it.kind] ?? 0) + 1; return acc; }, {});
-    res.json({ items: items.slice(q.offset, q.offset + q.limit), total: items.length, counts, limit: q.limit, offset: q.offset });
+    const filtered = wantKinds ? items.filter((it) => wantKinds.has(it.kind)) : items;
+    res.json({ items: filtered.slice(q.offset, q.offset + q.limit), total: filtered.length, counts, limit: q.limit, offset: q.offset });
   }),
 );

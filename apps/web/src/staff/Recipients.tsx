@@ -154,10 +154,14 @@ export function Recipients() {
 
   const doMerge = async (survivorId: string) => {
     if (!mergeDup) return;
-    const r = await api.post<{ movedForms: number }>('/api/recipients/merge', { survivorId, duplicateId: mergeDup.id });
-    dialogs.toast(`Merged — ${r.movedForms} form record(s) re-pointed.`, 'success');
-    setMergeDup(null);
-    await load();
+    try {
+      const r = await api.post<{ movedForms: number }>('/api/recipients/merge', { survivorId, duplicateId: mergeDup.id });
+      dialogs.toast(`Merged — ${r.movedForms} form record(s) re-pointed.`, 'success');
+      setMergeDup(null);
+      await load();
+    } catch (err) {
+      dialogs.toast(err instanceof ApiError ? err.message : 'Merge failed', 'error');
+    }
   };
 
   const openAdd = () => { setEditing(null); setForm(emptyForm); setMatch(null); setShowForm(true); };
