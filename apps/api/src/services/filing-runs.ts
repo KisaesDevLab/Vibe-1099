@@ -135,7 +135,10 @@ export async function runTransmitAll(db: Db, firmId: string, scope: RunScope, cr
     try {
       const result = await composeTransmission(db, firmId, payerId, scope.taxYear, createdBy, { isCorrection: scope.isCorrection });
       const job: IrisTransmitJob = { kind: 'transmit', transmissionId: result.transmissionId, firmId };
-      await getQueue(QUEUE_NAMES.iris).add('transmit', job);
+      // at-most-once, same as the single-payer /transmit route: a filing POST must
+      // NOT auto-retry, or a lost/timed-out response could re-POST and duplicate a
+      // return (§6721). Especially important here — fleet fires many payers at once.
+      await getQueue(QUEUE_NAMES.iris).add('transmit', job, { attempts: 1 });
       items.push({ payerId, label: payerId, ok: true, message: `${result.recordCount} record(s) queued for transmit`, refId: result.transmissionId });
     } catch (err) {
       // "No queued records" is expected for payers with nothing to file — skip quietly
