@@ -11,9 +11,11 @@ import {
   getQueue,
   loadEnv,
   QUEUE_NAMES,
+  TaxBanditsClient,
   type DeliveryJob,
 } from '@vibe1099/core';
-import { appSettings, blobs, firms, getDb, recipients, w9Requests } from '@vibe1099/db';
+import { appSettings, blobs, firms, getDb, recipients, tinMatchResults, w9Requests } from '@vibe1099/db';
+import { providerFor } from './iris.js';
 
 const log = createLogger('worker:housekeeping');
 
@@ -127,9 +129,59 @@ async function retentionSweep(): Promise<void> {
   }
 }
 
+/**
+ * Poll pending TaxBandits TIN-match submissions for their Success/Failed verdict
+ * (async batch — up to 24h). Groups open pending rows by (firm, submission) to
+ * minimize calls; on a mismatch, flags the recipient's W-9 status stale.
+ */
+async function pollPendingTinMatches(): Promise<void> {
+  const db = getDb();
+  const pending = await db
+    .select()
+    .from(tinMatchResults)
+    .where(and(eq(tinMatchResults.provider, 'taxbandits'), eq(tinMatchResults.status, 'pending'), eq(tinMatchResults.stale, false)));
+  if (!pending.length) return;
+
+  // group by firm + submission
+  const bySubmission = new Map<string, typeof pending>();
+  for (const row of pending) {
+    if (!row.submissionRef) continue;
+    const key = `${row.firmId}::${row.submissionRef}`;
+    const list = bySubmission.get(key) ?? [];
+    list.push(row);
+    bySubmission.set(key, list);
+  }
+
+  for (const [key, rows] of bySubmission) {
+    const [firmId, submissionRef] = key.split('::');
+    try {
+      const provider = await providerFor(firmId!, 'taxbandits');
+      if (!(provider instanceof TaxBanditsClient)) continue;
+      const verdicts = await provider.getTinMatchStatus(submissionRef!);
+      for (const row of rows) {
+        const v = verdicts.find((x) => x.recordId === row.recordRef || x.recipientRef === row.recipientId);
+        if (!v || v.status === 'pending') continue;
+        await db
+          .update(tinMatchResults)
+          .set({ status: v.status, code: v.rawStatus, message: `IRS TIN matching: ${v.rawStatus}`, checkedAt: new Date() })
+          .where(eq(tinMatchResults.id, row.id));
+        if (v.status === 'mismatch') {
+          await db
+            .update(recipients)
+            .set({ w9Status: 'stale', updatedAt: new Date() })
+            .where(and(eq(recipients.id, row.recipientId), eq(recipients.w9Status, 'on_file')));
+        }
+      }
+    } catch (e) {
+      log.warn({ err: (e as Error).message, submissionRef }, 'tin-match status poll failed (will retry next sweep)');
+    }
+  }
+}
+
 export async function handleHousekeepingJob(_job: Job): Promise<void> {
   await expireW9Requests();
   await sendW9Reminders();
   await markStaleW9s();
+  await pollPendingTinMatches();
   await retentionSweep();
 }

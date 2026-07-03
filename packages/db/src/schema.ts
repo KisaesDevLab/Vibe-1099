@@ -347,6 +347,9 @@ export const tinMatchResults = pgTable(
     status: text('status').notNull().$type<'match' | 'mismatch' | 'pending' | 'error'>(),
     code: text('code').notNull().default(''),
     message: text('message').notNull().default(''),
+    // async TaxBandits TIN matching: the submission + record refs used to poll the verdict
+    submissionRef: text('submission_ref'),
+    recordRef: text('record_ref'),
     checkedAt: timestamp('checked_at', { withTimezone: true }).notNull().defaultNow(),
     stale: boolean('stale').notNull().default(false),
   },

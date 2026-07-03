@@ -12,8 +12,8 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { Router } from 'express';
 import { and, eq } from 'drizzle-orm';
-import { createLogger, getQueue, loadEnv, QUEUE_NAMES, type IrisPollJob } from '@vibe1099/core';
-import { getDb, recipients, taxbanditsWebhookEvents, tinMatchResults, transmissions } from '@vibe1099/db';
+import { createLogger, getQueue, loadEnv, normalizeTinMatchStatus, QUEUE_NAMES, type IrisPollJob } from '@vibe1099/core';
+import { getDb, taxbanditsWebhookEvents, tinMatchResults, transmissions } from '@vibe1099/db';
 import { h } from '../middleware/error.js';
 import { rateLimit } from '../middleware/rate-limit.js';
 
@@ -86,18 +86,18 @@ taxbanditsWebhookRouter.post(
           const poll: IrisPollJob = { kind: 'poll', transmissionId: tx.id, firmId: tx.firmId, attempt: 0 };
           await getQueue(QUEUE_NAMES.iris).add('poll', poll);
         }
-      } else if (/tin/i.test(eventType) && body.payeeRef) {
-        const recip = await db.query.recipients.findFirst({ where: eq(recipients.id, body.payeeRef) });
-        if (recip) {
-          const matched = /match(?!.*mismatch)/i.test(status ?? '');
-          await db.insert(tinMatchResults).values({
-            firmId: recip.firmId,
-            recipientId: recip.id,
-            provider: 'taxbandits',
-            status: matched ? 'match' : 'mismatch',
-            code: status ?? '',
-            message: 'via webhook',
-          });
+      } else if (/tin/i.test(eventType)) {
+        // Update the pending TIN-match row for this submission/recipient with the
+        // verdict. The authoritative housekeeping poll also reconciles these.
+        const verdict = normalizeTinMatchStatus(status ?? '');
+        if (verdict !== 'pending') {
+          const conds = [eq(tinMatchResults.provider, 'taxbandits'), eq(tinMatchResults.status, 'pending')];
+          if (submissionId) conds.push(eq(tinMatchResults.submissionRef, submissionId));
+          else if (body.payeeRef) conds.push(eq(tinMatchResults.recipientId, body.payeeRef));
+          await db
+            .update(tinMatchResults)
+            .set({ status: verdict, code: status ?? '', message: `IRS TIN matching: ${status ?? ''}`, checkedAt: new Date() })
+            .where(and(...conds));
         }
       }
       await db.update(taxbanditsWebhookEvents).set({ processedAt: new Date() }).where(eq(taxbanditsWebhookEvents.dedupeKey, dedupeKey));

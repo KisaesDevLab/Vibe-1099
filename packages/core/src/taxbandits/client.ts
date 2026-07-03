@@ -20,6 +20,7 @@ export interface TaxBanditsEndpoints {
   statusUrl: string;
   correctionUrl: string;
   tinMatchUrl: string;
+  tinMatchStatusUrl: string;
   creditsUrl: string;
 }
 
@@ -35,14 +36,44 @@ export function taxbanditsEndpoints(base: string, oauthUrl: string): TaxBanditsE
     statusUrl: `${b}/v1.7.3/Form1099NEC/Status`,
     correctionUrl: `${b}/v1.7.3/Form1099NEC/Correction`,
     tinMatchUrl: `${b}/v1.7.3/TINMatchingRecipients/Request`,
+    tinMatchStatusUrl: `${b}/v1.7.3/TINMatchingRecipients/Status`,
     creditsUrl: `${b}/v1.7.3/Account/GetCredits`,
   };
 }
 
-export interface TbTinMatchResult {
-  match: boolean;
-  code: string;
-  message: string;
+/** Normalized TIN-match verdict. TaxBandits TIN matching is asynchronous: a submit
+ *  returns a SubmissionId and per-record refs with an initial "Order Created"
+ *  status; the Success/Failed verdict is fetched later via getTinMatchStatus. */
+export type TinMatchStatus = 'pending' | 'match' | 'mismatch' | 'error';
+
+export interface TinMatchSubmitResult {
+  submissionId: string;
+  recordId: string;
+  status: TinMatchStatus;
+  raw: string;
+}
+
+export interface TinMatchStatusResult {
+  recordId: string;
+  recipientRef: string;
+  status: TinMatchStatus;
+  rawStatus: string;
+}
+
+export interface TinMatchRecipientInput {
+  sequenceId: string; // our recipient id — echoed back to correlate the verdict
+  name: string;
+  tin: string;
+  tinType: 'SSN' | 'EIN';
+}
+
+/** Map a TaxBandits TIN-match status string to our normalized verdict. */
+export function normalizeTinMatchStatus(s: string): TinMatchStatus {
+  const t = s.trim().toLowerCase();
+  if (t === 'success') return 'match';
+  if (t === 'failed') return 'mismatch';
+  if (t === 'canceled' || t === 'cancelled') return 'error';
+  return 'pending'; // Order Created | Under Process | Sent to Agency
 }
 
 export interface CreditBalance {
@@ -144,18 +175,60 @@ export class TaxBanditsClient implements FilingProvider {
     return { status: normalizeStatus(body.Status ?? body.status ?? 'Processing'), errors, raw };
   }
 
-  /** Real-time IRS TIN/name matching. */
-  async tinMatch(tin: string, name: string, tinType: 'SSN' | 'EIN'): Promise<TbTinMatchResult> {
+  /**
+   * Submit a recipient for IRS TIN matching (async batch). Returns the SubmissionId
+   * + RecordId to poll for the verdict later. `Business` is omitted so the request
+   * links to the account's default business.
+   */
+  async submitTinMatch(recipient: TinMatchRecipientInput): Promise<TinMatchSubmitResult> {
     const res = await this.call(this.endpoints.tinMatchUrl, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ TIN: tin, Name: name, TINType: tinType }),
+      body: JSON.stringify({
+        TINMatchingDetails: {
+          Recipients: [
+            { SequenceId: recipient.sequenceId, Name: recipient.name, TINType: recipient.tinType, TIN: recipient.tin, IsForeign: false },
+          ],
+        },
+      }),
     });
     const raw = await res.text();
-    if (!res.ok) throw new AppError(ErrorCodes.E_IRIS, `TaxBandits TIN match failed (${res.status})`, 502, { raw });
-    const body = JSON.parse(raw) as { Match?: boolean; match?: boolean; Code?: string; Message?: string };
-    const match = body.Match ?? body.match ?? false;
-    return { match, code: body.Code ?? (match ? 'MATCH' : 'MISMATCH'), message: body.Message ?? '' };
+    if (!res.ok) throw new AppError(ErrorCodes.E_IRIS, `TaxBandits TIN match submit failed (${res.status})`, 502, { raw });
+    const body = JSON.parse(raw) as {
+      SubmissionId?: string;
+      TINMatchingRecords?: { SuccessRecords?: Array<{ RecordId?: string; Status?: string }> };
+    };
+    const rec = body.TINMatchingRecords?.SuccessRecords?.[0];
+    return {
+      submissionId: body.SubmissionId ?? '',
+      recordId: rec?.RecordId ?? '',
+      status: normalizeTinMatchStatus(rec?.Status ?? 'Order Created'),
+      raw,
+    };
+  }
+
+  /** Poll TIN-match verdicts for a submission. */
+  async getTinMatchStatus(submissionId: string): Promise<TinMatchStatusResult[]> {
+    const res = await this.call(`${this.endpoints.tinMatchStatusUrl}?SubmissionId=${encodeURIComponent(submissionId)}`, {
+      method: 'GET',
+      headers: { accept: 'application/json' },
+    });
+    const raw = await res.text();
+    if (!res.ok) throw new AppError(ErrorCodes.E_IRIS, `TaxBandits TIN match status failed (${res.status})`, 502, { raw });
+    const body = JSON.parse(raw) as {
+      Records?: Array<{ RecordId?: string; RecipientId?: string; SequenceId?: string; Status?: string }>;
+      RecordId?: string;
+      RecipientId?: string;
+      SequenceId?: string;
+      Status?: string;
+    };
+    const records = body.Records ?? [{ RecordId: body.RecordId, RecipientId: body.RecipientId, SequenceId: body.SequenceId, Status: body.Status }];
+    return records.map((r) => ({
+      recordId: r.RecordId ?? '',
+      recipientRef: r.SequenceId ?? r.RecipientId ?? '',
+      status: normalizeTinMatchStatus(r.Status ?? ''),
+      rawStatus: r.Status ?? '',
+    }));
   }
 
   /** Current prepaid-credit balance (integer cents). */

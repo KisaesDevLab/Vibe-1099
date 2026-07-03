@@ -34,8 +34,8 @@ const log = createLogger('worker:iris');
 const POLL_DELAYS_MS = [60_000, 120_000, 300_000, 600_000, 1_800_000, 3_600_000]; // exp backoff → hourly
 const MAX_POLLS = 96; // ~4 days at terminal cadence
 
-/** Build the FilingProvider a transmission targets (IRIS A2A or Tax1099 REST). */
-async function providerFor(firmId: string, kind: FilingProviderKind): Promise<FilingProvider> {
+/** Build the FilingProvider a transmission targets (IRIS A2A / Tax1099 / TaxBandits). */
+export async function providerFor(firmId: string, kind: FilingProviderKind): Promise<FilingProvider> {
   const env = loadEnv();
   const db = getDb();
   const firm = await db.query.firms.findFirst({ where: eq(firms.id, firmId) });

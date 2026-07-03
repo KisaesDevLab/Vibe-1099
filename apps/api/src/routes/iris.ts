@@ -8,7 +8,7 @@ import { and, desc, eq, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { AppError, deadlinesFor, zTaxYear } from '@vibe1099/shared';
 import { generateJwkPair, getBlob, getCrypto, getQueue, loadEnv, QUEUE_NAMES, type IrisTransmitJob } from '@vibe1099/core';
-import { errorTranslations, firms, formRecords, getDb, recipients, tinMatchResults, transmissions } from '@vibe1099/db';
+import { errorTranslations, firms, formRecords, getDb, recipients, taxbanditsWebhookEvents, tinMatchResults, transmissions } from '@vibe1099/db';
 import { h } from '../middleware/error.js';
 import { requireStaff } from '../middleware/auth.js';
 import { composeTransmission } from '../services/iris.js';
@@ -45,6 +45,9 @@ irisRouter.get(
       taxbanditsOnlineAccess: firm.taxbanditsOnlineAccess,
       hasTaxbanditsCreds: !!(firm.taxbanditsClientIdEncrypted && firm.taxbanditsClientSecretEncrypted && firm.taxbanditsUserTokenEncrypted),
       taxbanditsDisclosureAckAt: firm.taxbanditsDisclosureAckAt,
+      // webhook setup info (register this URL in the TaxBandits console)
+      taxbanditsWebhookUrl: `${loadEnv().PORTAL_BASE_URL.replace(/\/$/, '')}/api/webhooks/taxbandits`,
+      taxbanditsWebhookSecretSet: !!loadEnv().TAXBANDITS_WEBHOOK_SECRET,
     });
   }),
 );
@@ -132,6 +135,26 @@ irisRouter.put(
   }),
 );
 
+/** Recent TaxBandits webhook events (admin) — surfaced in Settings for verification. */
+irisRouter.get(
+  '/taxbandits/webhook-events',
+  requireStaff('admin'),
+  h(async (_req, res) => {
+    const rows = await getDb()
+      .select({
+        eventType: taxbanditsWebhookEvents.eventType,
+        submissionId: taxbanditsWebhookEvents.submissionId,
+        status: taxbanditsWebhookEvents.status,
+        receivedAt: taxbanditsWebhookEvents.receivedAt,
+        processedAt: taxbanditsWebhookEvents.processedAt,
+      })
+      .from(taxbanditsWebhookEvents)
+      .orderBy(desc(taxbanditsWebhookEvents.receivedAt))
+      .limit(20);
+    res.json({ events: rows });
+  }),
+);
+
 /** JWK tooling: generate keypair in-app; export public JWK for IRS enrollment. */
 irisRouter.post(
   '/settings/generate-jwk',
@@ -200,29 +223,47 @@ irisRouter.post(
     // that still hold a Tax1099 key (either provider offers real-time TIN matching).
     const firm = await db.query.firms.findFirst({ where: eq(firms.id, req.staff!.firmId) });
     const chosen = provider ?? (firm?.filingProvider === 'taxbandits' ? 'taxbandits' : 'tax1099');
-    const client =
-      chosen === 'taxbandits' ? await buildTaxBanditsClient(db, req.staff!.firmId) : await buildTax1099Client(db, req.staff!.firmId);
     const tin = getCrypto().decrypt(recip.tinEncrypted);
-    const result = await client.tinMatch(tin, recip.name1, recip.tinType);
-    // reflect a mismatch onto the recipient's W-9 status so staff see it in-grid
-    if (!result.match && recip.w9Status !== 'requested') {
-      await db.update(recipients).set({ w9Status: 'stale', updatedAt: new Date() }).where(eq(recipients.id, recip.id));
-    }
-    // persist a provider-tagged, staleness-aware result
+    // supersede any prior open result for this recipient
     await db
       .update(tinMatchResults)
       .set({ stale: true })
       .where(and(eq(tinMatchResults.recipientId, recip.id), eq(tinMatchResults.stale, false)));
+
+    if (chosen === 'taxbandits') {
+      // async batch: submit now, poll the verdict later (housekeeping sweep / webhook)
+      const client = await buildTaxBanditsClient(db, req.staff!.firmId);
+      const sub = await client.submitTinMatch({ sequenceId: recip.id, name: recip.name1, tin, tinType: recip.tinType });
+      await db.insert(tinMatchResults).values({
+        firmId: req.staff!.firmId,
+        recipientId: recip.id,
+        provider: 'taxbandits',
+        status: sub.status, // usually 'pending' (Order Created)
+        code: sub.status,
+        message: 'Submitted for IRS TIN matching — verdict typically within 24 hours',
+        submissionRef: sub.submissionId,
+        recordRef: sub.recordId,
+      });
+      res.locals['audit'] = { action: 'taxbandits.tin-match', entityType: 'recipient', entityId: recip.id, detail: { submissionId: sub.submissionId } };
+      return void res.json({ async: true, status: sub.status, submissionId: sub.submissionId });
+    }
+
+    // Tax1099: real-time verdict
+    const client = await buildTax1099Client(db, req.staff!.firmId);
+    const result = await client.tinMatch(tin, recip.name1, recip.tinType);
+    if (!result.match && recip.w9Status !== 'requested') {
+      await db.update(recipients).set({ w9Status: 'stale', updatedAt: new Date() }).where(eq(recipients.id, recip.id));
+    }
     await db.insert(tinMatchResults).values({
       firmId: req.staff!.firmId,
       recipientId: recip.id,
-      provider: chosen === 'taxbandits' ? 'taxbandits' : 'irs',
+      provider: 'irs',
       status: result.match ? 'match' : 'mismatch',
       code: result.code,
       message: result.message,
     });
-    res.locals['audit'] = { action: `${chosen}.tin-match`, entityType: 'recipient', entityId: recip.id, detail: { match: result.match } };
-    res.json(result);
+    res.locals['audit'] = { action: 'tax1099.tin-match', entityType: 'recipient', entityId: recip.id, detail: { match: result.match } };
+    res.json({ async: false, match: result.match, code: result.code, message: result.message });
   }),
 );
 

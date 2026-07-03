@@ -123,9 +123,15 @@ export function Recipients() {
 
   const tinCheck = async (r: Recipient) => {
     try {
-      const res = await api.post<{ match: boolean; message: string }>('/api/iris/tin-match', { recipientId: r.id });
-      dialogs.toast(`TIN check for ${r.name1}: ${res.match ? 'match ✓' : 'MISMATCH — ' + res.message}`, res.match ? 'success' : 'error');
-      if (!res.match) await load();
+      const res = await api.post<{ async: boolean; match?: boolean; message?: string }>('/api/iris/tin-match', { recipientId: r.id });
+      if (res.async) {
+        // TaxBandits TIN matching is a batch job — the verdict arrives within ~24h
+        // (reconciled by the background sweep / webhook) and shows on the recipient.
+        dialogs.toast(`TIN check for ${r.name1} submitted — IRS verdict typically within 24 hours.`, 'info');
+      } else {
+        dialogs.toast(`TIN check for ${r.name1}: ${res.match ? 'match ✓' : 'MISMATCH — ' + res.message}`, res.match ? 'success' : 'error');
+        if (!res.match) await load();
+      }
     } catch (err) {
       dialogs.toast(err instanceof ApiError ? err.message : 'TIN check failed', 'error');
     }

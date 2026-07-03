@@ -28,10 +28,19 @@ interface IrisSettings {
   taxbanditsOnlineAccess: boolean;
   hasTaxbanditsCreds: boolean;
   taxbanditsDisclosureAckAt: string | null;
+  taxbanditsWebhookUrl: string;
+  taxbanditsWebhookSecretSet: boolean;
   taxbanditsClientId?: string; // transient
   taxbanditsClientSecret?: string; // transient
   taxbanditsUserToken?: string; // transient
   acknowledgeTaxbanditsDisclosure?: boolean; // transient
+}
+interface WebhookEvent {
+  eventType: string;
+  submissionId: string | null;
+  status: string | null;
+  receivedAt: string;
+  processedAt: string | null;
 }
 interface User { id: string; email: string; name: string; role: string; active: boolean; totpEnabled: boolean; lastLoginAt: string | null }
 interface AuditEntry { id: number; createdAt: string; actorType: string; actorId: string | null; action: string; entityType: string; entityId: string | null; ip: string | null }
@@ -51,6 +60,7 @@ export function Settings() {
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [newUser, setNewUser] = useState({ email: '', name: '', role: 'preparer', password: '' });
+  const [webhookEvents, setWebhookEvents] = useState<WebhookEvent[]>([]);
   const [totpSetup, setTotpSetup] = useState<{ secret: string; otpauthUrl: string } | null>(null);
   const [totpCode, setTotpCode] = useState('');
   const [sms, setSms] = useState({ provider: 'env', textlinkApiKey: '', twilioAccountSid: '', twilioAuthToken: '', twilioFromNumber: '', hasTextlinkKey: false, hasTwilioAuth: false, envProvider: 'none' });
@@ -213,6 +223,14 @@ export function Settings() {
   const exportAudit = async () => {
     const blob = await api.get<Blob>('/api/admin/audit?format=csv');
     downloadBlob(blob, 'audit-log.csv');
+  };
+
+  const loadWebhookEvents = async () => {
+    try {
+      const r = await api.get<{ events: WebhookEvent[] }>('/api/iris/taxbandits/webhook-events');
+      setWebhookEvents(r.events);
+      if (!r.events.length) dialogs.toast('No webhook events received yet.', 'info');
+    } catch (err) { setError(err instanceof ApiError ? err.message : String(err)); }
   };
 
   const resetTestData = async () => {
@@ -411,6 +429,30 @@ export function Settings() {
                 <button onClick={saveIris}>Save</button>
               </div>
               {iris.taxbanditsEnvironment === 'sandbox' && <div className="warn-box">Sandbox — submissions are TEST filings, not sent to the IRS.</div>}
+              <div className="panel" style={{ background: '#fff', marginTop: 10 }}>
+                <h3 style={{ marginTop: 0 }}>Status webhooks</h3>
+                <p className="muted" style={{ marginTop: 0 }}>Register this URL in the TaxBandits developer console (Settings → Webhooks) to receive e-file and TIN-match status updates. The appliance also polls as a fallback, so webhooks are optional but recommended.</p>
+                <div className="field"><label>Webhook URL</label>
+                  <div className="row" style={{ gap: 8 }}>
+                    <input className="mono" readOnly value={iris.taxbanditsWebhookUrl} onFocus={(e) => e.target.select()} />
+                    <button type="button" className="secondary" onClick={() => { void navigator.clipboard?.writeText(iris.taxbanditsWebhookUrl); dialogs.toast('Copied', 'success'); }}>Copy</button>
+                  </div>
+                </div>
+                <p className="muted" style={{ marginBottom: 6 }}>
+                  Shared secret: {iris.taxbanditsWebhookSecretSet
+                    ? <span style={{ color: '#15803d' }}>configured ✓</span>
+                    : <span style={{ color: '#b91c1c' }}>not set</span>} — set <span className="mono">TAXBANDITS_WEBHOOK_SECRET</span> in the appliance environment and enter the same value in the TaxBandits console.
+                </p>
+                <button type="button" className="secondary" onClick={loadWebhookEvents}>Show recent events</button>
+                {webhookEvents.length > 0 && (
+                  <table className="grid" style={{ marginTop: 8, fontSize: 12 }}>
+                    <thead><tr><th>Event</th><th>Submission</th><th>Status</th><th>Received</th></tr></thead>
+                    <tbody>{webhookEvents.map((e, i) => (
+                      <tr key={i}><td>{e.eventType}</td><td className="mono">{e.submissionId?.slice(0, 12) ?? ''}</td><td>{e.status ?? ''}</td><td>{new Date(e.receivedAt).toLocaleString()}</td></tr>
+                    ))}</tbody>
+                  </table>
+                )}
+              </div>
               {iris.taxbanditsDisclosureAckAt ? (
                 <p className="muted" style={{ marginBottom: 0 }}>§7216 disclosure acknowledged on {new Date(iris.taxbanditsDisclosureAckAt).toLocaleDateString()}. Recipient TINs, addresses, and amounts are transmitted to SPAN Enterprises (TaxBandits) to file on the payer's behalf.</p>
               ) : (
