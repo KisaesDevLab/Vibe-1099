@@ -34,6 +34,11 @@ export async function applyAckToRecords(
         .update(formRecords)
         .set({
           status: 'rejected',
+          // Release the transmission link: a rejected record was never accepted,
+          // so it is corrected by editing and re-filing as a fresh original. The
+          // compose guard blocks records still bound to a transmission, so leaving
+          // this set would make rejected records permanently unfileable (§6721).
+          transmissionId: null,
           recordErrors: recErrors.map((e) => ({
             code: e.code,
             message: e.message,

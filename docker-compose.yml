@@ -8,6 +8,9 @@ services:
     environment:
       POSTGRES_DB: vibe1099
       POSTGRES_USER: vibe1099
+      # Set POSTGRES_PASSWORD in .env for any real deployment. The app refuses to
+      # boot in production while this is left at the 'vibe1099' dev default
+      # (see loadEnv in packages/core/src/env.ts), so the weak default can't ship.
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-vibe1099}
     volumes:
       - vibe1099-pgdata:/var/lib/postgresql/data
@@ -65,18 +68,31 @@ services:
       SMTP_PASS: ${SMTP_PASS:-}
       SMTP_FROM: ${SMTP_FROM:-Vibe 1099 <no-reply@localhost>}
       SMTP_SECURE: ${SMTP_SECURE:-0}
+      EMAIL_PROVIDER: ${EMAIL_PROVIDER:-auto}
+      EMAILIT_API_KEY: ${EMAILIT_API_KEY:-}
+      EMAILIT_FROM: ${EMAILIT_FROM:-}
       SMS_PROVIDER: ${SMS_PROVIDER:-none}
       TEXTLINK_API_KEY: ${TEXTLINK_API_KEY:-}
       TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID:-}
       TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN:-}
       TWILIO_FROM_NUMBER: ${TWILIO_FROM_NUMBER:-}
       IRIS_MOCK_BASE_URL: ${IRIS_MOCK_BASE_URL:-}
+      TAX1099_MOCK_BASE_URL: ${TAX1099_MOCK_BASE_URL:-}
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      # Trusted reverse-proxy hop count — MUST match the real topology or per-IP
+      # rate limits key off a spoofable X-Forwarded-For. The API is not
+      # host-published (reached only via the web nginx proxy on the internal net).
+      TRUST_PROXY_HOPS: ${TRUST_PROXY_HOPS:-2}
       SESSION_INACTIVITY_MINUTES: ${SESSION_INACTIVITY_MINUTES:-30}
+      SESSION_ABSOLUTE_HOURS: ${SESSION_ABSOLUTE_HOURS:-12}
       STAFF_IP_ALLOWLIST: ${STAFF_IP_ALLOWLIST:-}
       DATA_RETENTION_YEARS: ${DATA_RETENTION_YEARS:-4}
-    ports:
-      - "8210:8210"
+    # No host port publish: the API is reached only over the internal Docker
+    # network by the web nginx proxy (which fronts /api). Publishing 8210 to the
+    # host would bypass the proxy + staff IP-allowlist framing and expose the
+    # public + staff API surface directly on the host interface.
+    expose:
+      - "8210"
     depends_on:
       postgres:
         condition: service_healthy

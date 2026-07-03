@@ -1,13 +1,24 @@
 import type { NextFunction, Request, Response } from 'express';
 import { ZodError } from 'zod';
 import { AppError, ErrorCodes } from '@vibe1099/shared';
-import { createLogger } from '@vibe1099/core';
+import { createLogger, redactPii } from '@vibe1099/core';
 
 const log = createLogger('api:error');
 
+/** Scrub TIN-shaped values out of error details before they reach the client —
+ * provider (IRIS/Tax1099) rejections can echo submitted TIN/name fragments. */
+function scrubDetails(details: unknown): unknown {
+  if (details === undefined) return undefined;
+  try {
+    return JSON.parse(redactPii(JSON.stringify(details)));
+  } catch {
+    return undefined;
+  }
+}
+
 export function errorHandler(err: unknown, req: Request, res: Response, _next: NextFunction): void {
   if (err instanceof AppError) {
-    res.status(err.status).json({ error: { code: err.code, message: err.message, details: err.details } });
+    res.status(err.status).json({ error: { code: err.code, message: redactPii(err.message), details: scrubDetails(err.details) } });
     return;
   }
   if (err instanceof ZodError) {

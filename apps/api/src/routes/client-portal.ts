@@ -152,7 +152,7 @@ clientPortalRouter.post(
   h(async (req, res) => {
     const { tin, tinType } = z.object({ tin: z.string().min(9).max(11), tinType: zTinType }).parse(req.body);
     const scope = req.clientScope!;
-    const match = await lookupByTin(getDb(), scope.firmId, tin, tinType);
+    const match = await lookupByTin(getDb(), scope.firmId, tin, tinType, { payerId: scope.payerId });
     await touchActivity(scope.inviteId);
     if (!match) return void res.json({ match: null });
     // masked echo: "We have JOHN D— at 123 M— St — is this current?"

@@ -47,6 +47,11 @@ export const firms = pgTable('firms', {
   tax1099ApiKeyEncrypted: text('tax1099_api_key_encrypted'), // Tax1099 app key, envelope-encrypted
   tax1099Environment: text('tax1099_environment').notNull().default('sandbox').$type<'sandbox' | 'production'>(),
   tax1099Mailing: boolean('tax1099_mailing').notNull().default(false), // let Tax1099 USPS-mail recipient copies
+  // §7216 auxiliary-services disclosure acknowledgment. Sending payee TINs to
+  // Zenwork (Tax1099) is a third-party disclosure; an admin must acknowledge it
+  // once before any Tax1099 call is permitted (gated in loadTax1099Config).
+  tax1099DisclosureAckAt: timestamp('tax1099_disclosure_ack_at', { withTimezone: true }),
+  tax1099DisclosureAckBy: uuid('tax1099_disclosure_ack_by'),
   // Missouri
   moWithholdingId: text('mo_withholding_id').notNull().default(''),
   // delivery config

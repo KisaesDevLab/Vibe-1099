@@ -178,6 +178,7 @@ export async function handleRenderJob(job: Job): Promise<void> {
       contentType: 'application/pdf',
       filename: `${batch.label.replace(/[^\w.-]+/g, '_')}.pdf`,
       bytes: pdf,
+      encrypt: true,
     });
     await db
       .update(paperBatches)

@@ -99,11 +99,13 @@ recipientsRouter.get(
   }),
 );
 
-// lookup-as-you-type (staff)
-recipientsRouter.get(
+// lookup-as-you-type (staff). POST (not GET) so the plaintext TIN travels in the
+// request body, never in a URL/query string that would land in proxy + app logs
+// (LOCKED rule: plaintext TIN never in URLs).
+recipientsRouter.post(
   '/lookup',
   h(async (req, res) => {
-    const q = z.object({ tin: z.string().min(9), tinType: zTinType }).parse(req.query);
+    const q = z.object({ tin: z.string().min(9), tinType: zTinType }).parse(req.body);
     const match = await lookupByTin(getDb(), req.staff!.firmId, q.tin, q.tinType);
     res.json({ match });
   }),

@@ -206,6 +206,7 @@ moRouter.post(
       contentType: 'text/plain',
       filename: output.filename,
       bytes: Buffer.from(output.content, 'ascii'),
+      encrypt: true,
     });
 
     const [created] = await db

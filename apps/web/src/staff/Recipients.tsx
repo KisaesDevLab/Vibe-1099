@@ -70,7 +70,7 @@ export function Recipients() {
     const digits = value.replace(/\D/g, '');
     if (digits.length === 9 && !editing) {
       try {
-        const r = await api.get<{ match: VaultMatch | null }>(`/api/recipients/lookup?tin=${digits}&tinType=${form.tinType}`);
+        const r = await api.post<{ match: VaultMatch | null }>('/api/recipients/lookup', { tin: digits, tinType: form.tinType });
         setMatch(r.match);
       } catch { setMatch(null); }
     } else setMatch(null);

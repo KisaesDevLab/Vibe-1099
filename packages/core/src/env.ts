@@ -61,9 +61,43 @@ const zEnv = z.object({
   TRUST_PROXY_HOPS: z.coerce.number().int().min(0).max(10).default(2),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
   SESSION_INACTIVITY_MINUTES: z.coerce.number().int().default(30),
+  // Absolute session cap regardless of activity (a rolling inactivity TTL alone
+  // lets a session live forever if touched often enough). Bounds credential theft.
+  SESSION_ABSOLUTE_HOURS: z.coerce.number().int().min(1).default(12),
   STAFF_IP_ALLOWLIST: z.string().default(''),
   DATA_RETENTION_YEARS: z.coerce.number().int().default(4),
-});
+})
+  .superRefine((env, ctx) => {
+    if (env.NODE_ENV !== 'production') return;
+    // Production interlocks — fail the boot rather than silently mis-filing or
+    // sending PII in cleartext (H4 / TLS / weak-default findings in the audit).
+    if (/:vibe1099@/.test(env.DATABASE_URL)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'DATABASE_URL still uses the weak default password "vibe1099" — set POSTGRES_PASSWORD in .env before running in production.',
+      });
+    }
+    if (env.IRIS_MOCK_BASE_URL || env.TAX1099_MOCK_BASE_URL) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          'IRIS_MOCK_BASE_URL / TAX1099_MOCK_BASE_URL must be empty in production — a mock base URL would mark returns "accepted" without ever filing them with the IRS.',
+      });
+    }
+    const httpsOnly: Array<[keyof typeof env, string]> = [
+      ['IRIS_PROD_BASE_URL', env.IRIS_PROD_BASE_URL],
+      ['IRIS_ATS_BASE_URL', env.IRIS_ATS_BASE_URL],
+      ['TAX1099_PROD_BASE_URL', env.TAX1099_PROD_BASE_URL],
+      ['TAX1099_SANDBOX_BASE_URL', env.TAX1099_SANDBOX_BASE_URL],
+      ['APP_BASE_URL', env.APP_BASE_URL],
+      ['PORTAL_BASE_URL', env.PORTAL_BASE_URL],
+    ];
+    for (const [key, val] of httpsOnly) {
+      if (val && !val.startsWith('https://')) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: `${String(key)} must be https:// in production (got ${val}).` });
+      }
+    }
+  });
 
 export type Env = z.infer<typeof zEnv>;
 

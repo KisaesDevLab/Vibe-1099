@@ -22,6 +22,9 @@ export class SmtpEmailAdapter implements EmailAdapter {
       host: config.host,
       port: config.port,
       secure: config.secure,
+      // Require STARTTLS on non-implicit-TLS connections so portal-link emails
+      // never fall back to a cleartext relay hop (FTC Safeguards — data in transit).
+      requireTLS: !config.secure,
       auth: config.user ? { user: config.user, pass: config.pass } : undefined,
     });
   }

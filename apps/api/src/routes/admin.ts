@@ -251,6 +251,14 @@ adminRouter.put(
   h(async (req, res) => {
     const key = z.string().min(1).max(100).parse(req.params['key']);
     const { value } = z.object({ value: z.unknown() }).parse(req.body);
+    // Validate settings whose values drive filing correctness — the generic
+    // z.unknown() would otherwise let a bad year through into created/filed records.
+    if (key === 'filing_years') {
+      const zYear = z.number().int().min(2020).max(2100);
+      z.object({ years: z.array(zYear).min(1), current: zYear }).parse(value);
+    } else if (key === 'data_retention_years') {
+      z.number().int().min(4).max(100).parse(value);
+    }
     await setSetting(key, value);
     res.locals['audit'] = { action: 'settings.update', entityType: 'app_settings', entityId: key };
     res.json({ ok: true });

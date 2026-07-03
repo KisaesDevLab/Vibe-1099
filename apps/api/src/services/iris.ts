@@ -92,6 +92,18 @@ export async function composeTransmission(
     throw AppError.conflict(`${inFlight.length} record(s) already belong to a transmission — resolve those first`);
   }
 
+  // Type-2 corrections are a linked pair (zeroing record + new original) that IRS
+  // requires be transmitted together. Refuse to compose a batch that splits a pair.
+  const idSet = new Set(records.map((r) => r.id));
+  for (const r of records) {
+    if (r.correctionType === 'two_transaction_new' && (!r.correctsId || !idSet.has(r.correctsId))) {
+      throw AppError.validation('A Type 2 correction must transmit with its paired zeroing record — queue both together.');
+    }
+    if (r.correctionType === 'two_transaction_zero' && !records.some((o) => o.correctsId === r.id && o.correctionType === 'two_transaction_new')) {
+      throw AppError.validation('A Type 2 zeroing record must transmit with its paired new record — queue both together.');
+    }
+  }
+
   const crypto = getCrypto();
   // scope recipient decryption to the firm — never decrypt/transmit a foreign
   // firm's TIN even if a record's recipientId was poisoned by an upstream write
@@ -188,6 +200,7 @@ export async function composeTransmission(
       contentType: 'application/xml',
       filename: `${utid}.xml`,
       bytes: Buffer.from(xml, 'utf8'),
+      encrypt: true,
     });
   } else {
     const payload = buildTax1099Payload(input, tax1099Config!.environment);
@@ -199,6 +212,7 @@ export async function composeTransmission(
       contentType: 'application/json',
       filename: `${utid}.json`,
       bytes: Buffer.from(JSON.stringify(payload), 'utf8'),
+      encrypt: true,
     });
   }
 
@@ -247,6 +261,11 @@ export async function composeTransmission(
             recipientId: r.recipientId,
             recipientName: rmap.get(r.recipientId)?.name1,
             recipientTinMasked: maskTin(rmap.get(r.recipientId)?.tinLast4 ?? '', rmap.get(r.recipientId)?.tinType ?? 'SSN'),
+            // payer identity as filed — needed to diff payer-name/TIN corrections
+            // and to preserve who the return named even if the payer is later edited
+            payerId: payer.id,
+            payerName: payer.legalName,
+            payerTinMasked: maskTin(payer.tinLast4 ?? '', payer.tinType),
             taxYear: r.taxYear,
             formType: r.formType,
             snapshotAt: new Date().toISOString(),

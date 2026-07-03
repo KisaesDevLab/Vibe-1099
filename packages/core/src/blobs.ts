@@ -1,6 +1,9 @@
 /**
  * Blob store — PDFs, IRIS XML/acks, MO .txt files live in Postgres bytea.
- * Sensitive payloads (W-9 PDFs) are envelope-encrypted before storage.
+ * Every artifact carrying a plaintext TIN (W-9 PDFs, IRIS XML, Tax1099 payloads,
+ * MO Pub 1220 .txt, IRIS acks, batch/report PDFs) is envelope-encrypted before
+ * storage so a DB dump/backup never exposes a cleartext TIN (FTC Safeguards
+ * 314.4(c)(3)). `getBlob` transparently decrypts on the `encrypted` flag.
  */
 import { and, eq } from 'drizzle-orm';
 import { blobs, type Db } from '@vibe1099/db';

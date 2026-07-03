@@ -259,7 +259,34 @@ formsRouter.delete(
     });
     if (!record) throw AppError.notFound('Form record');
     assertDeletableStatus(record);
-    await db.delete(formRecords).where(eq(formRecords.id, id));
+    // Don't strand a dependent: in a Type-2 pair the new-original record points at
+    // the zeroing record via correctsId. Deleting the referenced record first would
+    // orphan its dependent, so require the dependent be removed first.
+    const dependents = await db
+      .select({ id: formRecords.id })
+      .from(formRecords)
+      .where(eq(formRecords.correctsId, id));
+    if (dependents.length) {
+      throw AppError.conflict('This record has a linked correction record — delete that one first.');
+    }
+    await db.transaction(async (tx) => {
+      await tx.delete(formRecords).where(eq(formRecords.id, id));
+      // If this was the last outstanding correction draft of an original, roll the
+      // original back from terminal `corrected` to `accepted` so it stays
+      // correctable — otherwise deleting the draft strands it permanently (§6721).
+      if (record.correctsId) {
+        const siblings = await tx
+          .select({ id: formRecords.id })
+          .from(formRecords)
+          .where(eq(formRecords.correctsId, record.correctsId));
+        if (!siblings.length) {
+          await tx
+            .update(formRecords)
+            .set({ status: 'accepted', updatedAt: new Date() })
+            .where(and(eq(formRecords.id, record.correctsId), eq(formRecords.status, 'corrected')));
+        }
+      }
+    });
     res.locals['audit'] = { action: 'form.delete', entityType: 'form_record', entityId: id, before: record.boxValues };
     res.json({ ok: true });
   }),

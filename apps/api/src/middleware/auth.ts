@@ -57,6 +57,14 @@ export function requireStaff(...roles: UserRole[]) {
       if (!raw) throw new AppError(ErrorCodes.E_TOKEN_EXPIRED, 'Session expired — sign in again', 401);
       const session = JSON.parse(raw) as StaffSession;
 
+      // Absolute lifetime cap: a rolling inactivity TTL alone lets a stolen
+      // session live indefinitely if used often enough. Bound it regardless.
+      const maxAgeMs = loadEnv().SESSION_ABSOLUTE_HOURS * 3_600_000;
+      if (session.createdAt && Date.now() - session.createdAt > maxAgeMs) {
+        await destroySession(sid);
+        throw new AppError(ErrorCodes.E_TOKEN_EXPIRED, 'Session expired — sign in again', 401);
+      }
+
       // CSRF double-submit on mutations
       if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
         const cookieToken = (req.cookies as Record<string, string>)[CSRF_COOKIE];

@@ -31,6 +31,15 @@ export async function loadTax1099Config(db: Db, firmId: string): Promise<Tax1099
   if (!firm.tax1099ApiKeyEncrypted) {
     throw new AppError(ErrorCodes.E_IRIS_AUTH, 'Tax1099 is not configured — add your Tax1099 API key in Settings', 409);
   }
+  // §7216 gate: no payee TIN leaves the appliance for Zenwork until an admin has
+  // acknowledged the auxiliary-services disclosure (Treas. Reg. §301.7216-2(d)).
+  if (!firm.tax1099DisclosureAckAt) {
+    throw new AppError(
+      ErrorCodes.E_IRIS_AUTH,
+      'Tax1099 disclosure not acknowledged — an admin must accept the §7216 third-party disclosure in Settings before filing/mailing through Tax1099.',
+      409,
+    );
+  }
   return {
     apiKey: getCrypto().decrypt(firm.tax1099ApiKeyEncrypted),
     environment: firm.tax1099Environment,

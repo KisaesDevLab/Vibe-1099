@@ -5,6 +5,7 @@
 import { and, eq, inArray, isNull, lt, sql } from 'drizzle-orm';
 import { Job } from 'bullmq';
 import {
+  audit,
   createLogger,
   getCrypto,
   getQueue,
@@ -93,7 +94,14 @@ async function markStaleW9s(): Promise<void> {
   if (marked.length) log.info({ count: marked.length }, 'stale W-9s marked');
 }
 
-/** Retention sweep: delete blobs older than the configured retention window (4-year minimum default). */
+/**
+ * Retention sweep: delete blobs older than the configured retention window
+ * (4-year minimum default — never below the §6501 filing-record floor). Covers
+ * both derived artifacts and the TIN-bearing filing artifacts (W-9/form PDFs,
+ * IRIS XML/acks, Tax1099 payloads, MO .txt) so the appliance actually satisfies
+ * FTC Safeguards 314.4(c)(6) secure disposal rather than retaining PII forever.
+ * The deletion is audited (append-only) as a system action.
+ */
 async function retentionSweep(): Promise<void> {
   const db = getDb();
   const env = loadEnv();
@@ -101,9 +109,22 @@ async function retentionSweep(): Promise<void> {
   const cutoff = new Date(Date.now() - years * 365.25 * 86_400_000);
   const deleted = await db
     .delete(blobs)
-    .where(and(lt(blobs.createdAt, cutoff), sql`${blobs.kind} IN ('batch_pdf','report_pdf','export_zip')`))
+    .where(
+      and(
+        lt(blobs.createdAt, cutoff),
+        sql`${blobs.kind} IN ('batch_pdf','report_pdf','export_zip','w9_pdf','form_pdf','iris_xml','iris_ack','tax1099_payload','mo_txt')`,
+      ),
+    )
     .returning({ id: blobs.id });
-  if (deleted.length) log.info({ count: deleted.length, years }, 'retention sweep removed derived blobs');
+  if (deleted.length) {
+    log.info({ count: deleted.length, years }, 'retention sweep removed expired blobs');
+    await audit(db, {
+      actorType: 'system',
+      action: 'retention.sweep',
+      entityType: 'blob',
+      detail: { deletedCount: deleted.length, retentionYears: years },
+    });
+  }
 }
 
 export async function handleHousekeepingJob(_job: Job): Promise<void> {

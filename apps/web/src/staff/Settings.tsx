@@ -18,6 +18,8 @@ interface IrisSettings {
   tax1099Mailing: boolean;
   hasTax1099Key: boolean;
   tax1099ApiKey?: string; // transient input only
+  tax1099DisclosureAckAt: string | null;
+  acknowledgeTax1099Disclosure?: boolean; // transient input only
 }
 interface User { id: string; email: string; name: string; role: string; active: boolean; totpEnabled: boolean; lastLoginAt: string | null }
 interface AuditEntry { id: number; createdAt: string; actorType: string; actorId: string | null; action: string; entityType: string; entityId: string | null; ip: string | null }
@@ -91,8 +93,9 @@ export function Settings() {
         tax1099Environment: iris.tax1099Environment,
         tax1099Mailing: iris.tax1099Mailing,
         ...(iris.tax1099ApiKey ? { tax1099ApiKey: iris.tax1099ApiKey } : {}),
+        ...(iris.acknowledgeTax1099Disclosure ? { acknowledgeTax1099Disclosure: true } : {}),
       });
-      setIris((i) => (i ? { ...i, tax1099ApiKey: '', hasTax1099Key: i.hasTax1099Key || !!i.tax1099ApiKey } : i));
+      setIris((i) => (i ? { ...i, tax1099ApiKey: '', acknowledgeTax1099Disclosure: false, hasTax1099Key: i.hasTax1099Key || !!i.tax1099ApiKey, tax1099DisclosureAckAt: i.tax1099DisclosureAckAt ?? (i.acknowledgeTax1099Disclosure ? new Date().toISOString() : null) } : i));
       setNotice('E-file settings saved.');
     } catch (err) { setError(err instanceof ApiError ? err.message : String(err)); }
   };
@@ -185,8 +188,12 @@ export function Settings() {
   };
 
   const startTotp = async () => {
-    const r = await api.post<{ secret: string; otpauthUrl: string }>('/api/auth/totp/setup');
-    setTotpSetup(r);
+    const password = await dialogs.prompt('Confirm your account password to set up 2FA:', { title: 'Confirm password', password: true });
+    if (!password) return;
+    try {
+      const r = await api.post<{ secret: string; otpauthUrl: string }>('/api/auth/totp/setup', { password });
+      setTotpSetup(r);
+    } catch (err) { setError(err instanceof ApiError ? err.message : String(err)); }
   };
   const confirmTotp = async () => {
     try {
@@ -310,6 +317,17 @@ export function Settings() {
                 <button onClick={saveIris}>Save</button>
               </div>
               {iris.tax1099Environment === 'sandbox' && <div className="warn-box">Sandbox — submissions are TEST filings, not sent to the IRS.</div>}
+              {iris.tax1099DisclosureAckAt ? (
+                <p className="muted" style={{ marginBottom: 0 }}>§7216 disclosure acknowledged on {new Date(iris.tax1099DisclosureAckAt).toLocaleDateString()}. Recipient TINs, addresses, and amounts are transmitted to Zenwork (Tax1099) to file/mail on the payer's behalf.</p>
+              ) : (
+                <div className="warn-box">
+                  <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+                    <input type="checkbox" style={{ width: 'auto', marginTop: 3 }} checked={!!iris.acknowledgeTax1099Disclosure}
+                      onChange={(e) => setIris({ ...iris, acknowledgeTax1099Disclosure: e.target.checked })} />
+                    <span>I acknowledge that filing/mailing through Tax1099 discloses recipient TINs (SSNs/EINs), names, addresses, and dollar amounts to Zenwork, Inc. as an auxiliary service provider under Treas. Reg. §301.7216-2(d). Filing stays disabled until this is accepted.</span>
+                  </label>
+                </div>
+              )}
             </div>
           )}
 

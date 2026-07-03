@@ -1,7 +1,14 @@
 /**
  * RFC 6238 TOTP (optional staff 2FA) — no external deps.
  */
-import { createHmac, randomBytes } from 'node:crypto';
+import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+
+/** Constant-time 6-digit code compare (avoids char-by-char early exit). */
+function codesEqual(a: string, b: string): boolean {
+  const ba = Buffer.from(a);
+  const bb = Buffer.from(b);
+  return ba.length === bb.length && timingSafeEqual(ba, bb);
+}
 
 const B32_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
 
@@ -65,7 +72,7 @@ export function totpCode(secretB32: string, timeStepMs = 30_000, at = Date.now()
 export function verifyTotpCounter(secretB32: string, code: string, backSteps = 1, fwdSteps = 0, at = Date.now()): number | null {
   for (let i = -backSteps; i <= fwdSteps; i++) {
     const t = at + i * 30_000;
-    if (totpCode(secretB32, 30_000, t) === code) return Math.floor(t / 30_000);
+    if (codesEqual(totpCode(secretB32, 30_000, t), code)) return Math.floor(t / 30_000);
   }
   return null;
 }

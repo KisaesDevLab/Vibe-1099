@@ -14,6 +14,8 @@ Choose a firm default in **Settings → E-file**, and optionally override per pa
 
 Use **Tax1099** for firms or entities that don't want to obtain and maintain their own IRS account. Everything upstream (data entry, review, corrections, the transmit button) works the same regardless of backend.
 
+> **§7216 disclosure — one-time acknowledgment.** Filing or mailing through Tax1099 transmits recipient TINs (SSNs/EINs), names, addresses, and dollar amounts to **Zenwork, Inc.** as an auxiliary service provider (Treas. Reg. §301.7216-2(d)). Before any Tax1099 filing, TIN-match, or hosted-W-9 call is allowed, an admin must tick the acknowledgment box under **Settings → E-file → Tax1099**. Until then, Tax1099 filing stays disabled. The acceptance is recorded in the audit log as a disclosure event. IRIS filing (your own TCC) does not involve this third party.
+
 ## Transmitting
 - From **Form entry** you can transmit a single payer's queued forms.
 - From **[Fleet operations](fleet-operations.md)** you can transmit across many payers at once.

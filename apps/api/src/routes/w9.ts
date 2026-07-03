@@ -99,12 +99,23 @@ export async function createW9Request(opts: {
     await getQueue(QUEUE_NAMES.delivery).add('w9_request', job);
   }
   // Tax1099 add-on: firms filing through Tax1099 can also collect the W-9 via
-  // Zenwork's hosted flow. Best-effort — our own request above is the source of truth.
-  if (firm?.filingProvider === 'tax1099' && firm.tax1099ApiKeyEncrypted) {
+  // Zenwork's hosted flow. Best-effort — our own request above is the source of
+  // truth. Only when the firm has acknowledged the §7216 disclosure (enforced in
+  // buildTax1099Client) and only for tax1099-routed firms; the external contact
+  // disclosure is audit-logged rather than silently fired.
+  if (firm?.filingProvider === 'tax1099' && firm.tax1099ApiKeyEncrypted && firm.tax1099DisclosureAckAt) {
     try {
       const { buildTax1099Client } = await import('../services/filing.js');
       const client = await buildTax1099Client(db, opts.firmId);
       await client.requestW9({ name: opts.requestedName ?? '', email: opts.email, mobile: opts.mobile });
+      await audit(db, {
+        firmId: opts.firmId,
+        actorType: 'system',
+        action: 'tax1099.w9.request',
+        entityType: 'w9_request',
+        entityId: created.id,
+        detail: { disclosedTo: 'tax1099', channels: [opts.email ? 'email' : null, opts.mobile ? 'sms' : null].filter(Boolean) },
+      });
     } catch {
       /* non-fatal: local W-9 request still stands */
     }

@@ -162,6 +162,7 @@ authRouter.post(
       .update(passwordResets)
       .set({ usedAt: new Date() })
       .where(and(eq(passwordResets.userId, row.userId), isNull(passwordResets.usedAt)));
+    res.locals['audit'] = { action: 'password.reset.complete', entityType: 'user', entityId: row.userId };
     res.json({ ok: true });
   }),
 );
@@ -171,13 +172,22 @@ authRouter.post(
 authRouter.post(
   '/totp/setup',
   requireStaff(),
+  rateLimit({ key: 'totpsetup', limit: 10, windowSec: 900 }),
   h(async (req, res) => {
+    // Re-verify the account password so a hijacked session alone cannot disable
+    // or re-enroll 2FA (a session-only attacker would otherwise downgrade MFA).
+    const { password } = z.object({ password: z.string().min(1).max(200) }).parse(req.body);
+    const db = getDb();
+    const user = await db.query.users.findFirst({ where: eq(users.id, req.staff!.userId) });
+    const ok = await argonVerify(user?.passwordHash ?? '', password).catch(() => false);
+    if (!ok) throw new AppError(ErrorCodes.E_AUTH, 'Password does not match', 401);
     const secret = generateTotpSecret();
     const crypto = getCrypto();
-    await getDb()
+    await db
       .update(users)
       .set({ totpSecretEncrypted: crypto.encrypt(secret), totpEnabled: false })
       .where(eq(users.id, req.staff!.userId));
+    res.locals['audit'] = { action: 'totp.setup', entityType: 'user', entityId: req.staff!.userId };
     res.json({ secret, otpauthUrl: otpauthUrl(secret, req.staff!.email) });
   }),
 );
@@ -194,6 +204,7 @@ authRouter.post(
       throw new AppError(ErrorCodes.E_AUTH, 'Code does not match — try again', 401);
     }
     await db.update(users).set({ totpEnabled: true }).where(eq(users.id, user.id));
+    res.locals['audit'] = { action: 'totp.confirm', entityType: 'user', entityId: user.id };
     res.json({ ok: true });
   }),
 );

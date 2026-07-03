@@ -36,6 +36,7 @@ irisRouter.get(
       tax1099Environment: firm.tax1099Environment,
       tax1099Mailing: firm.tax1099Mailing,
       hasTax1099Key: !!firm.tax1099ApiKeyEncrypted,
+      tax1099DisclosureAckAt: firm.tax1099DisclosureAckAt,
     });
   }),
 );
@@ -55,8 +56,13 @@ irisRouter.put(
         tax1099ApiKey: z.string().max(500).optional(),
         tax1099Environment: z.enum(['sandbox', 'production']).optional(),
         tax1099Mailing: z.boolean().optional(),
+        // one-time admin acceptance of the §7216 disclosure to Zenwork
+        acknowledgeTax1099Disclosure: z.boolean().optional(),
       })
       .parse(req.body);
+    const db = getDb();
+    const firm = await db.query.firms.findFirst({ where: eq(firms.id, req.staff!.firmId) });
+    if (!firm) throw AppError.notFound('Firm');
     const patch: Record<string, unknown> = { updatedAt: new Date() };
     if (input.tcc !== undefined) patch['irisTcc'] = input.tcc.toUpperCase();
     if (input.apiClientId !== undefined) patch['irisApiClientId'] = input.apiClientId;
@@ -67,6 +73,12 @@ irisRouter.put(
     if (input.tax1099ApiKey !== undefined && input.tax1099ApiKey !== '') {
       patch['tax1099ApiKeyEncrypted'] = getCrypto().encrypt(input.tax1099ApiKey);
     }
+    // Record the disclosure acknowledgment (only the first time) and audit it as a
+    // §7216 disclosure event. Enabling Tax1099 without it leaves filing gated.
+    if (input.acknowledgeTax1099Disclosure && !firm.tax1099DisclosureAckAt) {
+      patch['tax1099DisclosureAckAt'] = new Date();
+      patch['tax1099DisclosureAckBy'] = req.staff!.userId;
+    }
     if (input.privateJwk) {
       patch['irisJwkEncrypted'] = getCrypto().encrypt(JSON.stringify(input.privateJwk));
       // derive public JWK (strip private members)
@@ -74,8 +86,13 @@ irisRouter.put(
       for (const k of ['d', 'p', 'q', 'dp', 'dq', 'qi']) delete pub[k];
       patch['irisJwkPublic'] = pub;
     }
-    await getDb().update(firms).set(patch).where(eq(firms.id, req.staff!.firmId));
-    res.locals['audit'] = { action: 'iris.settings', entityType: 'firm', entityId: req.staff!.firmId, detail: { fields: Object.keys(patch) } };
+    await db.update(firms).set(patch).where(eq(firms.id, req.staff!.firmId));
+    res.locals['audit'] = {
+      action: patch['tax1099DisclosureAckAt'] ? 'tax1099.disclosure.ack' : 'iris.settings',
+      entityType: 'firm',
+      entityId: req.staff!.firmId,
+      detail: { fields: Object.keys(patch) },
+    };
     res.json({ ok: true });
   }),
 );
@@ -119,7 +136,11 @@ irisRouter.post(
       recordIds,
     });
     const job: IrisTransmitJob = { kind: 'transmit', transmissionId: result.transmissionId, firmId: req.staff!.firmId };
-    await getQueue(QUEUE_NAMES.iris).add('transmit', job);
+    // at-most-once: a filing POST must NOT auto-retry. A lost/timed-out response
+    // after the IRS already received the intake would otherwise be re-POSTed and
+    // risk a duplicate return (§6721). On failure the operator re-queues
+    // deliberately after confirming status. (Ack polling keeps its retries.)
+    await getQueue(QUEUE_NAMES.iris).add('transmit', job, { attempts: 1 });
     res.locals['audit'] = { action: 'iris.transmit', entityType: 'transmission', entityId: result.transmissionId, detail: { recordCount: result.recordCount } };
     res.status(202).json(result);
   }),

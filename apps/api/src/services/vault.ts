@@ -59,8 +59,21 @@ export function checkTin(raw: string, tinType: TinType): { tin: string; isItin: 
   return { tin: normalizeTin(raw), isItin: result.isItin ?? false };
 }
 
-/** Lookup-as-you-type: TIN → hash → vault match with most-current name/address + last use. */
-export async function lookupByTin(db: Db, firmId: string, rawTin: string, tinType: TinType): Promise<VaultMatch | null> {
+/**
+ * Lookup-as-you-type: TIN → hash → vault match with most-current name/address + last use.
+ *
+ * `opts.payerId` scopes the match to recipients that already have a form under that
+ * payer. The staff zone omits it (firm-wide vault). The client zone MUST pass its
+ * scoped `payerId` so a magic-link client cannot confirm the existence of a TIN that
+ * belongs only to another payer in the firm's book (trust-zone isolation; IRC §7216).
+ */
+export async function lookupByTin(
+  db: Db,
+  firmId: string,
+  rawTin: string,
+  tinType: TinType,
+  opts?: { payerId?: string },
+): Promise<VaultMatch | null> {
   const tin = normalizeTin(rawTin);
   if (tin.length !== 9) return null;
   const hash = getCrypto().tinHash(tin, firmId, tinType);
@@ -68,6 +81,16 @@ export async function lookupByTin(db: Db, firmId: string, rawTin: string, tinTyp
     where: and(eq(recipients.firmId, firmId), eq(recipients.tinHash, hash), isNull(recipients.mergedIntoId)),
   });
   if (!row) return null;
+
+  // Client zone: only reveal recipients this payer already files for.
+  if (opts?.payerId) {
+    const owned = await db
+      .select({ id: formRecords.id })
+      .from(formRecords)
+      .where(and(eq(formRecords.recipientId, row.id), eq(formRecords.payerId, opts.payerId)))
+      .limit(1);
+    if (!owned.length) return null;
+  }
 
   const lastForm = await db
     .select({

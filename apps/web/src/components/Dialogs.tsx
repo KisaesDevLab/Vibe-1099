@@ -18,13 +18,14 @@ interface DialogRequest {
   defaultValue?: string;
   revealValue?: string;
   danger?: boolean;
+  password?: boolean;
   resolve: (v: unknown) => void;
 }
 
 interface DialogApi {
   alert: (message: string, title?: string) => Promise<void>;
   confirm: (message: string, opts?: { title?: string; danger?: boolean }) => Promise<boolean>;
-  prompt: (message: string, opts?: { title?: string; defaultValue?: string }) => Promise<string | null>;
+  prompt: (message: string, opts?: { title?: string; defaultValue?: string; password?: boolean }) => Promise<string | null>;
   reveal: (title: string, value: string) => Promise<void>;
   toast: (message: string, severity?: Severity) => void;
 }
@@ -53,7 +54,7 @@ export function DialogProvider({ children }: { children: ReactNode }) {
   const api: DialogApi = {
     alert: (message, title = 'Notice') => open({ kind: 'alert', title, message }).then(() => undefined),
     confirm: (message, opts) => open({ kind: 'confirm', title: opts?.title ?? 'Please confirm', message, danger: opts?.danger }).then((v) => !!v),
-    prompt: (message, opts) => open({ kind: 'prompt', title: opts?.title ?? 'Enter a value', message, defaultValue: opts?.defaultValue }).then((v) => (v as string | null)),
+    prompt: (message, opts) => open({ kind: 'prompt', title: opts?.title ?? 'Enter a value', message, defaultValue: opts?.defaultValue, password: opts?.password }).then((v) => (v as string | null)),
     reveal: (title, value) => open({ kind: 'reveal', title, revealValue: value }).then(() => undefined),
     toast,
   };
@@ -73,7 +74,7 @@ export function DialogProvider({ children }: { children: ReactNode }) {
             </div>
           )}
           {req.kind === 'prompt' && (
-            <input autoFocus value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && close(input)} />
+            <input autoFocus type={req.password ? 'password' : 'text'} value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && close(input)} />
           )}
           <div className="row" style={{ justifyContent: 'flex-end', marginTop: 14, gap: 8 }}>
             {(req.kind === 'confirm' || req.kind === 'prompt') && <button className="secondary" onClick={() => close(req.kind === 'confirm' ? false : null)}>Cancel</button>}

@@ -17,5 +17,9 @@ COPY apps/api/ apps/api/
 COPY apps/worker/ apps/worker/
 
 EXPOSE 8210
+# Drop root: run as the image's built-in unprivileged `node` user so a code-exec
+# bug in api/worker doesn't run as UID 0 (least privilege — Pub 4557).
+RUN chown -R node:node /app
+USER node
 # api by default; worker overrides command in compose
 CMD ["pnpm", "--filter", "@vibe1099/api", "start"]

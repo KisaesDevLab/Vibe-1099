@@ -278,6 +278,13 @@ batchesRouter.post(
   h(async (req, res) => {
     const id = z.string().uuid().parse(req.params['id']);
     const db = getDb();
+    const batch = await db.query.paperBatches.findFirst({
+      where: and(eq(paperBatches.id, id), eq(paperBatches.firmId, req.staff!.firmId)),
+    });
+    if (!batch) throw AppError.notFound('Batch');
+    // A batch can only be marked delivered once it has actually been printed —
+    // guard the transition like mark-printed does (mailing-record integrity).
+    if (batch.status !== 'printed') throw AppError.state(`Batch is ${batch.status}, not printed`);
     await db
       .update(paperBatches)
       .set({ status: 'delivered', deliveredAt: new Date() })

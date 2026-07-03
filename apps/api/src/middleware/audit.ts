@@ -3,8 +3,10 @@
  * Route handlers can enrich via res.locals.audit = { action, entityType, entityId, before, after }.
  */
 import type { NextFunction, Request, Response } from 'express';
-import { audit } from '@vibe1099/core';
+import { audit, createLogger } from '@vibe1099/core';
 import { getDb } from '@vibe1099/db';
+
+const log = createLogger('audit');
 
 export function auditMutations() {
   return (req: Request, res: Response, next: NextFunction): void => {
@@ -33,8 +35,14 @@ export function auditMutations() {
         after: enriched.after,
         detail: enriched.detail,
         ip: req.ip,
-      }).catch(() => {
-        /* audit failures never break requests; DB trigger guards integrity */
+      }).catch((err: unknown) => {
+        // Never break the request, but a dropped audit row must NOT be silent —
+        // it is a monitoring gap (FTC Safeguards 314.4(c)). Emit at error level so
+        // it surfaces in log alerting and can be reconciled.
+        log.error(
+          { err, action: enriched.action, entityType: enriched.entityType, entityId: enriched.entityId, actorType, firmId },
+          'AUDIT WRITE FAILED — mutation committed without an audit row',
+        );
       });
     });
     next();

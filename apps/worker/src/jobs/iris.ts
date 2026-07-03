@@ -3,7 +3,7 @@
  * polling (exponential backoff, terminal-state handling, partial acceptance).
  * Alerting: transmission failures → staff email.
  */
-import { eq } from 'drizzle-orm';
+import { and, eq, notInArray } from 'drizzle-orm';
 import { Job } from 'bullmq';
 import {
   createLogger,
@@ -24,7 +24,7 @@ import {
   type IrisPollJob,
   type IrisTransmitJob,
 } from '@vibe1099/core';
-import { applyAckToRecords, notify } from '@vibe1099/core';
+import { applyAckToRecords, audit, notify } from '@vibe1099/core';
 import { deliveries, firms, formRecords, getDb, transmissions, users } from '@vibe1099/db';
 
 const log = createLogger('worker:iris');
@@ -41,6 +41,9 @@ async function providerFor(firmId: string, kind: FilingProviderKind): Promise<Fi
 
   if (kind === 'tax1099') {
     if (!firm.tax1099ApiKeyEncrypted) throw new Error('Tax1099 not configured');
+    // §7216 gate — mirror loadTax1099Config: never transmit payee TINs to Zenwork
+    // without the recorded admin disclosure acknowledgment.
+    if (!firm.tax1099DisclosureAckAt) throw new Error('Tax1099 disclosure not acknowledged');
     const base =
       env.TAX1099_MOCK_BASE_URL ||
       (firm.tax1099Environment === 'production' ? env.TAX1099_PROD_BASE_URL : env.TAX1099_SANDBOX_BASE_URL);
@@ -100,6 +103,14 @@ export async function handleIrisTransmit(job: Job): Promise<void> {
       .update(formRecords)
       .set({ status: 'transmitted', updatedAt: new Date() })
       .where(eq(formRecords.transmissionId, tx.id));
+    await audit(db, {
+      firmId: data.firmId,
+      actorType: 'system',
+      action: 'transmission.transmitted',
+      entityType: 'transmission',
+      entityId: tx.id,
+      detail: { utid: tx.utid, provider: tx.provider, receiptId: result.providerRef },
+    });
     log.info({ tx: tx.id, receiptId: result.providerRef, provider: tx.provider }, 'transmitted');
 
     const pollJob: IrisPollJob = { kind: 'poll', transmissionId: tx.id, firmId: data.firmId, attempt: 0 };
@@ -116,7 +127,17 @@ export async function handleIrisTransmit(job: Job): Promise<void> {
         .update(formRecords)
         .set({ transmissionId: null, updatedAt: new Date() })
         .where(eq(formRecords.transmissionId, tx.id));
-      await alertStaff(data.firmId, 'IRIS transmission failed', `Transmission ${tx.utid} failed after retries: ${(err as Error).message}`);
+      await audit(db, {
+        firmId: data.firmId,
+        actorType: 'system',
+        action: 'transmission.failed',
+        entityType: 'transmission',
+        entityId: tx.id,
+        detail: { utid: tx.utid, provider: tx.provider },
+      });
+      // error code/count only in the alert — raw provider bodies can echo TIN/name
+      // fragments and would then transit the ESP (kept in the transmission log instead).
+      await alertStaff(data.firmId, 'IRIS transmission failed', `Transmission ${tx.utid} failed to send. See the transmission log for details.`);
     } else {
       await db.update(transmissions).set({ status: 'building' }).where(eq(transmissions.id, tx.id));
     }
@@ -151,10 +172,15 @@ export async function handleIrisPoll(job: Job): Promise<void> {
     contentType: 'application/xml',
     filename: `${tx.utid}-ack.xml`,
     bytes: Buffer.from(result.raw, 'utf8'),
+    encrypt: true,
   });
   const overall =
     result.status === 'Accepted' ? 'accepted' : result.status === 'AcceptedWithErrors' ? 'accepted_with_errors' : 'rejected';
-  await db
+  // Atomically claim the terminal transition so a scheduled poll and a manual
+  // re-poll can't both run the mailing/delivery side effects (duplicate USPS
+  // copies / Tax1099 billing). Only the poll that flips a still-non-terminal
+  // transmission proceeds.
+  const claimed = await db
     .update(transmissions)
     .set({
       status: overall,
@@ -163,9 +189,22 @@ export async function handleIrisPoll(job: Job): Promise<void> {
       errorDetails: result.errors as unknown as Array<Record<string, unknown>>,
       resolvedAt: new Date(),
     })
-    .where(eq(transmissions.id, tx.id));
+    .where(and(eq(transmissions.id, tx.id), notInArray(transmissions.status, ['accepted', 'accepted_with_errors', 'rejected'])))
+    .returning({ id: transmissions.id });
+  if (!claimed.length) {
+    log.warn({ tx: tx.id }, 'ack already applied by a concurrent poll — skipping');
+    return;
+  }
 
   await applyAckToRecords(db, tx.id, overall, result.errors);
+  await audit(db, {
+    firmId: data.firmId,
+    actorType: 'system',
+    action: `transmission.${overall}`,
+    entityType: 'transmission',
+    entityId: tx.id,
+    detail: { utid: tx.utid, provider: tx.provider, errorCount: result.errors.length },
+  });
   log.info({ tx: tx.id, status: overall, errors: result.errors.length }, 'ack applied');
 
   // Tax1099 add-on: let Zenwork USPS-mail recipient copies for accepted forms

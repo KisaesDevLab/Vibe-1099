@@ -128,9 +128,13 @@ export async function createCorrection(
   const nextSeq = original.correctionSeq + 1;
   const createdIds: string[] = [];
 
+  // All-or-nothing: the correction record(s) AND the original's transition to
+  // `corrected` must commit together, or a crash could leave a half-built Type-2
+  // pair or an original stuck `corrected` with no correction record.
+  await db.transaction(async (tx) => {
   if (req.voidRecord) {
     // filed-in-error: one-transaction zero-out with void semantics
-    const [zero] = await db
+    const [zero] = await tx
       .insert(formRecords)
       .values({
         firmId,
@@ -152,7 +156,7 @@ export async function createCorrection(
     if (zero) createdIds.push(zero.id);
   } else if (classification === 'type1') {
     if (!req.boxValues) throw AppError.validation('Type 1 correction requires corrected box values');
-    const [corrected] = await db
+    const [corrected] = await tx
       .insert(formRecords)
       .values({
         firmId,
@@ -175,7 +179,7 @@ export async function createCorrection(
     if (corrected) createdIds.push(corrected.id);
   } else {
     // Type 2: (1) zeroing record against ORIGINAL TIN/name/form type
-    const [zero] = await db
+    const [zero] = await tx
       .insert(formRecords)
       .values({
         firmId,
@@ -197,7 +201,7 @@ export async function createCorrection(
     if (zero) createdIds.push(zero.id);
 
     // (2) new original with correct data — linked to the zeroing record
-    const [fresh] = await db
+    const [fresh] = await tx
       .insert(formRecords)
       .values({
         firmId,
@@ -221,7 +225,8 @@ export async function createCorrection(
   }
 
   // original locks into its chain
-  await db.update(formRecords).set({ status: 'corrected', updatedAt: new Date() }).where(eq(formRecords.id, original.id));
+  await tx.update(formRecords).set({ status: 'corrected', updatedAt: new Date() }).where(eq(formRecords.id, original.id));
+  });
 
   return { classification: req.voidRecord ? 'void' : classification, createdIds };
 }

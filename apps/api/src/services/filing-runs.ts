@@ -186,6 +186,7 @@ export async function runSummaryAll(db: Db, firmId: string, scope: RunScope, cre
       contentType: 'application/pdf',
       filename: `filing-summaries-${scope.taxYear}.pdf`,
       bytes: merged,
+      encrypt: true,
     });
   }
   const succeeded = items.filter((i) => i.ok).length;

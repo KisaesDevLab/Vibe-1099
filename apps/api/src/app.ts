@@ -65,6 +65,19 @@ export function createApp(): express.Express {
       logger: createLogger('api'),
       genReqId: (req) => (req as express.Request).requestId ?? randomUUID(),
       autoLogging: { ignore: (req) => req.url === '/api/health' },
+      serializers: {
+        // Strip capability tokens (and any stray TIN) out of the logged URL:
+        // recipient/W-9/client tokens ride in the path or ?token=/?t= query and
+        // would otherwise be written to app logs as replayable bearer credentials.
+        req(req: { method: string; url?: string; headers: Record<string, unknown> }) {
+          const rawUrl = req.url ?? '';
+          const url = rawUrl
+            .replace(/([?&](?:token|t)=)[^&]+/gi, '$1[REDACTED]')
+            .replace(/\/(portal|w9-public|recipient)\/[^/?]+/gi, '/$1/[REDACTED]')
+            .replace(/\b\d{9}\b/g, '[REDACTED]');
+          return { id: (req as { id?: unknown }).id, method: req.method, url };
+        },
+      },
     }),
   );
 

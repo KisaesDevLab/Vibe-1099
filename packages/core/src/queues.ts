@@ -19,13 +19,18 @@ const queues = new Map<QueueName, Queue>();
 export function getQueue(name: QueueName): Queue {
   let q = queues.get(name);
   if (!q) {
+    // The delivery queue's job payloads carry tokenized magic links (and the raw
+    // password-reset token). Those must NOT linger in Redis after the send, where
+    // anyone with Redis/BullMQ-dashboard access could harvest live credentials —
+    // so completed AND failed delivery jobs are dropped immediately.
+    const sensitive = name === QUEUE_NAMES.delivery;
     q = new Queue(name, {
       connection: redisConnectionOptions(),
       defaultJobOptions: {
         attempts: 5,
         backoff: { type: 'exponential', delay: 5_000 },
-        removeOnComplete: { count: 1000 },
-        removeOnFail: { count: 5000 },
+        removeOnComplete: sensitive ? true : { count: 1000 },
+        removeOnFail: sensitive ? true : { count: 5000 },
       },
     });
     queues.set(name, q);
