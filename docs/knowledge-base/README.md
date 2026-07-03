@@ -24,6 +24,7 @@ Vibe 1099 is a self-hosted appliance for CPA firms to **prepare, deliver, and e-
 
 ### Filing & delivery
 - [IRS transmissions (IRIS & Tax1099)](filing-irs-and-tax1099.md) — e-file to the IRS.
+- [Filing through TaxBandits (contingency backend)](filing-taxbandits.md) — optional third backend for TCC-pending firms.
 - [Missouri](missouri.md) — direct-file the MO Pub 1220 text file.
 - [Paper batches](paper-batches.md) — print Z-fold pressure-seal Copy B.
 - [Deliveries & the recipient portal](deliveries-and-recipient-portal.md) — portal courtesy copies.

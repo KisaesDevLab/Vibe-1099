@@ -54,6 +54,17 @@ const zEnv = z.object({
   TAX1099_PROD_BASE_URL: z.string().default('https://api.tax1099.com'),
   TAX1099_MOCK_BASE_URL: z.string().default(''),
 
+  // TaxBandits (SPAN Enterprises) managed-filing backend — optional, off by
+  // default (feature-flagged). Used when a firm/payer selects provider
+  // 'taxbandits' (e.g. TCC-pending contingency). Point *_MOCK_BASE_URL at the mock.
+  TAXBANDITS_ENABLED: z.coerce.number().int().default(0),
+  TAXBANDITS_SANDBOX_BASE_URL: z.string().default('https://testapi.taxbandits.com'),
+  TAXBANDITS_PROD_BASE_URL: z.string().default('https://api.taxbandits.com'),
+  TAXBANDITS_MOCK_BASE_URL: z.string().default(''),
+  // Documented webhook source IPs (comma-separated; overridable via config, not code).
+  TAXBANDITS_WEBHOOK_IPS: z.string().default('34.239.209.88,129.213.79.42,34.194.208.36'),
+  TAXBANDITS_WEBHOOK_SECRET: z.string().default(''),
+
   // Number of trusted reverse-proxy hops in front of the API (Express trust proxy).
   // Per-IP rate limiting keys on the resolved client IP, so this MUST match the
   // real topology or req.ip collapses to the proxy address (global throttle) or
@@ -77,11 +88,11 @@ const zEnv = z.object({
         message: 'DATABASE_URL still uses the weak default password "vibe1099" — set POSTGRES_PASSWORD in .env before running in production.',
       });
     }
-    if (env.IRIS_MOCK_BASE_URL || env.TAX1099_MOCK_BASE_URL) {
+    if (env.IRIS_MOCK_BASE_URL || env.TAX1099_MOCK_BASE_URL || env.TAXBANDITS_MOCK_BASE_URL) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message:
-          'IRIS_MOCK_BASE_URL / TAX1099_MOCK_BASE_URL must be empty in production — a mock base URL would mark returns "accepted" without ever filing them with the IRS.',
+          'IRIS_MOCK_BASE_URL / TAX1099_MOCK_BASE_URL / TAXBANDITS_MOCK_BASE_URL must be empty in production — a mock base URL would mark returns "accepted" without ever filing them with the IRS.',
       });
     }
     const httpsOnly: Array<[keyof typeof env, string]> = [
@@ -89,6 +100,8 @@ const zEnv = z.object({
       ['IRIS_ATS_BASE_URL', env.IRIS_ATS_BASE_URL],
       ['TAX1099_PROD_BASE_URL', env.TAX1099_PROD_BASE_URL],
       ['TAX1099_SANDBOX_BASE_URL', env.TAX1099_SANDBOX_BASE_URL],
+      ['TAXBANDITS_PROD_BASE_URL', env.TAXBANDITS_PROD_BASE_URL],
+      ['TAXBANDITS_SANDBOX_BASE_URL', env.TAXBANDITS_SANDBOX_BASE_URL],
       ['APP_BASE_URL', env.APP_BASE_URL],
       ['PORTAL_BASE_URL', env.PORTAL_BASE_URL],
     ];

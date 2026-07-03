@@ -7,12 +7,12 @@ import { Router } from 'express';
 import { and, desc, eq, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { AppError, deadlinesFor, zTaxYear } from '@vibe1099/shared';
-import { generateJwkPair, getBlob, getCrypto, getQueue, QUEUE_NAMES, type IrisTransmitJob } from '@vibe1099/core';
-import { errorTranslations, firms, formRecords, getDb, recipients, transmissions } from '@vibe1099/db';
+import { generateJwkPair, getBlob, getCrypto, getQueue, loadEnv, QUEUE_NAMES, type IrisTransmitJob } from '@vibe1099/core';
+import { errorTranslations, firms, formRecords, getDb, recipients, tinMatchResults, transmissions } from '@vibe1099/db';
 import { h } from '../middleware/error.js';
 import { requireStaff } from '../middleware/auth.js';
 import { composeTransmission } from '../services/iris.js';
-import { buildTax1099Client } from '../services/filing.js';
+import { buildTaxBanditsClient, buildTax1099Client } from '../services/filing.js';
 
 export const irisRouter = Router();
 irisRouter.use(requireStaff());
@@ -37,6 +37,14 @@ irisRouter.get(
       tax1099Mailing: firm.tax1099Mailing,
       hasTax1099Key: !!firm.tax1099ApiKeyEncrypted,
       tax1099DisclosureAckAt: firm.tax1099DisclosureAckAt,
+      // TaxBandits backend
+      taxbanditsAvailable: loadEnv().TAXBANDITS_ENABLED === 1,
+      taxbanditsEnabled: firm.taxbanditsEnabled,
+      taxbanditsEnvironment: firm.taxbanditsEnvironment,
+      taxbanditsPostalMailing: firm.taxbanditsPostalMailing,
+      taxbanditsOnlineAccess: firm.taxbanditsOnlineAccess,
+      hasTaxbanditsCreds: !!(firm.taxbanditsClientIdEncrypted && firm.taxbanditsClientSecretEncrypted && firm.taxbanditsUserTokenEncrypted),
+      taxbanditsDisclosureAckAt: firm.taxbanditsDisclosureAckAt,
     });
   }),
 );
@@ -52,12 +60,21 @@ irisRouter.put(
         environment: z.enum(['ATS', 'PROD']).optional(),
         privateJwk: z.record(z.unknown()).optional(), // upload existing JWK
         // filing backend
-        filingProvider: z.enum(['iris', 'tax1099']).optional(),
+        filingProvider: z.enum(['iris', 'tax1099', 'taxbandits']).optional(),
         tax1099ApiKey: z.string().max(500).optional(),
         tax1099Environment: z.enum(['sandbox', 'production']).optional(),
         tax1099Mailing: z.boolean().optional(),
         // one-time admin acceptance of the §7216 disclosure to Zenwork
         acknowledgeTax1099Disclosure: z.boolean().optional(),
+        // TaxBandits backend
+        taxbanditsEnabled: z.boolean().optional(),
+        taxbanditsClientId: z.string().max(200).optional(),
+        taxbanditsClientSecret: z.string().max(500).optional(),
+        taxbanditsUserToken: z.string().max(500).optional(),
+        taxbanditsEnvironment: z.enum(['sandbox', 'production']).optional(),
+        taxbanditsPostalMailing: z.boolean().optional(),
+        taxbanditsOnlineAccess: z.boolean().optional(),
+        acknowledgeTaxbanditsDisclosure: z.boolean().optional(),
       })
       .parse(req.body);
     const db = getDb();
@@ -79,6 +96,20 @@ irisRouter.put(
       patch['tax1099DisclosureAckAt'] = new Date();
       patch['tax1099DisclosureAckBy'] = req.staff!.userId;
     }
+    // TaxBandits config (only when the appliance feature flag is on)
+    if (loadEnv().TAXBANDITS_ENABLED) {
+      if (input.taxbanditsEnabled !== undefined) patch['taxbanditsEnabled'] = input.taxbanditsEnabled;
+      if (input.taxbanditsEnvironment !== undefined) patch['taxbanditsEnvironment'] = input.taxbanditsEnvironment;
+      if (input.taxbanditsPostalMailing !== undefined) patch['taxbanditsPostalMailing'] = input.taxbanditsPostalMailing;
+      if (input.taxbanditsOnlineAccess !== undefined) patch['taxbanditsOnlineAccess'] = input.taxbanditsOnlineAccess;
+      if (input.taxbanditsClientId) patch['taxbanditsClientIdEncrypted'] = getCrypto().encrypt(input.taxbanditsClientId);
+      if (input.taxbanditsClientSecret) patch['taxbanditsClientSecretEncrypted'] = getCrypto().encrypt(input.taxbanditsClientSecret);
+      if (input.taxbanditsUserToken) patch['taxbanditsUserTokenEncrypted'] = getCrypto().encrypt(input.taxbanditsUserToken);
+      if (input.acknowledgeTaxbanditsDisclosure && !firm.taxbanditsDisclosureAckAt) {
+        patch['taxbanditsDisclosureAckAt'] = new Date();
+        patch['taxbanditsDisclosureAckBy'] = req.staff!.userId;
+      }
+    }
     if (input.privateJwk) {
       patch['irisJwkEncrypted'] = getCrypto().encrypt(JSON.stringify(input.privateJwk));
       // derive public JWK (strip private members)
@@ -88,7 +119,11 @@ irisRouter.put(
     }
     await db.update(firms).set(patch).where(eq(firms.id, req.staff!.firmId));
     res.locals['audit'] = {
-      action: patch['tax1099DisclosureAckAt'] ? 'tax1099.disclosure.ack' : 'iris.settings',
+      action: patch['tax1099DisclosureAckAt']
+        ? 'tax1099.disclosure.ack'
+        : patch['taxbanditsDisclosureAckAt']
+          ? 'taxbandits.disclosure.ack'
+          : 'iris.settings',
       entityType: 'firm',
       entityId: req.staff!.firmId,
       detail: { fields: Object.keys(patch) },
@@ -153,20 +188,40 @@ irisRouter.post(
 irisRouter.post(
   '/tin-match',
   h(async (req, res) => {
-    const { recipientId } = z.object({ recipientId: z.string().uuid() }).parse(req.body);
+    const { recipientId, provider } = z
+      .object({ recipientId: z.string().uuid(), provider: z.enum(['tax1099', 'taxbandits']).optional() })
+      .parse(req.body);
     const db = getDb();
     const recip = await db.query.recipients.findFirst({
       where: and(eq(recipients.id, recipientId), eq(recipients.firmId, req.staff!.firmId)),
     });
     if (!recip) throw AppError.notFound('Recipient');
-    const client = await buildTax1099Client(db, req.staff!.firmId);
+    // Default to the firm's filing backend, falling back to Tax1099 for IRIS firms
+    // that still hold a Tax1099 key (either provider offers real-time TIN matching).
+    const firm = await db.query.firms.findFirst({ where: eq(firms.id, req.staff!.firmId) });
+    const chosen = provider ?? (firm?.filingProvider === 'taxbandits' ? 'taxbandits' : 'tax1099');
+    const client =
+      chosen === 'taxbandits' ? await buildTaxBanditsClient(db, req.staff!.firmId) : await buildTax1099Client(db, req.staff!.firmId);
     const tin = getCrypto().decrypt(recip.tinEncrypted);
     const result = await client.tinMatch(tin, recip.name1, recip.tinType);
     // reflect a mismatch onto the recipient's W-9 status so staff see it in-grid
     if (!result.match && recip.w9Status !== 'requested') {
       await db.update(recipients).set({ w9Status: 'stale', updatedAt: new Date() }).where(eq(recipients.id, recip.id));
     }
-    res.locals['audit'] = { action: 'tax1099.tin-match', entityType: 'recipient', entityId: recip.id, detail: { match: result.match } };
+    // persist a provider-tagged, staleness-aware result
+    await db
+      .update(tinMatchResults)
+      .set({ stale: true })
+      .where(and(eq(tinMatchResults.recipientId, recip.id), eq(tinMatchResults.stale, false)));
+    await db.insert(tinMatchResults).values({
+      firmId: req.staff!.firmId,
+      recipientId: recip.id,
+      provider: chosen === 'taxbandits' ? 'taxbandits' : 'irs',
+      status: result.match ? 'match' : 'mismatch',
+      code: result.code,
+      message: result.message,
+    });
+    res.locals['audit'] = { action: `${chosen}.tin-match`, entityType: 'recipient', entityId: recip.id, detail: { match: result.match } };
     res.json(result);
   }),
 );

@@ -43,7 +43,7 @@ export const firms = pgTable('firms', {
   irisEnvironment: text('iris_environment').notNull().default('ATS'), // ATS | PROD
   // filing backend: 'iris' (firm is transmitter, needs TCC) | 'tax1099' (Zenwork
   // files on the payer's behalf, no TCC). Default provider for the firm's payers.
-  filingProvider: text('filing_provider').notNull().default('iris').$type<'iris' | 'tax1099'>(),
+  filingProvider: text('filing_provider').notNull().default('iris').$type<'iris' | 'tax1099' | 'taxbandits'>(),
   tax1099ApiKeyEncrypted: text('tax1099_api_key_encrypted'), // Tax1099 app key, envelope-encrypted
   tax1099Environment: text('tax1099_environment').notNull().default('sandbox').$type<'sandbox' | 'production'>(),
   tax1099Mailing: boolean('tax1099_mailing').notNull().default(false), // let Tax1099 USPS-mail recipient copies
@@ -52,6 +52,18 @@ export const firms = pgTable('firms', {
   // once before any Tax1099 call is permitted (gated in loadTax1099Config).
   tax1099DisclosureAckAt: timestamp('tax1099_disclosure_ack_at', { withTimezone: true }),
   tax1099DisclosureAckBy: uuid('tax1099_disclosure_ack_by'),
+  // TaxBandits (SPAN Enterprises) managed-filing backend — optional contingency
+  // provider (TCC-pending). Off unless enabled per-firm AND the feature flag is on.
+  taxbanditsEnabled: boolean('taxbandits_enabled').notNull().default(false),
+  taxbanditsClientIdEncrypted: text('taxbandits_client_id_encrypted'),
+  taxbanditsClientSecretEncrypted: text('taxbandits_client_secret_encrypted'),
+  taxbanditsUserTokenEncrypted: text('taxbandits_user_token_encrypted'),
+  taxbanditsEnvironment: text('taxbandits_environment').notNull().default('sandbox').$type<'sandbox' | 'production'>(),
+  taxbanditsPostalMailing: boolean('taxbandits_postal_mailing').notNull().default(false),
+  taxbanditsOnlineAccess: boolean('taxbandits_online_access').notNull().default(false),
+  taxbanditsLowCreditCents: integer('taxbandits_low_credit_cents').notNull().default(2500),
+  taxbanditsDisclosureAckAt: timestamp('taxbandits_disclosure_ack_at', { withTimezone: true }),
+  taxbanditsDisclosureAckBy: uuid('taxbandits_disclosure_ack_by'),
   // Missouri
   moWithholdingId: text('mo_withholding_id').notNull().default(''),
   // delivery config
@@ -114,7 +126,7 @@ export const payers = pgTable('payers', {
   contactMobile: text('contact_mobile'),
   moWithholdingId: text('mo_withholding_id'), // nullable
   // per-payer override of the firm's default filing backend (null = inherit firm)
-  filingProviderOverride: text('filing_provider_override').$type<'iris' | 'tax1099'>(),
+  filingProviderOverride: text('filing_provider_override').$type<'iris' | 'tax1099' | 'taxbandits'>(),
   moSourceDefault: boolean('mo_source_default').notNull().default(false),
   defaultFormTypes: jsonb('default_form_types').notNull().default(['NEC']).$type<string[]>(),
   active: boolean('active').notNull().default(true),
@@ -253,7 +265,7 @@ export const transmissions = pgTable('transmissions', {
   taxYear: integer('tax_year').notNull(),
   environment: text('environment').notNull().$type<'ATS' | 'PROD'>(),
   // filing backend that owns this transmission (worker dispatches accordingly)
-  provider: text('provider').notNull().default('iris').$type<'iris' | 'tax1099'>(),
+  provider: text('provider').notNull().default('iris').$type<'iris' | 'tax1099' | 'taxbandits'>(),
   utid: text('utid').notNull(), // unique transmission id / submission ref (idempotency guard)
   receiptId: text('receipt_id'), // IRIS Receipt ID or Tax1099 submission id
   status: text('status')
@@ -295,6 +307,69 @@ export const stateFiles = pgTable('state_files', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
+
+// --- TaxBandits (SPAN Enterprises) provider tables --------------------------
+
+/** Prepaid-credit cost ledger. Attributes each billable TaxBandits event to
+ *  firm → payer → transmission → form so firms can rebill clients. Integer cents. */
+export const taxbanditsCostLedger = pgTable(
+  'taxbandits_cost_ledger',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id),
+    payerId: uuid('payer_id'),
+    transmissionId: uuid('transmission_id'),
+    formRecordId: uuid('form_record_id'),
+    eventType: text('event_type').notNull().$type<'efile' | 'correction' | 'void' | 'state_filing' | 'tin_match' | 'postal' | 'online_access'>(),
+    amountCents: integer('amount_cents').notNull().default(0),
+    balanceAfterCents: integer('balance_after_cents'), // when the API reports it
+    detail: jsonb('detail').$type<Record<string, unknown>>(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('tb_cost_ledger_firm_idx').on(t.firmId, t.createdAt)],
+);
+
+/** Provider-tagged TIN matching results (TaxBandits or future native IRS TIN
+ *  matching). Invalidated on name/TIN change (staleness handled in the service). */
+export const tinMatchResults = pgTable(
+  'tin_match_results',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id),
+    recipientId: uuid('recipient_id')
+      .notNull()
+      .references(() => recipients.id),
+    provider: text('provider').notNull().$type<'taxbandits' | 'irs'>(),
+    status: text('status').notNull().$type<'match' | 'mismatch' | 'pending' | 'error'>(),
+    code: text('code').notNull().default(''),
+    message: text('message').notNull().default(''),
+    checkedAt: timestamp('checked_at', { withTimezone: true }).notNull().defaultNow(),
+    stale: boolean('stale').notNull().default(false),
+  },
+  (t) => [index('tin_match_recipient_idx').on(t.recipientId, t.checkedAt)],
+);
+
+/** Raw TaxBandits webhook events with a dedupe key, for at-least-once tolerant
+ *  idempotent ingestion. */
+export const taxbanditsWebhookEvents = pgTable(
+  'taxbandits_webhook_events',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    dedupeKey: text('dedupe_key').notNull(),
+    eventType: text('event_type').notNull(),
+    submissionId: text('submission_id'),
+    recordId: text('record_id'),
+    status: text('status'),
+    payload: jsonb('payload').$type<Record<string, unknown>>(),
+    processedAt: timestamp('processed_at', { withTimezone: true }),
+    receivedAt: timestamp('received_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('tb_webhook_dedupe_uq').on(t.dedupeKey)],
+);
 
 export const deliveries = pgTable(
   'deliveries',

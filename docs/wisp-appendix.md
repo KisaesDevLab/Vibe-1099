@@ -24,6 +24,7 @@ providers, contract for safeguards, and periodically assess them):**
 |---|---|---|---|
 | IRS IRIS (A2A) | Always, when e-filing federally with the firm's own TCC | Full return: payer + recipient TINs, names, addresses, box amounts | HTTPS, OAuth2 JWT assertion signed by firm JWK |
 | Tax1099.com / Zenwork | Only when a firm/payer selects the Tax1099 provider (opt-in + acknowledgment) | Full return incl. recipient SSNs/addresses/amounts; recipient TIN+name on TIN-match; vendor name/email/mobile on hosted W-9 | HTTPS, API key |
+| TaxBandits / SPAN Enterprises | Only when the appliance flag + firm opt-in + acknowledgment are all set (e.g. TCC-pending contingency) | Full return incl. recipient SSNs/addresses/amounts; recipient TIN+name on TIN-match | HTTPS, OAuth2 (JWS assertion → bearer) |
 | Emailit / firm SMTP | Courtesy delivery, W-9, and invite emails | Recipient email address; payer name, form type, tax year, expiring link — **no TIN, no amounts, no attachments** | HTTPS (Emailit) / SMTP (TLS recommended) |
 | TextLink / Twilio | Optional SMS delivery | Recipient mobile number; payer name + expiring link | HTTPS, API key |
 | MO DOR | Missouri direct filing | None automated — operator downloads the Pub 1220 .txt and uploads it at mytax.mo.gov | Manual |

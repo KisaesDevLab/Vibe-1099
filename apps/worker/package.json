@@ -8,7 +8,8 @@
     "dev": "tsx watch src/index.ts",
     "start": "tsx src/index.ts",
     "mock-iris": "tsx src/mock-iris.ts",
-    "mock-tax1099": "tsx src/mock-tax1099.ts"
+    "mock-tax1099": "tsx src/mock-tax1099.ts",
+    "mock-taxbandits": "tsx src/mock-taxbandits.ts"
   },
   "dependencies": {
     "@vibe1099/core": "workspace:*",

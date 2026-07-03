@@ -7,10 +7,12 @@ import { and, eq, inArray, sql } from 'drizzle-orm';
 import { AppError, ErrorCodes, maskTin, type FormType } from '@vibe1099/shared';
 import {
   buildTax1099Payload,
+  buildTaxBanditsPayload,
   buildTransmissionXml,
   generateUtid,
   getCrypto,
   preSubmitCheck,
+  preSubmitCheckTaxBandits,
   preTransmitCheck,
   putBlob,
   type FilingProviderKind,
@@ -19,7 +21,7 @@ import {
 } from '@vibe1099/core';
 import { randomUUID } from 'node:crypto';
 import { firms, formRecords, getDb, payers, recipients, statesConfig, transmissions, type Db } from '@vibe1099/db';
-import { loadTax1099Config, resolveProviderKind } from './filing.js';
+import { loadTaxBanditsConfig, loadTax1099Config, resolveCorrectionProvider, resolveProviderKind } from './filing.js';
 
 export interface IrisFirmConfig {
   tcc: string;
@@ -64,13 +66,28 @@ export async function composeTransmission(
   if (!firm || !payer) throw AppError.notFound('Payer');
 
   // provider selection (per-payer override → firm default). IRIS needs a TCC/JWK;
-  // Tax1099 needs only the firm's app key, so the payer never registers with IRS.
-  const provider: FilingProviderKind = await resolveProviderKind(db, firmId, payerId);
+  // Tax1099/TaxBandits need only the firm's credentials, so the payer never
+  // registers with IRS. Corrections override this: they MUST stay on the provider
+  // that filed the original (affinity invariant, addendum §2.3).
+  let provider: FilingProviderKind = await resolveProviderKind(db, firmId, payerId);
+  if (opts.isCorrection && opts.recordIds?.length) {
+    const affinity = await resolveCorrectionProvider(db, firmId, opts.recordIds);
+    if (affinity) provider = affinity; // corrections follow the original filing's provider
+  }
   const irisConfig = provider === 'iris' ? await loadIrisConfig(db, firmId) : null;
   const tax1099Config = provider === 'tax1099' ? await loadTax1099Config(db, firmId) : null;
+  const taxbanditsConfig = provider === 'taxbandits' ? await loadTaxBanditsConfig(db, firmId) : null;
   // reuse the environment column: sandbox↔ATS, production↔PROD (provider disambiguates)
   const environment: 'ATS' | 'PROD' =
-    provider === 'iris' ? irisConfig!.environment : tax1099Config!.environment === 'production' ? 'PROD' : 'ATS';
+    provider === 'iris'
+      ? irisConfig!.environment
+      : provider === 'tax1099'
+        ? tax1099Config!.environment === 'production'
+          ? 'PROD'
+          : 'ATS'
+        : taxbanditsConfig!.environment === 'production'
+          ? 'PROD'
+          : 'ATS';
   const tcc = irisConfig?.tcc ?? '';
 
   const conds = [
@@ -188,7 +205,7 @@ export async function composeTransmission(
   };
 
   // Build the provider payload + run its pre-checks, then stash it in a blob the
-  // worker will send. IRIS → XML (Pub 5718); Tax1099 → JSON form model.
+  // worker will send. IRIS → XML (Pub 5718); Tax1099/TaxBandits → JSON form model.
   let xmlBlobId: string;
   if (provider === 'iris') {
     const problems = preTransmitCheck(input);
@@ -200,6 +217,21 @@ export async function composeTransmission(
       contentType: 'application/xml',
       filename: `${utid}.xml`,
       bytes: Buffer.from(xml, 'utf8'),
+      encrypt: true,
+    });
+  } else if (provider === 'taxbandits') {
+    const payload = buildTaxBanditsPayload(input, taxbanditsConfig!.environment, {
+      postalMailing: taxbanditsConfig!.postalMailing,
+      onlineAccess: taxbanditsConfig!.onlineAccess,
+    });
+    const problems = preSubmitCheckTaxBandits(payload);
+    if (problems.length) throw AppError.validation('Pre-submit checks failed', problems);
+    xmlBlobId = await putBlob(db, {
+      firmId,
+      kind: 'tax1099_payload', // shared JSON-payload blob kind (encrypted at rest)
+      contentType: 'application/json',
+      filename: `${utid}.json`,
+      bytes: Buffer.from(JSON.stringify(payload), 'utf8'),
       encrypt: true,
     });
   } else {

@@ -13,13 +13,25 @@ interface Firm {
 }
 interface IrisSettings {
   tcc: string; apiClientId: string; hasJwk: boolean; publicJwk: Record<string, unknown> | null; environment: 'ATS' | 'PROD';
-  filingProvider: 'iris' | 'tax1099';
+  filingProvider: 'iris' | 'tax1099' | 'taxbandits';
   tax1099Environment: 'sandbox' | 'production';
   tax1099Mailing: boolean;
   hasTax1099Key: boolean;
   tax1099ApiKey?: string; // transient input only
   tax1099DisclosureAckAt: string | null;
   acknowledgeTax1099Disclosure?: boolean; // transient input only
+  // TaxBandits backend
+  taxbanditsAvailable: boolean;
+  taxbanditsEnabled: boolean;
+  taxbanditsEnvironment: 'sandbox' | 'production';
+  taxbanditsPostalMailing: boolean;
+  taxbanditsOnlineAccess: boolean;
+  hasTaxbanditsCreds: boolean;
+  taxbanditsDisclosureAckAt: string | null;
+  taxbanditsClientId?: string; // transient
+  taxbanditsClientSecret?: string; // transient
+  taxbanditsUserToken?: string; // transient
+  acknowledgeTaxbanditsDisclosure?: boolean; // transient
 }
 interface User { id: string; email: string; name: string; role: string; active: boolean; totpEnabled: boolean; lastLoginAt: string | null }
 interface AuditEntry { id: number; createdAt: string; actorType: string; actorId: string | null; action: string; entityType: string; entityId: string | null; ip: string | null }
@@ -94,8 +106,24 @@ export function Settings() {
         tax1099Mailing: iris.tax1099Mailing,
         ...(iris.tax1099ApiKey ? { tax1099ApiKey: iris.tax1099ApiKey } : {}),
         ...(iris.acknowledgeTax1099Disclosure ? { acknowledgeTax1099Disclosure: true } : {}),
+        taxbanditsEnabled: iris.taxbanditsEnabled,
+        taxbanditsEnvironment: iris.taxbanditsEnvironment,
+        taxbanditsPostalMailing: iris.taxbanditsPostalMailing,
+        taxbanditsOnlineAccess: iris.taxbanditsOnlineAccess,
+        ...(iris.taxbanditsClientId ? { taxbanditsClientId: iris.taxbanditsClientId } : {}),
+        ...(iris.taxbanditsClientSecret ? { taxbanditsClientSecret: iris.taxbanditsClientSecret } : {}),
+        ...(iris.taxbanditsUserToken ? { taxbanditsUserToken: iris.taxbanditsUserToken } : {}),
+        ...(iris.acknowledgeTaxbanditsDisclosure ? { acknowledgeTaxbanditsDisclosure: true } : {}),
       });
-      setIris((i) => (i ? { ...i, tax1099ApiKey: '', acknowledgeTax1099Disclosure: false, hasTax1099Key: i.hasTax1099Key || !!i.tax1099ApiKey, tax1099DisclosureAckAt: i.tax1099DisclosureAckAt ?? (i.acknowledgeTax1099Disclosure ? new Date().toISOString() : null) } : i));
+      setIris((i) => (i ? {
+        ...i,
+        tax1099ApiKey: '', acknowledgeTax1099Disclosure: false,
+        hasTax1099Key: i.hasTax1099Key || !!i.tax1099ApiKey,
+        tax1099DisclosureAckAt: i.tax1099DisclosureAckAt ?? (i.acknowledgeTax1099Disclosure ? new Date().toISOString() : null),
+        taxbanditsClientId: '', taxbanditsClientSecret: '', taxbanditsUserToken: '', acknowledgeTaxbanditsDisclosure: false,
+        hasTaxbanditsCreds: i.hasTaxbanditsCreds || !!(i.taxbanditsClientId && i.taxbanditsClientSecret && i.taxbanditsUserToken),
+        taxbanditsDisclosureAckAt: i.taxbanditsDisclosureAckAt ?? (i.acknowledgeTaxbanditsDisclosure ? new Date().toISOString() : null),
+      } : i));
       setNotice('E-file settings saved.');
     } catch (err) { setError(err instanceof ApiError ? err.message : String(err)); }
   };
@@ -291,9 +319,10 @@ export function Settings() {
         <div className="panel">
           <div className="row" style={{ alignItems: 'flex-end' }}>
             <div className="field"><label>Filing backend</label>
-              <select value={iris.filingProvider} onChange={(e) => setIris({ ...iris, filingProvider: e.target.value as 'iris' | 'tax1099' })}>
+              <select value={iris.filingProvider} onChange={(e) => setIris({ ...iris, filingProvider: e.target.value as 'iris' | 'tax1099' | 'taxbandits' })}>
                 <option value="iris">IRIS A2A — we are the Transmitter (needs our TCC)</option>
                 <option value="tax1099">Tax1099 (Zenwork) — files on our behalf (no TCC)</option>
+                {iris.taxbanditsAvailable && <option value="taxbandits">TaxBandits — files on our behalf (no TCC; TCC-pending contingency)</option>}
               </select></div>
             <button onClick={saveIris}>Save</button>
           </div>
@@ -325,6 +354,55 @@ export function Settings() {
                     <input type="checkbox" style={{ width: 'auto', marginTop: 3 }} checked={!!iris.acknowledgeTax1099Disclosure}
                       onChange={(e) => setIris({ ...iris, acknowledgeTax1099Disclosure: e.target.checked })} />
                     <span>I acknowledge that filing/mailing through Tax1099 discloses recipient TINs (SSNs/EINs), names, addresses, and dollar amounts to Zenwork, Inc. as an auxiliary service provider under Treas. Reg. §301.7216-2(d). Filing stays disabled until this is accepted.</span>
+                  </label>
+                </div>
+              )}
+            </div>
+          )}
+
+          {iris.taxbanditsAvailable && iris.filingProvider === 'taxbandits' && (
+            <div className="panel" style={{ background: '#eff6ff', borderColor: '#bfdbfe' }}>
+              <h2 style={{ marginTop: 0 }}>TaxBandits (SPAN Enterprises)</h2>
+              <p className="muted">Contingency transmitter for firms whose IRS TCC is still pending. Prepaid-credit billing; corrections always stay on the provider that filed the original.</p>
+              <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13, marginBottom: 8 }}>
+                <input type="checkbox" style={{ width: 'auto' }} checked={iris.taxbanditsEnabled}
+                  onChange={(e) => setIris({ ...iris, taxbanditsEnabled: e.target.checked })} /> Enable TaxBandits for this firm
+              </label>
+              <div className="row" style={{ alignItems: 'flex-end' }}>
+                <div className="field grow"><label>Client ID {iris.hasTaxbanditsCreds && <span className="muted">(saved — leave blank to keep)</span>}</label>
+                  <input type="password" placeholder={iris.hasTaxbanditsCreds ? '••••••••' : 'TaxBandits Client ID'} value={iris.taxbanditsClientId ?? ''}
+                    onChange={(e) => setIris({ ...iris, taxbanditsClientId: e.target.value })} /></div>
+                <div className="field grow"><label>Client Secret</label>
+                  <input type="password" placeholder={iris.hasTaxbanditsCreds ? '••••••••' : 'Client Secret'} value={iris.taxbanditsClientSecret ?? ''}
+                    onChange={(e) => setIris({ ...iris, taxbanditsClientSecret: e.target.value })} /></div>
+                <div className="field grow"><label>User Token</label>
+                  <input type="password" placeholder={iris.hasTaxbanditsCreds ? '••••••••' : 'User Token'} value={iris.taxbanditsUserToken ?? ''}
+                    onChange={(e) => setIris({ ...iris, taxbanditsUserToken: e.target.value })} /></div>
+              </div>
+              <div className="row" style={{ alignItems: 'flex-end' }}>
+                <div className="field"><label>Environment</label>
+                  <select value={iris.taxbanditsEnvironment} onChange={(e) => setIris({ ...iris, taxbanditsEnvironment: e.target.value as 'sandbox' | 'production' })}>
+                    <option value="sandbox">Sandbox (test)</option><option value="production">Production</option>
+                  </select></div>
+                <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13 }}>
+                  <input type="checkbox" style={{ width: 'auto' }} checked={iris.taxbanditsPostalMailing}
+                    onChange={(e) => setIris({ ...iris, taxbanditsPostalMailing: e.target.checked })} /> USPS mail (add-on)
+                </label>
+                <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13 }}>
+                  <input type="checkbox" style={{ width: 'auto' }} checked={iris.taxbanditsOnlineAccess}
+                    onChange={(e) => setIris({ ...iris, taxbanditsOnlineAccess: e.target.checked })} /> Online access (add-on)
+                </label>
+                <button onClick={saveIris}>Save</button>
+              </div>
+              {iris.taxbanditsEnvironment === 'sandbox' && <div className="warn-box">Sandbox — submissions are TEST filings, not sent to the IRS.</div>}
+              {iris.taxbanditsDisclosureAckAt ? (
+                <p className="muted" style={{ marginBottom: 0 }}>§7216 disclosure acknowledged on {new Date(iris.taxbanditsDisclosureAckAt).toLocaleDateString()}. Recipient TINs, addresses, and amounts are transmitted to SPAN Enterprises (TaxBandits) to file on the payer's behalf.</p>
+              ) : (
+                <div className="warn-box">
+                  <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+                    <input type="checkbox" style={{ width: 'auto', marginTop: 3 }} checked={!!iris.acknowledgeTaxbanditsDisclosure}
+                      onChange={(e) => setIris({ ...iris, acknowledgeTaxbanditsDisclosure: e.target.checked })} />
+                    <span>I acknowledge that filing through TaxBandits discloses recipient TINs (SSNs/EINs), names, addresses, and dollar amounts to SPAN Enterprises, Inc. as an auxiliary service provider under Treas. Reg. §301.7216-2(d). Filing stays disabled until this is accepted.</span>
                   </label>
                 </div>
               )}

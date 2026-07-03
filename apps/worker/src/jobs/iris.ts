@@ -3,7 +3,7 @@
  * polling (exponential backoff, terminal-state handling, partial acceptance).
  * Alerting: transmission failures → staff email.
  */
-import { and, eq, notInArray } from 'drizzle-orm';
+import { and, desc, eq, isNotNull, notInArray } from 'drizzle-orm';
 import { Job } from 'bullmq';
 import {
   createLogger,
@@ -18,6 +18,8 @@ import {
   QUEUE_NAMES,
   Tax1099Client,
   tax1099Endpoints,
+  TaxBanditsClient,
+  taxbanditsEndpoints,
   type DeliveryJob,
   type FilingProvider,
   type FilingProviderKind,
@@ -25,7 +27,7 @@ import {
   type IrisTransmitJob,
 } from '@vibe1099/core';
 import { applyAckToRecords, audit, notify } from '@vibe1099/core';
-import { deliveries, firms, formRecords, getDb, transmissions, users } from '@vibe1099/db';
+import { deliveries, firms, formRecords, getDb, taxbanditsCostLedger, transmissions, users } from '@vibe1099/db';
 
 const log = createLogger('worker:iris');
 
@@ -48,6 +50,24 @@ async function providerFor(firmId: string, kind: FilingProviderKind): Promise<Fi
       env.TAX1099_MOCK_BASE_URL ||
       (firm.tax1099Environment === 'production' ? env.TAX1099_PROD_BASE_URL : env.TAX1099_SANDBOX_BASE_URL);
     return new Tax1099Client(tax1099Endpoints(base), { apiKey: getCrypto().decrypt(firm.tax1099ApiKeyEncrypted) });
+  }
+
+  if (kind === 'taxbandits') {
+    if (!env.TAXBANDITS_ENABLED) throw new Error('TaxBandits provider not enabled on this appliance');
+    if (!firm.taxbanditsEnabled || !firm.taxbanditsClientIdEncrypted || !firm.taxbanditsClientSecretEncrypted || !firm.taxbanditsUserTokenEncrypted) {
+      throw new Error('TaxBandits not configured');
+    }
+    // §7216 gate — mirror loadTaxBanditsConfig.
+    if (!firm.taxbanditsDisclosureAckAt) throw new Error('TaxBandits disclosure not acknowledged');
+    const crypto = getCrypto();
+    const base =
+      env.TAXBANDITS_MOCK_BASE_URL ||
+      (firm.taxbanditsEnvironment === 'production' ? env.TAXBANDITS_PROD_BASE_URL : env.TAXBANDITS_SANDBOX_BASE_URL);
+    return new TaxBanditsClient(taxbanditsEndpoints(base), {
+      clientId: crypto.decrypt(firm.taxbanditsClientIdEncrypted),
+      clientSecret: crypto.decrypt(firm.taxbanditsClientSecretEncrypted),
+      userToken: crypto.decrypt(firm.taxbanditsUserTokenEncrypted),
+    });
   }
 
   if (!firm.irisJwkEncrypted) throw new Error('IRIS not configured');
@@ -93,7 +113,11 @@ export async function handleIrisTransmit(job: Job): Promise<void> {
   await db.update(transmissions).set({ status: 'transmitting' }).where(eq(transmissions.id, tx.id));
   try {
     const provider = await providerFor(data.firmId, tx.provider);
-    const result = await provider.transmit(blob.bytes.toString('utf8'));
+    // TaxBandits corrections/voids go through a distinct endpoint (same ref shape).
+    const result =
+      provider instanceof TaxBanditsClient && tx.isCorrection
+        ? await provider.transmitCorrection(blob.bytes.toString('utf8'))
+        : await provider.transmit(blob.bytes.toString('utf8'));
     await db
       .update(transmissions)
       .set({ status: 'polling', receiptId: result.providerRef, transmittedAt: new Date() })
@@ -206,6 +230,46 @@ export async function handleIrisPoll(job: Job): Promise<void> {
     detail: { utid: tx.utid, provider: tx.provider, errorCount: result.errors.length },
   });
   log.info({ tx: tx.id, status: overall, errors: result.errors.length }, 'ack applied');
+
+  // TaxBandits prepaid-credit ledger: on an accepted submission, poll the credit
+  // balance and record a cost-ledger row (amount inferred from the balance delta
+  // where the API reports it), then alert if the balance is low. Best-effort.
+  if (tx.provider === 'taxbandits' && overall !== 'rejected') {
+    try {
+      const provider = await providerFor(data.firmId, 'taxbandits');
+      const balance = provider instanceof TaxBanditsClient ? await provider.credits() : null;
+      const [prev] = await db
+        .select({ balance: taxbanditsCostLedger.balanceAfterCents })
+        .from(taxbanditsCostLedger)
+        .where(and(eq(taxbanditsCostLedger.firmId, data.firmId), isNotNull(taxbanditsCostLedger.balanceAfterCents)))
+        .orderBy(desc(taxbanditsCostLedger.createdAt))
+        .limit(1);
+      const amountCents = balance && prev?.balance != null ? Math.max(0, prev.balance - balance.balanceCents) : 0;
+      await db.insert(taxbanditsCostLedger).values({
+        firmId: data.firmId,
+        transmissionId: tx.id,
+        eventType: tx.isCorrection ? 'correction' : 'efile',
+        amountCents,
+        balanceAfterCents: balance?.balanceCents ?? null,
+        detail: { utid: tx.utid, recordCount: tx.recordCount },
+      });
+      const firm = await db.query.firms.findFirst({ where: eq(firms.id, data.firmId) });
+      if (balance && firm && balance.balanceCents <= firm.taxbanditsLowCreditCents) {
+        await notify(db, {
+          firmId: data.firmId,
+          kind: 'system',
+          severity: 'warning',
+          title: 'TaxBandits credit balance low',
+          body: `Prepaid credit balance is $${(balance.balanceCents / 100).toFixed(2)} — top up to avoid failed filings.`,
+          link: '/settings',
+          entityType: 'firm',
+          entityId: data.firmId,
+        }).catch(() => undefined);
+      }
+    } catch (e) {
+      log.warn({ err: (e as Error).message, tx: tx.id }, 'taxbandits credit ledger update failed (non-fatal)');
+    }
+  }
 
   // Tax1099 add-on: let Zenwork USPS-mail recipient copies for accepted forms
   // (alternative to the local Z-fold path). Best-effort — a mail failure must

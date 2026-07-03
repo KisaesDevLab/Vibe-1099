@@ -33,6 +33,7 @@ import { runsRouter } from './routes/runs.js';
 import { inboxRouter } from './routes/inbox.js';
 import { notificationsRouter } from './routes/notifications.js';
 import { searchRouter, viewsRouter } from './routes/views.js';
+import { taxbanditsWebhookRouter } from './routes/taxbandits-webhooks.js';
 
 export function createApp(): express.Express {
   const app = express();
@@ -88,10 +89,12 @@ export function createApp(): express.Express {
   // health/version — unauthenticated (appliance console probes)
   app.use('/api', healthRouter);
 
-  // PUBLIC zone (Cloudflare Tunnel): recipient portal, W-9, client portal
+  // PUBLIC zone (Cloudflare Tunnel): recipient portal, W-9, client portal,
+  // provider webhooks (authenticated by IP allowlist + shared secret, not session)
   app.use('/api/portal', recipientPortalRouter);
   app.use('/api/w9-public', w9PublicRouter);
   app.use('/api/client-portal', clientPortalRouter);
+  app.use('/api/webhooks/taxbandits', taxbanditsWebhookRouter);
 
   // STAFF zone (LAN / Tailscale; optional IP allowlist)
   const staff = express.Router();

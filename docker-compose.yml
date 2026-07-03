@@ -78,6 +78,10 @@ services:
       TWILIO_FROM_NUMBER: ${TWILIO_FROM_NUMBER:-}
       IRIS_MOCK_BASE_URL: ${IRIS_MOCK_BASE_URL:-}
       TAX1099_MOCK_BASE_URL: ${TAX1099_MOCK_BASE_URL:-}
+      TAXBANDITS_ENABLED: ${TAXBANDITS_ENABLED:-0}
+      TAXBANDITS_MOCK_BASE_URL: ${TAXBANDITS_MOCK_BASE_URL:-}
+      TAXBANDITS_WEBHOOK_IPS: ${TAXBANDITS_WEBHOOK_IPS:-34.239.209.88,129.213.79.42,34.194.208.36}
+      TAXBANDITS_WEBHOOK_SECRET: ${TAXBANDITS_WEBHOOK_SECRET:-}
       LOG_LEVEL: ${LOG_LEVEL:-info}
       # Trusted reverse-proxy hop count — MUST match the real topology or per-IP
       # rate limits key off a spoofable X-Forwarded-For. The API is not
