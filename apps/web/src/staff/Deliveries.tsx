@@ -1,6 +1,8 @@
 import { FormEvent, useEffect, useState } from 'react';
 import { api, ApiError } from '../api';
-import { MultiSelect } from '../components/MultiSelect';
+import { EntityPicker } from '../components/EntityPicker';
+
+interface Pending { undeliveredElectronic: string[]; accepted: string[] }
 
 interface Delivery {
   id: string;
@@ -24,14 +26,16 @@ export function Deliveries() {
   const [payers, setPayers] = useState<Payer[]>([]);
   const [payerIds, setPayerIds] = useState<string[]>([]);
   const [taxYear, setTaxYear] = useState(2026);
+  const [pending, setPending] = useState<Pending | null>(null);
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
 
   const load = () => api.get<{ deliveries: Delivery[] }>('/api/deliveries').then((r) => setRows(r.deliveries));
   useEffect(() => {
     void load();
-    api.get<{ payers: Payer[] }>('/api/payers').then((r) => { setPayers(r.payers); setPayerIds(r.payers.map((p) => p.id)); });
+    api.get<{ payers: Payer[] }>('/api/payers?limit=1000').then((r) => setPayers(r.payers));
   }, []);
+  useEffect(() => { api.get<Pending>(`/api/payers/pending/${taxYear}`).then(setPending).catch(() => {}); }, [taxYear]);
 
   const compose = async (e: FormEvent) => {
     e.preventDefault();
@@ -78,10 +82,19 @@ export function Deliveries() {
               <option value={2026}>2026</option><option value={2025}>2025</option>
             </select></div>
           <div className="field grow">
-            <label>Payers</label>
-            <MultiSelect options={payers.map((p) => ({ value: p.id, label: p.legalName }))} selected={payerIds} onChange={setPayerIds} unit="payers" />
+            <label>Payers <span className="muted">(search & add, or “add all …”)</span></label>
+            <EntityPicker
+              options={payers.map((p) => ({ value: p.id, label: p.legalName }))}
+              selected={payerIds}
+              onChange={setPayerIds}
+              unit="payers"
+              quickAdds={pending ? [
+                { label: 'Undelivered (accepted, no link sent)', ids: pending.undeliveredElectronic },
+                { label: 'All with accepted forms', ids: pending.accepted },
+              ] : []}
+            />
           </div>
-          <button type="submit">Send portal links (accepted forms)</button>
+          <button type="submit" disabled={!payerIds.length}>Send portal links (accepted forms)</button>
         </div>
         <p className="muted">Courtesy copies — the paper Copy B is always mailed (delivery policy b). Links carry opaque tokens only.</p>
       </form>

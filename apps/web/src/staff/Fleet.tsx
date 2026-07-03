@@ -7,12 +7,13 @@
  */
 import { useCallback, useEffect, useState } from 'react';
 import { api, ApiError, downloadBlob } from '../api';
-import { MultiSelect } from '../components/MultiSelect';
+import { EntityPicker } from '../components/EntityPicker';
 import { Paginator } from '../components/Paginator';
 import { Modal } from '../components/Modal';
 import { useDialogs } from '../components/Dialogs';
 
 interface Payer { id: string; legalName: string }
+interface Pending { readyToTransmit: string[]; accepted: string[]; moSource: string[]; unmailedPaper: string[]; undeliveredElectronic: string[]; missingW9: string[]; uninvited: string[] }
 interface RunItem { payerId?: string; label: string; ok: boolean; message?: string }
 interface Run { id: string; kind: string; taxYear: number; status: string; total: number; succeeded: number; failed: number; items: RunItem[] | null; resultBlobId: string | null; createdAt: string }
 interface Eligibility { transmit: { payers: number; records: number }; summaries: { payers: number }; invite: { uninvited: number }; w9: { missing: number } }
@@ -28,53 +29,55 @@ export function Fleet() {
   const [runsTotal, setRunsTotal] = useState(0);
   const [runsOffset, setRunsOffset] = useState(0);
   const [drill, setDrill] = useState<Run | null>(null);
+  const [pending, setPending] = useState<Pending | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const scoped = payerIds.length > 0;
   const RLIMIT = 25;
 
   const loadRuns = (off = 0) => api.get<{ runs: Run[]; total: number }>(`/api/runs?limit=${RLIMIT}&offset=${off}`).then((r) => { setRuns(r.runs); setRunsTotal(r.total); setRunsOffset(off); });
   const loadElig = useCallback(() => {
     api.post<Eligibility>('/api/runs/eligibility', { payerIds, taxYear }).then(setElig).catch(() => {});
   }, [payerIds, taxYear]);
+  const loadPending = useCallback(() => { api.get<Pending>(`/api/payers/pending/${taxYear}`).then(setPending).catch(() => {}); }, [taxYear]);
   useEffect(() => {
     api.get<{ payers: Payer[] }>('/api/payers?limit=1000').then((r) => setPayers(r.payers));
     void loadRuns(0);
     const t = setInterval(() => loadRuns(runsOffset), 8000);
     return () => clearInterval(t);
   }, []);
-  useEffect(() => { loadElig(); }, [loadElig]);
+  useEffect(() => { loadElig(); loadPending(); }, [loadElig, loadPending]);
 
   const scope = () => ({ payerIds, taxYear });
-  const done = (msg: string) => { dialogs.toast(msg, 'success'); loadRuns(0); loadElig(); };
+  const done = (msg: string) => { dialogs.toast(msg, 'success'); loadRuns(0); loadElig(); loadPending(); };
   const fail = (err: unknown) => setError(err instanceof ApiError ? err.message : String(err));
+  const guardScope = () => { if (!payerIds.length) { setError('Add entities first — search or use an “add all …” button below.'); return false; } setError(''); return true; };
   const wrap = async (fn: () => Promise<void>) => { setBusy(true); setError(''); try { await fn(); } catch (e) { fail(e); } finally { setBusy(false); } };
-  const scopeLabel = scoped ? `${payerIds.length} selected payer(s)` : 'ALL payers';
+  const scopeLabel = `${payerIds.length} selected payer(s)`;
 
-  const previewTransmit = () => wrap(async () => { setPreview(await api.post('/api/runs/transmit/preview', scope())); });
-  const runTransmit = () => wrap(async () => {
+  const previewTransmit = () => { if (!guardScope()) return; return wrap(async () => { setPreview(await api.post('/api/runs/transmit/preview', scope())); }); };
+  const runTransmit = () => { if (!guardScope()) return; return wrap(async () => {
     if (!(await dialogs.confirm(`Transmit ${elig?.transmit.records ?? 0} queued record(s) across ${elig?.transmit.payers ?? 0} payer(s) to the IRS? Files real (or ATS) returns.`, { title: 'Transmit all queued', danger: true }))) return;
     await api.post('/api/runs/transmit', scope()); setPreview(null); done('Transmit run started — watch run history & notifications.');
-  });
-  const runSummaries = () => wrap(async () => {
-    if (!(await dialogs.confirm(`Generate one merged summary PDF for ${elig?.summaries.payers ?? 0} payer(s) with accepted forms?`, { title: 'Generate summaries' }))) return;
+  }); };
+  const runSummaries = () => { if (!guardScope()) return; return wrap(async () => {
+    if (!(await dialogs.confirm(`Generate one merged summary PDF for ${elig?.summaries.payers ?? 0} of the selected payer(s) with accepted forms?`, { title: 'Generate summaries' }))) return;
     await api.post('/api/runs/summary', scope()); done('Generating merged summary PDF — appears in run history when ready.');
-  });
-  const inviteAll = () => wrap(async () => {
-    if (!(await dialogs.confirm(`Send client invites to ${elig?.invite.uninvited ?? 0} not-yet-invited payer(s) (${scopeLabel})? This emails/texts clients.`, { title: 'Invite campaign' }))) return;
-    const r = await api.post<{ sent: number; skipped: number; noContact: number }>('/api/invites/bulk', { payerIds: scoped ? payerIds : payers.map((p) => p.id), taxYear });
+  }); };
+  const inviteAll = () => { if (!guardScope()) return; return wrap(async () => {
+    if (!(await dialogs.confirm(`Send client invites to the uninvited of ${scopeLabel}? This emails/texts clients.`, { title: 'Invite campaign' }))) return;
+    const r = await api.post<{ sent: number; skipped: number; noContact: number }>('/api/invites/bulk', { payerIds, taxYear });
     done(`Invite campaign: ${r.sent} sent, ${r.skipped} already invited, ${r.noContact} without contact.`);
-  });
-  const resendInvites = () => wrap(async () => {
-    if (!(await dialogs.confirm(`Resend outstanding invites (${scopeLabel})? This re-emails clients who haven't submitted.`, { title: 'Resend outstanding' }))) return;
-    const r = await api.post<{ resent: number; outstanding: number }>('/api/invites/resend-outstanding', scoped ? { taxYear, payerIds } : { taxYear });
+  }); };
+  const resendInvites = () => { if (!guardScope()) return; return wrap(async () => {
+    if (!(await dialogs.confirm(`Resend outstanding invites for ${scopeLabel}? This re-emails clients who haven't submitted.`, { title: 'Resend outstanding' }))) return;
+    const r = await api.post<{ resent: number; outstanding: number }>('/api/invites/resend-outstanding', { taxYear, payerIds });
     done(`Resent ${r.resent} of ${r.outstanding} outstanding.`);
-  });
-  const w9Campaign = () => wrap(async () => {
-    if (!(await dialogs.confirm(`Send W-9 requests to ${elig?.w9.missing ?? 0} recipient(s) missing/stale W-9 (${scopeLabel})? This emails/texts them.`, { title: 'W-9 campaign' }))) return;
-    const r = await api.post<{ requested: number; eligible: number; more: boolean }>('/api/w9/campaign', scoped ? { payerIds, taxYear } : {});
+  }); };
+  const w9Campaign = () => { if (!guardScope()) return; return wrap(async () => {
+    if (!(await dialogs.confirm(`Send W-9 requests to ${elig?.w9.missing ?? 0} recipient(s) missing/stale W-9 in ${scopeLabel}? This emails/texts them.`, { title: 'W-9 campaign' }))) return;
+    const r = await api.post<{ requested: number; eligible: number; more: boolean }>('/api/w9/campaign', { payerIds, taxYear });
     done(`W-9 campaign: ${r.requested} sent (${r.eligible} eligible${r.more ? ', more remain — run again' : ''}).`);
-  });
+  }); };
   const downloadRun = async (r: Run) => downloadBlob(await api.get<Blob>(`/api/runs/${r.id}/download`), `filing-summaries-${r.taxYear}.pdf`);
   const retryFailed = (r: Run) => wrap(async () => { await api.post(`/api/runs/${r.id}/retry`, {}); setDrill(null); done('Retry run started for the failed payers.'); });
 
@@ -86,26 +89,38 @@ export function Fleet() {
       <p className="muted">Season-wide actions. Every action targets the population shown — the payer selection below scopes them all (nothing silently goes firm-wide). Transmit is dry-run-previewed and reviewer-gated.</p>
       {error && <div className="error-box" onClick={() => setError('')}>{error}</div>}
 
-      {/* fleet status strip */}
-      {elig && (
+      {/* fleet status strip — firm-wide pipeline state */}
+      {pending && (
         <div className="panel" style={{ padding: '8px 14px' }}>
           <div className="row" style={{ gap: 20, alignItems: 'center' }}>
-            <span className="group-label">Fleet status ({scopeLabel})</span>
-            <span>Ready to transmit: <strong style={{ color: elig.transmit.records ? 'var(--warn)' : 'var(--ok)' }}>{elig.transmit.records}</strong> in {elig.transmit.payers} payer(s)</span>
-            <span>Uninvited: <strong>{elig.invite.uninvited}</strong></span>
-            <span>Missing W-9: <strong style={{ color: elig.w9.missing ? 'var(--warn)' : undefined }}>{elig.w9.missing}</strong></span>
-            <span>With accepted forms: <strong>{elig.summaries.payers}</strong></span>
+            <span className="group-label">Fleet status (firm-wide)</span>
+            <span>Ready to transmit: <strong style={{ color: pending.readyToTransmit.length ? 'var(--warn)' : 'var(--ok)' }}>{pending.readyToTransmit.length}</strong></span>
+            <span>Uninvited: <strong>{pending.uninvited.length}</strong></span>
+            <span>Missing W-9: <strong style={{ color: pending.missingW9.length ? 'var(--warn)' : undefined }}>{pending.missingW9.length}</strong></span>
+            <span>Accepted: <strong>{pending.accepted.length}</strong></span>
           </div>
         </div>
       )}
 
       <div className="panel">
-        <div className="row">
+        <div className="row" style={{ marginBottom: 8 }}>
           <div className="field"><label>Tax year</label>
-            <select value={taxYear} onChange={(e) => setTaxYear(Number(e.target.value))}><option value={2026}>2026</option><option value={2025}>2025</option></select></div>
-          <div className="field grow"><label>Payer scope <span className="muted">(empty = all payers)</span></label>
-            <MultiSelect options={payers.map((p) => ({ value: p.id, label: p.legalName }))} selected={payerIds} onChange={setPayerIds} unit="payers" /></div>
+            <select value={taxYear} onChange={(e) => { setTaxYear(Number(e.target.value)); setPayerIds([]); }}><option value={2026}>2026</option><option value={2025}>2025</option></select></div>
         </div>
+        <label>Working list — add the entities to act on</label>
+        <EntityPicker
+          options={payers.map((p) => ({ value: p.id, label: p.legalName }))}
+          selected={payerIds}
+          onChange={setPayerIds}
+          unit="payers"
+          quickAdds={pending ? [
+            { label: 'Ready to transmit', ids: pending.readyToTransmit, title: 'Payers with queued records' },
+            { label: 'Uninvited', ids: pending.uninvited },
+            { label: 'Missing W-9', ids: pending.missingW9, title: 'Payers with recipients missing/stale W-9' },
+            { label: 'With accepted', ids: pending.accepted },
+            { label: 'All payers', ids: payers.map((p) => p.id) },
+          ] : []}
+        />
       </div>
 
       <div className="stat-row">

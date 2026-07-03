@@ -1,6 +1,6 @@
 import { FormEvent, useEffect, useState } from 'react';
 import { api, ApiError, downloadBlob } from '../api';
-import { MultiSelect } from '../components/MultiSelect';
+import { EntityPicker } from '../components/EntityPicker';
 import { useDialogs } from '../components/Dialogs';
 
 interface StateFile {
@@ -36,15 +36,17 @@ export function MoFiles() {
   const [includeBelowThreshold, setIncludeBelowThreshold] = useState(false);
   const [preview, setPreview] = useState<PreviewRow[] | null>(null);
   const [guidance, setGuidance] = useState<Record<string, string> | null>(null);
+  const [pending, setPending] = useState<{ moSource: string[] } | null>(null);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
 
   const load = () => api.get<{ files: StateFile[] }>('/api/mo/files').then((r) => setFiles(r.files));
   useEffect(() => {
     void load();
-    api.get<{ payers: Payer[] }>('/api/payers').then((r) => { setPayers(r.payers); setPayerIds(r.payers.map((p) => p.id)); });
+    api.get<{ payers: Payer[] }>('/api/payers?limit=1000').then((r) => setPayers(r.payers));
     api.get<Record<string, string>>('/api/mo/correction-guidance').then(setGuidance).catch(() => {});
   }, []);
+  useEffect(() => { api.get<{ moSource: string[] }>(`/api/payers/pending/${taxYear}`).then(setPending).catch(() => {}); }, [taxYear]);
 
   const doPreview = async (e: FormEvent) => {
     e.preventDefault();
@@ -107,10 +109,16 @@ export function MoFiles() {
             </select>
           </div>
           <div className="field grow">
-            <label>Payers</label>
-            <MultiSelect options={payers.map((p) => ({ value: p.id, label: p.legalName }))} selected={payerIds} onChange={setPayerIds} unit="payers" />
+            <label>Payers <span className="muted">(search & add, or “add all …”)</span></label>
+            <EntityPicker
+              options={payers.map((p) => ({ value: p.id, label: p.legalName }))}
+              selected={payerIds}
+              onChange={setPayerIds}
+              unit="payers"
+              quickAdds={pending ? [{ label: 'All MO-source', ids: pending.moSource }] : []}
+            />
           </div>
-          <button type="submit" className="secondary">Preview counts & totals</button>
+          <button type="submit" className="secondary" disabled={!payerIds.length}>Preview counts & totals</button>
         </div>
         <p className="muted">Includes MO-source records in accepted/transmitted status. Money fields carry CENTS with assumed decimal per Pub 1220 — written straight from integer-cents storage.</p>
       </form>

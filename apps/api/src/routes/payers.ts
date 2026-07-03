@@ -2,11 +2,11 @@
  * Payers (the firm's clients issuing 1099s).
  */
 import { Router } from 'express';
-import { and, eq, ilike, or, sql } from 'drizzle-orm';
+import { and, eq, ilike, inArray, isNull, or, sql } from 'drizzle-orm';
 import { z } from 'zod';
-import { AppError, formatTin, maskTin, normalizeTin, zPayerInput } from '@vibe1099/shared';
+import { AppError, formatTin, maskTin, normalizeTin, zPayerInput, zTaxYear } from '@vibe1099/shared';
 import { audit, getCrypto } from '@vibe1099/core';
-import { getDb, payers } from '@vibe1099/db';
+import { clientInvites, formRecords, getDb, payers, recipients } from '@vibe1099/db';
 import { h } from '../middleware/error.js';
 import { requireStaff } from '../middleware/auth.js';
 import { checkTin } from '../services/vault.js';
@@ -86,6 +86,55 @@ payersRouter.post(
       .returning({ id: payers.id });
     res.locals['audit'] = { action: 'payer.create', entityType: 'payer', entityId: created?.id };
     res.status(201).json({ id: created?.id });
+  }),
+);
+
+/**
+ * Pending sets for smart "add all …" selection on the bulk screens — returns the
+ * payer IDs that still need each pipeline step for a tax year, so staff can add
+ * exactly the un-processed entities (untransmitted, unmailed, undelivered, …)
+ * instead of unchecking a wall of 100.
+ */
+payersRouter.get(
+  '/pending/:taxYear',
+  h(async (req, res) => {
+    const taxYear = zTaxYear.parse(Number(req.params['taxYear']));
+    const db = getDb();
+    const firmId = req.staff!.firmId;
+    const base = [eq(formRecords.firmId, firmId), eq(formRecords.taxYear, taxYear)];
+    const distinctPayers = async (extra: ReturnType<typeof and>[]) =>
+      (await db.selectDistinct({ id: formRecords.payerId }).from(formRecords).where(and(...base, ...extra))).map((r) => r.id);
+
+    const [readyToTransmit, accepted, moSource, unmailedPaper, undeliveredElectronic, invitedRows, missingW9Rows] = await Promise.all([
+      distinctPayers([eq(formRecords.status, 'queued')]),
+      distinctPayers([inArray(formRecords.status, ['accepted', 'accepted_with_errors'])]),
+      distinctPayers([eq(formRecords.moSource, true), inArray(formRecords.status, ['accepted', 'accepted_with_errors', 'transmitted'])]),
+      distinctPayers([
+        inArray(formRecords.status, ['accepted', 'accepted_with_errors']),
+        sql`NOT EXISTS (SELECT 1 FROM deliveries d WHERE d.form_record_id = ${formRecords.id} AND d.channel = 'paper' AND d.sent_at IS NOT NULL)`,
+      ]),
+      distinctPayers([
+        inArray(formRecords.status, ['accepted', 'accepted_with_errors']),
+        sql`NOT EXISTS (SELECT 1 FROM deliveries d WHERE d.form_record_id = ${formRecords.id} AND d.channel IN ('email','sms') AND d.sent_at IS NOT NULL)`,
+      ]),
+      db.selectDistinct({ id: clientInvites.payerId }).from(clientInvites).where(and(eq(clientInvites.firmId, firmId), eq(clientInvites.taxYear, taxYear))),
+      db
+        .selectDistinct({ id: formRecords.payerId })
+        .from(formRecords)
+        .innerJoin(recipients, eq(recipients.id, formRecords.recipientId))
+        .where(and(...base, isNull(recipients.mergedIntoId), inArray(recipients.w9Status, ['none', 'stale']))),
+    ]);
+    const invited = new Set(invitedRows.map((r) => r.id));
+    const allPayers = (await db.select({ id: payers.id }).from(payers).where(and(eq(payers.firmId, firmId), eq(payers.active, true)))).map((p) => p.id);
+    res.json({
+      readyToTransmit,
+      accepted,
+      moSource,
+      unmailedPaper,
+      undeliveredElectronic,
+      missingW9: missingW9Rows.map((r) => r.id),
+      uninvited: allPayers.filter((p) => !invited.has(p)),
+    });
   }),
 );
 

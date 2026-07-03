@@ -6,10 +6,12 @@
  */
 import { FormEvent, useEffect, useState } from 'react';
 import { api, ApiError, downloadBlob } from '../api';
-import { MultiSelect } from '../components/MultiSelect';
+import { EntityPicker } from '../components/EntityPicker';
 import { Paginator } from '../components/Paginator';
 import { Modal } from '../components/Modal';
 import { useDialogs } from '../components/Dialogs';
+
+interface Pending { unmailedPaper: string[]; accepted: string[] }
 
 interface Batch {
   id: string; taxYear: number; label: string; pageCount: number; formCount: number; status: string; printedAt: string | null; createdAt: string;
@@ -33,6 +35,7 @@ export function Batches() {
   const [perPayer, setPerPayer] = useState(false);
   const [preview, setPreview] = useState<{ perPayer: PerPayer[]; total: number } | null>(null);
   const [drill, setDrill] = useState<{ batch: Batch; forms: BatchForm[] } | null>(null);
+  const [pending, setPending] = useState<Pending | null>(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const LIMIT = 50;
@@ -44,6 +47,7 @@ export function Batches() {
     const t = setInterval(() => load(offset), 5000);
     return () => clearInterval(t);
   }, []);
+  useEffect(() => { api.get<Pending>(`/api/payers/pending/${taxYear}`).then(setPending).catch(() => {}); }, [taxYear]);
 
   const toggle = (list: string[], setList: (v: string[]) => void, v: string) => setList(list.includes(v) ? list.filter((x) => x !== v) : [...list, v]);
   const scope = () => ({ taxYear, payerIds, formTypes, statuses });
@@ -112,8 +116,17 @@ export function Batches() {
             </select></div>
         </div>
         <div className="field">
-          <label>Payers <span className="muted">(starts empty — search & add the clients to mail)</span></label>
-          <MultiSelect options={payers.map((p) => ({ value: p.id, label: p.legalName }))} selected={payerIds} onChange={(v) => { setPayerIds(v); setPreview(null); }} unit="payers" />
+          <label>Payers to mail <span className="muted">(search & add, or use “add all …”)</span></label>
+          <EntityPicker
+            options={payers.map((p) => ({ value: p.id, label: p.legalName }))}
+            selected={payerIds}
+            onChange={(v) => { setPayerIds(v); setPreview(null); }}
+            unit="payers"
+            quickAdds={pending ? [
+              { label: 'Unmailed (accepted, no paper sent)', ids: pending.unmailedPaper },
+              { label: 'All with accepted forms', ids: pending.accepted },
+            ] : []}
+          />
         </div>
 
         <div className="row" style={{ alignItems: 'center' }}>
