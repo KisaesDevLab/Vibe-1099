@@ -9,7 +9,7 @@
  * Add form types or tax years by extending REGISTRY — never by branching logic.
  */
 
-export const FORM_TYPES = ['NEC', 'MISC', 'INT', 'DIV'] as const;
+export const FORM_TYPES = ['NEC', 'MISC', 'INT', 'DIV', '1098'] as const;
 export type FormType = (typeof FORM_TYPES)[number];
 
 export type BoxKind = 'cents' | 'checkbox' | 'code' | 'string';
@@ -178,7 +178,9 @@ function commonValidate(def: FormDef, values: FormRecordValues, ctx: FormValidat
   // Admin settings may override the registry default per (form type, tax year).
   const thresholdCents = ctx.federalThresholdCents ?? def.federalThresholdCents;
   if (thresholdCents != null) {
-    const primary = def.formType === 'NEC' ? cents(values, 'box1') : undefined;
+    // primary reportable box the threshold applies to: NEC box1 (comp), 1098 box1
+    // (mortgage interest received). Other forms have no single-box threshold gate.
+    const primary = def.formType === 'NEC' || def.formType === '1098' ? cents(values, 'box1') : undefined;
     if (primary != null && primary > 0 && primary < thresholdCents) {
       issues.push({
         severity: 'warning',
@@ -330,6 +332,38 @@ function divDef(taxYear: number): FormDef {
   return def;
 }
 
+// Form 1098 — Mortgage Interest Statement. Different family from the 1099 income
+// forms: the FILER is the lender (our "payer" role) and the statement goes to the
+// BORROWER (our "recipient" role); it reports interest RECEIVED. No state
+// withholding block, so it is not a MO Pub 1220 candidate (blank return type).
+// Several boxes are dates/addresses/counts, modeled as strings.
+function mortgageInterestDef(taxYear: number): FormDef {
+  const def: FormDef = {
+    formType: '1098',
+    taxYear,
+    title: 'Mortgage Interest Statement',
+    irisFormType: 'Form1098',
+    mo1220ReturnType: '', // not a Missouri Pub 1220 income form — excluded from MO filing
+    federalThresholdCents: 60000, // $600 interest received (reg. threshold, warn-only)
+    federalThresholdNote: 'Under the $600 mortgage-interest reporting threshold — filing is optional but permitted',
+    boxes: [
+      { id: 'box1', boxNumber: '1', label: 'Mortgage interest received from payer(s)/borrower(s)', kind: 'cents', irisElement: 'MortgageInterestReceivedAmt', copyBSlot: 'box1' },
+      { id: 'box2', boxNumber: '2', label: 'Outstanding mortgage principal', kind: 'cents', irisElement: 'OutstandingMortgagePrincipalAmt', copyBSlot: 'box2' },
+      { id: 'box3', boxNumber: '3', label: 'Mortgage origination date', kind: 'string', irisElement: 'MortgageOriginationDt', copyBSlot: 'box3' },
+      { id: 'box4', boxNumber: '4', label: 'Refund of overpaid interest', kind: 'cents', irisElement: 'RefundOfOverpaidInterestAmt', copyBSlot: 'box4' },
+      { id: 'box5', boxNumber: '5', label: 'Mortgage insurance premiums', kind: 'cents', irisElement: 'MortgageInsurancePremiumsAmt', copyBSlot: 'box5' },
+      { id: 'box6', boxNumber: '6', label: 'Points paid on purchase of principal residence', kind: 'cents', irisElement: 'PointsPaidOnPurchaseAmt', copyBSlot: 'box6' },
+      { id: 'box7', boxNumber: '7', label: 'Address of property securing mortgage is same as borrower’s', kind: 'checkbox', irisElement: 'PropertyAddressSameAsBorrowerInd', copyBSlot: 'box7' },
+      { id: 'box8', boxNumber: '8', label: 'Address or description of property securing mortgage', kind: 'string', irisElement: 'PropertySecuringMortgageDesc', copyBSlot: 'box8' },
+      { id: 'box9', boxNumber: '9', label: 'Number of properties securing the mortgage', kind: 'string', irisElement: 'NumberOfMortgagedPropertiesCnt', copyBSlot: 'box9' },
+      { id: 'box10', boxNumber: '10', label: 'Other', kind: 'string', irisElement: 'OtherInformationTxt', copyBSlot: 'box10' },
+      { id: 'box11', boxNumber: '11', label: 'Mortgage acquisition date', kind: 'string', irisElement: 'MortgageAcquisitionDt', copyBSlot: 'box11' },
+    ],
+    validate: (values, ctx) => commonValidate(def, values, ctx),
+  };
+  return def;
+}
+
 // ---------------------------------------------------------------------------
 
 /** Baseline years shipped with the build; admins can roll forward to new years. */
@@ -351,6 +385,8 @@ function buildDef(formType: FormType, taxYear: number): FormDef {
       return intDef(taxYear);
     case 'DIV':
       return divDef(taxYear);
+    case '1098':
+      return mortgageInterestDef(taxYear);
   }
 }
 

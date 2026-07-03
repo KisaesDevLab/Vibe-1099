@@ -19,7 +19,30 @@ const OMB_BY_TYPE: Record<FormType, string> = {
   MISC: '1545-0115',
   INT: '1545-0112',
   DIV: '1545-0110',
+  '1098': '1545-0901',
 };
+
+// Copy B block labels. 1099 forms: PAYER (filer) → RECIPIENT. Form 1098 inverts
+// the roles — the filer is the lender and the statement goes to the borrower — so
+// the labels flip (our "payer" record is the lender, our "recipient" is borrower).
+function copyBLabels(formType: FormType) {
+  if (formType === '1098') {
+    return {
+      payer_label: "RECIPIENT'S/LENDER'S name, street address, city or town, state or province, country, ZIP or foreign postal code, and telephone no.",
+      payer_tin_label: "RECIPIENT'S/LENDER'S TIN",
+      recipient_tin_label: "PAYER'S/BORROWER'S TIN",
+      recipient_label: "PAYER'S/BORROWER'S name and address",
+      copy_for: 'For Payer/Borrower',
+    };
+  }
+  return {
+    payer_label: "PAYER'S name, street address, city or town, state or province, country, ZIP or foreign postal code, and telephone no.",
+    payer_tin_label: "PAYER'S TIN",
+    recipient_tin_label: "RECIPIENT'S TIN",
+    recipient_label: "RECIPIENT'S name and address",
+    copy_for: 'For Recipient',
+  };
+}
 
 export interface CopyBOptions {
   variant: 'portal' | 'copy2';
@@ -99,10 +122,11 @@ export async function buildFormPayload(
       corrected: isCorrected,
       tax_year: record.taxYear,
       form_type: record.formType,
-      form_number: `1099-${record.formType}`,
+      form_number: record.formType === '1098' ? '1098' : `1099-${record.formType}`,
       form_title: def.title,
       omb: OMB_BY_TYPE[record.formType as FormType],
       copy_label: 'Copy B',
+      ...copyBLabels(record.formType as FormType),
       account_number: record.accountNumber,
       second_tin_notice: record.secondTinNotice,
       payer: {

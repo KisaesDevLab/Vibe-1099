@@ -221,7 +221,7 @@ export const formRecords = pgTable(
       .notNull()
       .references(() => recipients.id),
     taxYear: integer('tax_year').notNull(),
-    formType: text('form_type').notNull().$type<'NEC' | 'MISC' | 'INT' | 'DIV'>(),
+    formType: text('form_type').notNull().$type<'NEC' | 'MISC' | 'INT' | 'DIV' | '1098'>(),
     boxValues: jsonb('box_values').notNull().$type<Record<string, number | boolean | string | null>>(), // cents
     accountNumber: text('account_number').notNull().default(''),
     secondTinNotice: boolean('second_tin_notice').notNull().default(false),

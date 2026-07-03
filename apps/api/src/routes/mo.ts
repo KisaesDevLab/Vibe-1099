@@ -4,7 +4,7 @@
  * regenerate flow, state config table.
  */
 import { Router } from 'express';
-import { and, desc, eq, inArray } from 'drizzle-orm';
+import { and, desc, eq, inArray, ne } from 'drizzle-orm';
 import { z } from 'zod';
 import { AppError, formatCents, sumCents, zTaxYear, type FormType } from '@vibe1099/shared';
 import {
@@ -52,6 +52,7 @@ async function collectMoCandidates(
         eq(formRecords.taxYear, taxYear),
         inArray(formRecords.payerId, payerIds),
         eq(formRecords.moSource, true),
+        ne(formRecords.formType, '1098'), // 1098 is federal-only (no MO withholding) — never state-filed
         inArray(formRecords.status, ['accepted', 'accepted_with_errors', 'transmitted']),
       ),
     );

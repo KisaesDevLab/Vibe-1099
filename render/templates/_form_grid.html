@@ -3,7 +3,7 @@
    Expects: form (dict) with payer, recipient, boxes, state_boxes, meta fields. #}
 <div class="form-grid">
   <div class="cell payer-block" style="grid-row: span 3;">
-    <div class="box-label">PAYER'S name, street address, city or town, state or province, country, ZIP or foreign postal code, and telephone no.</div>
+    <div class="box-label">{{ form.payer_label or "PAYER'S name, street address, city or town, state or province, country, ZIP or foreign postal code, and telephone no." }}</div>
     <div class="box-value">
       {{ form.payer.name }}<br>
       {% for line in form.payer.address_lines %}{{ line }}<br>{% endfor %}
@@ -18,15 +18,15 @@
     <div class="small">{{ form.form_title }}</div>
   </div>
   <div class="cell">
-    <div class="box-label">PAYER'S TIN</div>
+    <div class="box-label">{{ form.payer_tin_label or "PAYER'S TIN" }}</div>
     <div class="box-value mono">{{ form.payer.tin_display }}</div>
   </div>
   <div class="cell">
-    <div class="box-label">RECIPIENT'S TIN</div>
+    <div class="box-label">{{ form.recipient_tin_label or "RECIPIENT'S TIN" }}</div>
     <div class="box-value mono">{{ form.recipient.tin_masked }}</div>
   </div>
   <div class="cell" style="grid-row: span 2;">
-    <div class="box-label">RECIPIENT'S name and address</div>
+    <div class="box-label">{{ form.recipient_label or "RECIPIENT'S name and address" }}</div>
     <div class="box-value">
       {{ form.recipient.name1 }}<br>
       {% if form.recipient.name2 %}{{ form.recipient.name2 }}<br>{% endif %}
@@ -73,5 +73,5 @@
   This is important tax information and is being furnished to the IRS. If you are required to file a
   return, a negligence penalty or other sanction may be imposed on you if this income is taxable and
   the IRS determines that it has not been reported.
-  &nbsp;&nbsp;<span class="bold">{{ form.copy_label }}</span> — For Recipient
+  &nbsp;&nbsp;<span class="bold">{{ form.copy_label }}</span> — {{ form.copy_for or 'For Recipient' }}
 </div>

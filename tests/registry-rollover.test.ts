@@ -8,7 +8,7 @@ describe('registry rollover — new filing years build on demand', () => {
     expect(nec.formType).toBe('NEC');
     // TY>=2026 threshold branch (OBBBA $2,000) applies to rolled-forward years
     expect(nec.federalThresholdCents).toBe(200000);
-    expect(listFormDefs(2027)).toHaveLength(4);
+    expect(listFormDefs(2027)).toHaveLength(5); // NEC, MISC, INT, DIV, 1098
   });
 
   it('accepts in-range years and rejects out-of-range', () => {
