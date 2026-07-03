@@ -4,7 +4,7 @@
  * registry metadata for the grid UI.
  */
 import { Router } from 'express';
-import { and, desc, eq, inArray, sql } from 'drizzle-orm';
+import { and, desc, eq, ilike, inArray, or, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import {
   AppError,
@@ -99,6 +99,7 @@ formsRouter.get(
         formType: zFormType.optional(),
         status: z.string().optional(),
         clientSubmitted: z.coerce.boolean().optional(),
+        search: z.string().optional(),
         limit: z.coerce.number().int().min(1).max(1000).default(500),
         offset: z.coerce.number().int().min(0).default(0),
       })
@@ -110,6 +111,14 @@ formsRouter.get(
     if (q.formType) conds.push(eq(formRecords.formType, q.formType));
     if (q.status) conds.push(inArray(formRecords.status, q.status.split(',') as FormStatus[]));
     if (q.clientSubmitted !== undefined) conds.push(eq(formRecords.clientSubmitted, q.clientSubmitted));
+    if (q.search) {
+      // match by recipient name or last-4 TIN (records reference recipients)
+      const sub = getDb()
+        .select({ id: recipients.id })
+        .from(recipients)
+        .where(and(eq(recipients.firmId, req.staff!.firmId), or(ilike(recipients.name1, `%${q.search}%`), eq(recipients.tinLast4, q.search))!));
+      conds.push(sql`${formRecords.recipientId} IN ${sub}`);
+    }
 
     const [rows, [countRow]] = await Promise.all([
       getDb()

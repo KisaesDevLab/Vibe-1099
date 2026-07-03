@@ -3,14 +3,14 @@
  * transmit-all and summary-all, plus run history and result download.
  */
 import { Router } from 'express';
-import { and, desc, eq } from 'drizzle-orm';
+import { and, desc, eq, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { AppError, zTaxYear } from '@vibe1099/shared';
 import { getBlob } from '@vibe1099/core';
 import { filingRuns, getDb } from '@vibe1099/db';
 import { h } from '../middleware/error.js';
 import { requireStaff } from '../middleware/auth.js';
-import { getRun, previewMo, previewTransmit, runSummaryAll, runTransmitAll, type RunScope } from '../services/filing-runs.js';
+import { fleetEligibility, getRun, previewMo, previewTransmit, retryRun, runSummaryAll, runTransmitAll, type RunScope } from '../services/filing-runs.js';
 
 export const runsRouter = Router();
 runsRouter.use(requireStaff());
@@ -61,16 +61,45 @@ runsRouter.post(
   }),
 );
 
+/** Per-action eligibility counts for the current scope. */
+runsRouter.post(
+  '/eligibility',
+  h(async (req, res) => {
+    const { payerIds, taxYear } = z.object({ payerIds: z.array(z.string().uuid()).default([]), taxYear: zTaxYear }).parse(req.body);
+    res.json(await fleetEligibility(getDb(), req.staff!.firmId, taxYear, payerIds));
+  }),
+);
+
 runsRouter.get(
   '/',
   h(async (req, res) => {
-    const rows = await getDb()
-      .select()
-      .from(filingRuns)
-      .where(eq(filingRuns.firmId, req.staff!.firmId))
-      .orderBy(desc(filingRuns.createdAt))
-      .limit(50);
-    res.json({ runs: rows });
+    const q = z
+      .object({
+        kind: z.string().optional(),
+        limit: z.coerce.number().int().min(1).max(200).default(25),
+        offset: z.coerce.number().int().min(0).default(0),
+      })
+      .parse(req.query);
+    const db = getDb();
+    const conds = [eq(filingRuns.firmId, req.staff!.firmId)];
+    if (q.kind) conds.push(eq(filingRuns.kind, q.kind as 'transmit'));
+    const [rows, [countRow]] = await Promise.all([
+      db.select().from(filingRuns).where(and(...conds)).orderBy(desc(filingRuns.createdAt)).limit(q.limit).offset(q.offset),
+      db.select({ n: sql<number>`count(*)::int` }).from(filingRuns).where(and(...conds)),
+    ]);
+    res.json({ runs: rows, total: countRow?.n ?? 0, limit: q.limit, offset: q.offset });
+  }),
+);
+
+/** Re-run only the failed payers of a run. */
+runsRouter.post(
+  '/:id/retry',
+  requireStaff('admin', 'reviewer'),
+  h(async (req, res) => {
+    const id = z.string().uuid().parse(req.params['id']);
+    const runId = await retryRun(getDb(), req.staff!.firmId, id, req.staff!.userId, req.staff!.role);
+    res.locals['audit'] = { action: 'run.retry', entityType: 'filing_run', entityId: runId, detail: { from: id } };
+    res.status(202).json({ runId });
   }),
 );
 

@@ -9,10 +9,10 @@
  * snapshot-on-transmit, MO scoping) all still hold because we call the same
  * single-payer code paths.
  */
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { AppError, formatCents } from '@vibe1099/shared';
 import { getQueue, getRenderClient, notify, putBlob, QUEUE_NAMES, type IrisTransmitJob } from '@vibe1099/core';
-import { filingRuns, formRecords, getDb, payers, type Db } from '@vibe1099/db';
+import { clientInvites, filingRuns, formRecords, getDb, payers, recipients, type Db } from '@vibe1099/db';
 import { composeTransmission } from './iris.js';
 import { renderPayerSummaryIfAny } from './reports.js';
 import { getSetting } from './settings.js';
@@ -219,6 +219,58 @@ export async function getRun(db: Db, firmId: string, runId: string) {
   const row = await db.query.filingRuns.findFirst({ where: and(eq(filingRuns.id, runId), eq(filingRuns.firmId, firmId)) });
   if (!row) throw AppError.notFound('Filing run');
   return row;
+}
+
+/**
+ * Per-action eligibility counts for the Fleet cockpit — so each action shows the
+ * population it will actually hit (not one global "all payers" checkbox).
+ */
+export async function fleetEligibility(db: Db, firmId: string, taxYear: number, payerIds: string[]) {
+  const scopePayers = payerIds.length ? [inArray(formRecords.payerId, payerIds)] : [];
+  const [transmit] = await db
+    .select({ payers: sql<number>`count(distinct ${formRecords.payerId})::int`, records: sql<number>`count(*)::int` })
+    .from(formRecords)
+    .where(and(eq(formRecords.firmId, firmId), eq(formRecords.taxYear, taxYear), eq(formRecords.status, 'queued'), ...scopePayers));
+  const [accepted] = await db
+    .select({ payers: sql<number>`count(distinct ${formRecords.payerId})::int` })
+    .from(formRecords)
+    .where(and(eq(formRecords.firmId, firmId), eq(formRecords.taxYear, taxYear), inArray(formRecords.status, ['accepted', 'accepted_with_errors', 'transmitted']), ...scopePayers));
+  // invited payers this year
+  const invited = await db
+    .selectDistinct({ payerId: clientInvites.payerId })
+    .from(clientInvites)
+    .where(and(eq(clientInvites.firmId, firmId), eq(clientInvites.taxYear, taxYear)));
+  const invitedSet = new Set(invited.map((i) => i.payerId));
+  const uninvited = (payerIds.length ? payerIds : (await db.select({ id: payers.id }).from(payers).where(eq(payers.firmId, firmId))).map((p) => p.id)).filter((p) => !invitedSet.has(p)).length;
+  // missing/stale W-9 recipients with contact (scoped to payers if given)
+  const w9Conds = [
+    eq(recipients.firmId, firmId),
+    isNull(recipients.mergedIntoId),
+    inArray(recipients.w9Status, ['none', 'stale']),
+    sql`(${recipients.email} IS NOT NULL OR ${recipients.mobile} IS NOT NULL)`,
+  ];
+  if (payerIds.length) {
+    const sub = db.selectDistinct({ rid: formRecords.recipientId }).from(formRecords).where(and(eq(formRecords.firmId, firmId), inArray(formRecords.payerId, payerIds), eq(formRecords.taxYear, taxYear)));
+    w9Conds.push(sql`${recipients.id} IN ${sub}`);
+  }
+  const [w9] = await db.select({ n: sql<number>`count(*)::int` }).from(recipients).where(and(...w9Conds));
+  return {
+    transmit: { payers: transmit?.payers ?? 0, records: transmit?.records ?? 0 },
+    summaries: { payers: accepted?.payers ?? 0 },
+    invite: { uninvited },
+    w9: { missing: w9?.n ?? 0 },
+  };
+}
+
+/** Re-run only the failed payers of a prior run (transmit or summary). */
+export async function retryRun(db: Db, firmId: string, runId: string, createdBy: string, actorRole: string): Promise<string> {
+  const run = await getRun(db, firmId, runId);
+  const failedPayerIds = (run.items ?? []).filter((i) => !i.ok && i.payerId).map((i) => i.payerId as string);
+  if (!failedPayerIds.length) throw AppError.validation('This run has no failed payers to retry');
+  const scope: RunScope = { payerIds: [...new Set(failedPayerIds)], taxYear: run.taxYear };
+  if (run.kind === 'transmit') return runTransmitAll(db, firmId, scope, createdBy, actorRole);
+  if (run.kind === 'summary_zip') return runSummaryAll(db, firmId, scope, createdBy);
+  throw AppError.validation(`Retry is not supported for run kind ${run.kind}`);
 }
 
 export { formatCents };

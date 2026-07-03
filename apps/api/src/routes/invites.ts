@@ -190,14 +190,18 @@ invitesRouter.post(
 invitesRouter.post(
   '/resend-outstanding',
   h(async (req, res) => {
-    const { taxYear } = z.object({ taxYear: zTaxYear }).parse(req.body);
+    const { taxYear, payerIds } = z
+      .object({ taxYear: zTaxYear, payerIds: z.array(z.string().uuid()).max(2000).optional() })
+      .parse(req.body);
     const db = getDb();
     const firmId = req.staff!.firmId;
+    const conds = [eq(clientInvites.firmId, firmId), eq(clientInvites.taxYear, taxYear)];
+    if (payerIds?.length) conds.push(inArray(clientInvites.payerId, payerIds));
     const rows = await db
       .select({ invite: clientInvites, payer: payers })
       .from(clientInvites)
       .innerJoin(payers, eq(payers.id, clientInvites.payerId))
-      .where(and(eq(clientInvites.firmId, firmId), eq(clientInvites.taxYear, taxYear)));
+      .where(and(...conds));
     const outstanding = rows.filter(({ invite }) => !invite.submittedAt && !invite.revokedAt);
     const env = loadEnv();
     const firm = await db.query.firms.findFirst({ where: eq(firms.id, firmId) });

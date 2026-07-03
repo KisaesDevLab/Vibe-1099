@@ -3,7 +3,7 @@
  * chain history, outstanding dashboard, MO impact prompt, corrected re-delivery.
  */
 import { Router } from 'express';
-import { and, eq, inArray, isNotNull, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNotNull, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { AppError, zFormType } from '@vibe1099/shared';
 import { getQueue, loadEnv, QUEUE_NAMES, type DeliveryJob } from '@vibe1099/core';
@@ -102,21 +102,52 @@ correctionsRouter.get(
   }),
 );
 
-/** Outstanding corrections dashboard. */
+/** Outstanding corrections queue — with payer + recipient, paginated. */
 correctionsRouter.get(
   '/outstanding',
   h(async (req, res) => {
-    const rows = await getDb()
-      .select()
-      .from(formRecords)
-      .where(
-        and(
-          eq(formRecords.firmId, req.staff!.firmId),
-          isNotNull(formRecords.correctionType),
-          inArray(formRecords.status, ['draft', 'ready', 'queued', 'transmitted', 'rejected']),
-        ),
-      );
-    res.json({ outstanding: rows });
+    const q = z
+      .object({
+        payerId: z.string().uuid().optional(),
+        limit: z.coerce.number().int().min(1).max(500).default(100),
+        offset: z.coerce.number().int().min(0).default(0),
+      })
+      .parse(req.query);
+    const db = getDb();
+    const conds = [
+      eq(formRecords.firmId, req.staff!.firmId),
+      isNotNull(formRecords.correctionType),
+      inArray(formRecords.status, ['draft', 'ready', 'queued', 'transmitted', 'accepted', 'accepted_with_errors', 'rejected']),
+    ];
+    if (q.payerId) conds.push(eq(formRecords.payerId, q.payerId));
+    const [rows, [countRow]] = await Promise.all([
+      db
+        .select({ f: formRecords, payerName: payers.legalName, recipientName: recipients.name1, recipientTin: recipients.tinLast4 })
+        .from(formRecords)
+        .innerJoin(payers, eq(payers.id, formRecords.payerId))
+        .innerJoin(recipients, eq(recipients.id, formRecords.recipientId))
+        .where(and(...conds))
+        .orderBy(desc(formRecords.updatedAt))
+        .limit(q.limit)
+        .offset(q.offset),
+      db.select({ n: sql<number>`count(*)::int` }).from(formRecords).where(and(...conds)),
+    ]);
+    res.json({
+      outstanding: rows.map(({ f, payerName, recipientName }) => ({
+        id: f.id,
+        payerId: f.payerId,
+        payerName,
+        recipientName,
+        taxYear: f.taxYear,
+        formType: f.formType,
+        correctionType: f.correctionType,
+        correctionSeq: f.correctionSeq,
+        status: f.status,
+      })),
+      total: countRow?.n ?? 0,
+      limit: q.limit,
+      offset: q.offset,
+    });
   }),
 );
 

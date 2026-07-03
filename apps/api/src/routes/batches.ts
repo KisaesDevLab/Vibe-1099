@@ -4,7 +4,7 @@
  * reprints, test pattern, single-form preview.
  */
 import { Router } from 'express';
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { AppError, zFormType, zTaxYear } from '@vibe1099/shared';
 import { getBlob, getQueue, QUEUE_NAMES, type RenderBatchJob } from '@vibe1099/core';
@@ -21,11 +21,47 @@ batchesRouter.use(requireStaff());
 batchesRouter.get(
   '/',
   h(async (req, res) => {
-    const rows = await getDb().query.paperBatches.findMany({
-      where: eq(paperBatches.firmId, req.staff!.firmId),
-      orderBy: (t, { desc }) => [desc(t.createdAt)],
-    });
-    res.json({ batches: rows });
+    const q = z
+      .object({ limit: z.coerce.number().int().min(1).max(200).default(50), offset: z.coerce.number().int().min(0).default(0) })
+      .parse(req.query);
+    const db = getDb();
+    const where = eq(paperBatches.firmId, req.staff!.firmId);
+    const [rows, [countRow]] = await Promise.all([
+      db.select().from(paperBatches).where(where).orderBy(desc(paperBatches.createdAt)).limit(q.limit).offset(q.offset),
+      db.select({ n: sql<number>`count(*)::int` }).from(paperBatches).where(where),
+    ]);
+    res.json({ batches: rows, total: countRow?.n ?? 0, limit: q.limit, offset: q.offset });
+  }),
+);
+
+/** Pre-build preview: per-payer form counts for a build scope (no side effects). */
+batchesRouter.post(
+  '/preview',
+  h(async (req, res) => {
+    const input = z
+      .object({
+        taxYear: zTaxYear,
+        payerIds: z.array(z.string().uuid()).min(1).max(2000),
+        formTypes: z.array(zFormType).min(1),
+        statuses: z.array(z.string()).default(['accepted', 'accepted_with_errors']),
+      })
+      .parse(req.body);
+    const rows = await getDb()
+      .select({ payerId: formRecords.payerId, payerName: payers.legalName, n: sql<number>`count(*)::int` })
+      .from(formRecords)
+      .innerJoin(payers, eq(payers.id, formRecords.payerId))
+      .where(
+        and(
+          eq(formRecords.firmId, req.staff!.firmId),
+          eq(formRecords.taxYear, input.taxYear),
+          inArray(formRecords.payerId, input.payerIds),
+          inArray(formRecords.formType, input.formTypes),
+          inArray(formRecords.status, input.statuses as ['accepted']),
+        ),
+      )
+      .groupBy(formRecords.payerId, payers.legalName)
+      .orderBy(payers.legalName);
+    res.json({ perPayer: rows, total: rows.reduce((n, r) => n + r.n, 0) });
   }),
 );
 
@@ -147,6 +183,28 @@ batchesRouter.get(
     });
     if (!batch) throw AppError.notFound('Batch');
     res.json({ batch });
+  }),
+);
+
+/** Forms in a batch (drill-in): recipient + form for reprint-single. */
+batchesRouter.get(
+  '/:id/forms',
+  h(async (req, res) => {
+    const id = z.string().uuid().parse(req.params['id']);
+    const db = getDb();
+    const batch = await db.query.paperBatches.findFirst({ where: and(eq(paperBatches.id, id), eq(paperBatches.firmId, req.staff!.firmId)) });
+    if (!batch) throw AppError.notFound('Batch');
+    const ids = batch.formRecordIds;
+    const rows = ids.length
+      ? await db
+          .select({ id: formRecords.id, formType: formRecords.formType, recipientName: recipients.name1, payerName: payers.legalName })
+          .from(formRecords)
+          .innerJoin(recipients, eq(recipients.id, formRecords.recipientId))
+          .innerJoin(payers, eq(payers.id, formRecords.payerId))
+          .where(inArray(formRecords.id, ids))
+          .orderBy(payers.legalName, recipients.name1)
+      : [];
+    res.json({ forms: rows, order: ids });
   }),
 );
 

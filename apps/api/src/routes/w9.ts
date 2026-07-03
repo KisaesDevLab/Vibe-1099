@@ -8,7 +8,7 @@ import { and, desc, eq, inArray, isNull, lt, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { AppError, ErrorCodes, maskTin, normalizeTin, zW9RequestInput, zW9SubmitInput } from '@vibe1099/shared';
 import { audit, getBlob, getCrypto, getQueue, getRenderClient, loadEnv, notify, putBlob, QUEUE_NAMES, safeHexEqual, type DeliveryJob } from '@vibe1099/core';
-import { firms, getDb, recipients, w9Requests } from '@vibe1099/db';
+import { firms, formRecords, getDb, recipients, w9Requests } from '@vibe1099/db';
 import { h } from '../middleware/error.js';
 import { requireStaff } from '../middleware/auth.js';
 import { rateLimit } from '../middleware/rate-limit.js';
@@ -196,15 +196,30 @@ w9StaffRouter.post(
 w9StaffRouter.post(
   '/campaign',
   h(async (req, res) => {
-    const { limit } = z.object({ limit: z.number().int().min(1).max(1000).default(500) }).parse(req.body ?? {});
+    const { limit, payerIds, taxYear } = z
+      .object({
+        limit: z.number().int().min(1).max(1000).default(500),
+        payerIds: z.array(z.string().uuid()).max(2000).optional(), // scope to recipients active under these payers
+        taxYear: z.number().int().optional(),
+      })
+      .parse(req.body ?? {});
     const db = getDb();
     const firmId = req.staff!.firmId;
-    const eligibleWhere = and(
+    const conds = [
       eq(recipients.firmId, firmId),
       isNull(recipients.mergedIntoId),
       inArray(recipients.w9Status, ['none', 'stale']),
       sql`(${recipients.email} IS NOT NULL OR ${recipients.mobile} IS NOT NULL)`,
-    );
+    ];
+    if (payerIds?.length) {
+      // only recipients that have a form under the selected payers (+year if given)
+      const sub = db
+        .selectDistinct({ rid: formRecords.recipientId })
+        .from(formRecords)
+        .where(and(eq(formRecords.firmId, firmId), inArray(formRecords.payerId, payerIds), ...(taxYear ? [eq(formRecords.taxYear, taxYear)] : [])));
+      conds.push(sql`${recipients.id} IN ${sub}`);
+    }
+    const eligibleWhere = and(...conds);
     const [eligibleRow] = await db.select({ n: sql<number>`count(*)::int` }).from(recipients).where(eligibleWhere);
     const targets = await db.select().from(recipients).where(eligibleWhere).limit(limit);
     let requested = 0;

@@ -1,117 +1,132 @@
 /**
- * Fleet cockpit (Phase B) — season-close in a handful of reviewed bulk actions:
- * invite campaign, W-9 campaign, transmit-all (dry-run preview → execute),
- * generate-all summaries, and a Filing Run history.
+ * Fleet cockpit — season-wide actions with HONEST, action-aware scope. Every
+ * action shows the population it will actually hit (eligibility counts), the
+ * payer selection is respected by all actions (nothing silently goes firm-wide),
+ * outbound/irreversible actions confirm with the count, and the run history
+ * drills into per-payer results with retry-failed.
  */
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { api, ApiError, downloadBlob } from '../api';
 import { MultiSelect } from '../components/MultiSelect';
+import { Paginator } from '../components/Paginator';
+import { Modal } from '../components/Modal';
 import { useDialogs } from '../components/Dialogs';
 
 interface Payer { id: string; legalName: string }
-interface PreviewItem { payerId?: string; label: string; ok: boolean; message?: string }
-interface Run {
-  id: string; kind: string; taxYear: number; status: string; total: number; succeeded: number; failed: number;
-  items: PreviewItem[] | null; resultBlobId: string | null; createdAt: string;
-}
+interface RunItem { payerId?: string; label: string; ok: boolean; message?: string }
+interface Run { id: string; kind: string; taxYear: number; status: string; total: number; succeeded: number; failed: number; items: RunItem[] | null; resultBlobId: string | null; createdAt: string }
+interface Eligibility { transmit: { payers: number; records: number }; summaries: { payers: number }; invite: { uninvited: number }; w9: { missing: number } }
 
 export function Fleet() {
   const dialogs = useDialogs();
   const [payers, setPayers] = useState<Payer[]>([]);
   const [payerIds, setPayerIds] = useState<string[]>([]);
   const [taxYear, setTaxYear] = useState(2026);
-  const [preview, setPreview] = useState<{ items: PreviewItem[]; total: number } | null>(null);
+  const [elig, setElig] = useState<Eligibility | null>(null);
+  const [preview, setPreview] = useState<{ items: RunItem[]; total: number } | null>(null);
   const [runs, setRuns] = useState<Run[]>([]);
-  const [notice, setNotice] = useState('');
-  const [error, setError] = useState('');
+  const [runsTotal, setRunsTotal] = useState(0);
+  const [runsOffset, setRunsOffset] = useState(0);
+  const [drill, setDrill] = useState<Run | null>(null);
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const scoped = payerIds.length > 0;
+  const RLIMIT = 25;
 
-  const loadRuns = () => api.get<{ runs: Run[] }>('/api/runs').then((r) => setRuns(r.runs));
+  const loadRuns = (off = 0) => api.get<{ runs: Run[]; total: number }>(`/api/runs?limit=${RLIMIT}&offset=${off}`).then((r) => { setRuns(r.runs); setRunsTotal(r.total); setRunsOffset(off); });
+  const loadElig = useCallback(() => {
+    api.post<Eligibility>('/api/runs/eligibility', { payerIds, taxYear }).then(setElig).catch(() => {});
+  }, [payerIds, taxYear]);
   useEffect(() => {
-    api.get<{ payers: Payer[] }>('/api/payers?limit=1000').then((r) => { setPayers(r.payers); setPayerIds(r.payers.map((p) => p.id)); });
-    void loadRuns();
-    const t = setInterval(loadRuns, 8000);
+    api.get<{ payers: Payer[] }>('/api/payers?limit=1000').then((r) => setPayers(r.payers));
+    void loadRuns(0);
+    const t = setInterval(() => loadRuns(runsOffset), 8000);
     return () => clearInterval(t);
   }, []);
+  useEffect(() => { loadElig(); }, [loadElig]);
 
   const scope = () => ({ payerIds, taxYear });
-  const guard = () => { if (!payerIds.length) { setError('Select at least one payer'); return false; } setError(''); return true; };
+  const done = (msg: string) => { dialogs.toast(msg, 'success'); loadRuns(0); loadElig(); };
+  const fail = (err: unknown) => setError(err instanceof ApiError ? err.message : String(err));
+  const wrap = async (fn: () => Promise<void>) => { setBusy(true); setError(''); try { await fn(); } catch (e) { fail(e); } finally { setBusy(false); } };
+  const scopeLabel = scoped ? `${payerIds.length} selected payer(s)` : 'ALL payers';
 
-  const previewTransmit = async () => {
-    if (!guard()) return;
-    setPreview(await api.post<{ items: PreviewItem[]; total: number }>('/api/runs/transmit/preview', scope()));
-  };
-  const runTransmit = async () => {
-    if (!guard()) return;
-    if (!(await dialogs.confirm(`Transmit all QUEUED records for ${payerIds.length} payer(s) to the IRS? This files real (or ATS) returns.`, { title: 'Transmit all queued', danger: true }))) return;
-    setBusy(true);
-    try {
-      await api.post('/api/runs/transmit', scope());
-      setNotice('Transmit run started — watch the run history and notifications.');
-      setPreview(null); loadRuns();
-    } catch (err) { setError(err instanceof ApiError ? err.message : String(err)); } finally { setBusy(false); }
-  };
-  const runSummaries = async () => {
-    if (!guard()) return;
-    setBusy(true);
-    try {
-      await api.post('/api/runs/summary', scope());
-      setNotice('Generating merged summary PDF for all selected payers — appears in run history when ready.');
-      loadRuns();
-    } catch (err) { setError(err instanceof ApiError ? err.message : String(err)); } finally { setBusy(false); }
-  };
-  const inviteAll = async () => {
-    if (!guard()) return;
-    setBusy(true);
-    try {
-      const r = await api.post<{ sent: number; skipped: number; noContact: number }>('/api/invites/bulk', { payerIds, taxYear });
-      setNotice(`Invite campaign: ${r.sent} sent, ${r.skipped} already invited, ${r.noContact} had no contact on file.`);
-    } catch (err) { setError(err instanceof ApiError ? err.message : String(err)); } finally { setBusy(false); }
-  };
-  const resendInvites = async () => {
-    const r = await api.post<{ resent: number; outstanding: number }>('/api/invites/resend-outstanding', { taxYear });
-    setNotice(`Resent ${r.resent} of ${r.outstanding} outstanding invites.`);
-  };
-  const w9Campaign = async () => {
-    setBusy(true);
-    try {
-      const r = await api.post<{ requested: number; skipped: number; eligible: number }>('/api/w9/campaign', {});
-      setNotice(`W-9 campaign: ${r.requested} requested (${r.eligible} eligible, ${r.skipped} already open).`);
-    } catch (err) { setError(err instanceof ApiError ? err.message : String(err)); } finally { setBusy(false); }
-  };
-  const downloadRun = async (r: Run) => {
-    const blob = await api.get<Blob>(`/api/runs/${r.id}/download`);
-    downloadBlob(blob, `filing-summaries-${r.taxYear}.pdf`);
-  };
+  const previewTransmit = () => wrap(async () => { setPreview(await api.post('/api/runs/transmit/preview', scope())); });
+  const runTransmit = () => wrap(async () => {
+    if (!(await dialogs.confirm(`Transmit ${elig?.transmit.records ?? 0} queued record(s) across ${elig?.transmit.payers ?? 0} payer(s) to the IRS? Files real (or ATS) returns.`, { title: 'Transmit all queued', danger: true }))) return;
+    await api.post('/api/runs/transmit', scope()); setPreview(null); done('Transmit run started — watch run history & notifications.');
+  });
+  const runSummaries = () => wrap(async () => {
+    if (!(await dialogs.confirm(`Generate one merged summary PDF for ${elig?.summaries.payers ?? 0} payer(s) with accepted forms?`, { title: 'Generate summaries' }))) return;
+    await api.post('/api/runs/summary', scope()); done('Generating merged summary PDF — appears in run history when ready.');
+  });
+  const inviteAll = () => wrap(async () => {
+    if (!(await dialogs.confirm(`Send client invites to ${elig?.invite.uninvited ?? 0} not-yet-invited payer(s) (${scopeLabel})? This emails/texts clients.`, { title: 'Invite campaign' }))) return;
+    const r = await api.post<{ sent: number; skipped: number; noContact: number }>('/api/invites/bulk', { payerIds: scoped ? payerIds : payers.map((p) => p.id), taxYear });
+    done(`Invite campaign: ${r.sent} sent, ${r.skipped} already invited, ${r.noContact} without contact.`);
+  });
+  const resendInvites = () => wrap(async () => {
+    if (!(await dialogs.confirm(`Resend outstanding invites (${scopeLabel})? This re-emails clients who haven't submitted.`, { title: 'Resend outstanding' }))) return;
+    const r = await api.post<{ resent: number; outstanding: number }>('/api/invites/resend-outstanding', scoped ? { taxYear, payerIds } : { taxYear });
+    done(`Resent ${r.resent} of ${r.outstanding} outstanding.`);
+  });
+  const w9Campaign = () => wrap(async () => {
+    if (!(await dialogs.confirm(`Send W-9 requests to ${elig?.w9.missing ?? 0} recipient(s) missing/stale W-9 (${scopeLabel})? This emails/texts them.`, { title: 'W-9 campaign' }))) return;
+    const r = await api.post<{ requested: number; eligible: number; more: boolean }>('/api/w9/campaign', scoped ? { payerIds, taxYear } : {});
+    done(`W-9 campaign: ${r.requested} sent (${r.eligible} eligible${r.more ? ', more remain — run again' : ''}).`);
+  });
+  const downloadRun = async (r: Run) => downloadBlob(await api.get<Blob>(`/api/runs/${r.id}/download`), `filing-summaries-${r.taxYear}.pdf`);
+  const retryFailed = (r: Run) => wrap(async () => { await api.post(`/api/runs/${r.id}/retry`, {}); setDrill(null); done('Retry run started for the failed payers.'); });
+
+  const Count = ({ n, unit }: { n: number | undefined; unit: string }) => <span className="muted"> · {n ?? '…'} {unit}</span>;
 
   return (
     <div>
       <h1>Fleet operations</h1>
-      <p className="muted">Run season-wide actions across all your payers at once. Transmit is dry-run-previewed and reviewer-gated; every run reports per-payer results.</p>
+      <p className="muted">Season-wide actions. Every action targets the population shown — the payer selection below scopes them all (nothing silently goes firm-wide). Transmit is dry-run-previewed and reviewer-gated.</p>
       {error && <div className="error-box" onClick={() => setError('')}>{error}</div>}
-      {notice && <div className="ok-box" onClick={() => setNotice('')}>{notice}</div>}
+
+      {/* fleet status strip */}
+      {elig && (
+        <div className="panel" style={{ padding: '8px 14px' }}>
+          <div className="row" style={{ gap: 20, alignItems: 'center' }}>
+            <span className="group-label">Fleet status ({scopeLabel})</span>
+            <span>Ready to transmit: <strong style={{ color: elig.transmit.records ? 'var(--warn)' : 'var(--ok)' }}>{elig.transmit.records}</strong> in {elig.transmit.payers} payer(s)</span>
+            <span>Uninvited: <strong>{elig.invite.uninvited}</strong></span>
+            <span>Missing W-9: <strong style={{ color: elig.w9.missing ? 'var(--warn)' : undefined }}>{elig.w9.missing}</strong></span>
+            <span>With accepted forms: <strong>{elig.summaries.payers}</strong></span>
+          </div>
+        </div>
+      )}
 
       <div className="panel">
         <div className="row">
           <div className="field"><label>Tax year</label>
             <select value={taxYear} onChange={(e) => setTaxYear(Number(e.target.value))}><option value={2026}>2026</option><option value={2025}>2025</option></select></div>
-          <div className="field grow"><label>Payers ({payerIds.length} of {payers.length})</label>
+          <div className="field grow"><label>Payer scope <span className="muted">(empty = all payers)</span></label>
             <MultiSelect options={payers.map((p) => ({ value: p.id, label: p.legalName }))} selected={payerIds} onChange={setPayerIds} unit="payers" /></div>
         </div>
       </div>
 
       <div className="stat-row">
-        <div className="panel" style={{ flex: 1, minWidth: 260 }}>
-          <h2 style={{ marginTop: 0 }}>Collect</h2>
-          <button disabled={busy} onClick={inviteAll}>Invite all selected clients</button>{' '}
-          <button className="secondary" onClick={resendInvites}>Resend outstanding</button>
-          <div style={{ marginTop: 8 }}><button className="secondary" disabled={busy} onClick={w9Campaign}>Send W-9 campaign (all missing/stale)</button></div>
+        <div className="panel" style={{ flex: 1, minWidth: 280 }}>
+          <h2 style={{ marginTop: 0 }}>Collect <span className="muted" style={{ fontWeight: 400, fontSize: 12 }}>— sends emails/SMS to clients</span></h2>
+          <div className="actionbar">
+            <button disabled={busy} onClick={inviteAll}>Invite uninvited<Count n={elig?.invite.uninvited} unit="clients" /></button>
+            <button className="secondary" disabled={busy} onClick={resendInvites}>Resend outstanding</button>
+          </div>
+          <div style={{ marginTop: 8 }}>
+            <button className="secondary" disabled={busy} onClick={w9Campaign}>W-9 campaign<Count n={elig?.w9.missing} unit="missing" /></button>
+          </div>
         </div>
-        <div className="panel" style={{ flex: 1, minWidth: 260 }}>
-          <h2 style={{ marginTop: 0 }}>File & report</h2>
-          <button className="secondary" onClick={previewTransmit}>Preview transmit-all</button>{' '}
-          <button disabled={busy || !preview} onClick={runTransmit}>Transmit all queued → IRS</button>
-          <div style={{ marginTop: 8 }}><button className="secondary" disabled={busy} onClick={runSummaries}>Generate all summary PDFs (one packet)</button></div>
+        <div className="panel" style={{ flex: 1, minWidth: 280 }}>
+          <h2 style={{ marginTop: 0 }}>File to IRS <span className="badge err" style={{ marginLeft: 6 }}>irreversible</span></h2>
+          <div className="actionbar">
+            <button className="secondary" disabled={busy} onClick={previewTransmit}>Preview transmit<Count n={elig?.transmit.records} unit="records" /></button>
+            <button disabled={busy || !preview} onClick={runTransmit} title={!preview ? 'Preview first' : ''}>Transmit all queued →</button>
+          </div>
+          <h2 style={{ marginBottom: 4 }}>Reports</h2>
+          <button className="secondary" disabled={busy} onClick={runSummaries}>Generate summary PDFs<Count n={elig?.summaries.payers} unit="payers" /></button>
         </div>
       </div>
 
@@ -121,7 +136,7 @@ export function Fleet() {
           <table className="grid">
             <thead><tr><th>Payer</th><th>To transmit</th></tr></thead>
             <tbody>{preview.items.map((it, i) => <tr key={i}><td>{it.label}</td><td>{it.message}</td></tr>)}
-              {!preview.items.length && <tr><td colSpan={2} className="muted">No queued records for the selected payers.</td></tr>}</tbody>
+              {!preview.items.length && <tr><td colSpan={2} className="muted">No queued records for the scope.</td></tr>}</tbody>
           </table>
         </div>
       )}
@@ -132,19 +147,45 @@ export function Fleet() {
         <tbody>
           {runs.map((r) => (
             <tr key={r.id}>
-              <td>{r.kind}</td>
+              <td><a style={{ cursor: 'pointer' }} onClick={() => setDrill(r)}>{r.kind.replace('_', ' ')}</a></td>
               <td>{r.taxYear}</td>
               <td><span className={`badge ${r.status === 'completed' ? 'ok' : r.status === 'failed' ? 'err' : r.status === 'partial' ? 'warn' : 'ready'}`}>{r.status}</span></td>
               <td className="num">{r.succeeded}</td>
               <td className="num" style={{ color: r.failed ? 'var(--danger)' : undefined }}>{r.failed}</td>
               <td>{new Date(r.createdAt).toLocaleString()}</td>
-              <td>{r.resultBlobId && <button className="small secondary" onClick={() => downloadRun(r)}>Download</button>}
-                {r.failed > 0 && r.items && <span className="muted" title={r.items.filter((i) => !i.ok).map((i) => `${i.label}: ${i.message}`).join('\n')}> ⚠ hover</span>}</td>
+              <td style={{ whiteSpace: 'nowrap' }}>
+                {r.resultBlobId && <button className="small secondary" onClick={() => downloadRun(r)}>Download</button>}
+                {(r.failed > 0 || (r.items && r.items.length)) && <button className="small secondary" onClick={() => setDrill(r)}>Details</button>}
+              </td>
             </tr>
           ))}
           {!runs.length && <tr><td colSpan={7} className="muted">No runs yet.</td></tr>}
         </tbody>
       </table>
+      <Paginator total={runsTotal} limit={RLIMIT} offset={runsOffset} onChange={(o) => loadRuns(o)} unit="runs" />
+
+      {drill && (
+        <Modal title={`${drill.kind.replace('_', ' ')} — ${drill.succeeded} ok / ${drill.failed} failed`} width={640} onClose={() => setDrill(null)}>
+          {drill.failed > 0 && ['transmit', 'summary_zip'].includes(drill.kind) && (
+            <div className="row" style={{ marginBottom: 8 }}>
+              <button disabled={busy} onClick={() => retryFailed(drill)}>Retry {drill.failed} failed payer(s)</button>
+            </div>
+          )}
+          <table className="grid">
+            <thead><tr><th>Payer</th><th>Result</th><th>Detail</th></tr></thead>
+            <tbody>
+              {(drill.items ?? []).map((it, i) => (
+                <tr key={i}>
+                  <td>{it.label}</td>
+                  <td><span className={`badge ${it.ok ? 'ok' : 'err'}`}>{it.ok ? 'ok' : 'failed'}</span></td>
+                  <td className="muted">{it.message}</td>
+                </tr>
+              ))}
+              {!(drill.items ?? []).length && <tr><td colSpan={3} className="muted">No per-payer detail.</td></tr>}
+            </tbody>
+          </table>
+        </Modal>
+      )}
     </div>
   );
 }
