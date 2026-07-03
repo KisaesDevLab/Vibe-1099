@@ -16,7 +16,20 @@ import {
   taxbanditsEndpoints,
   type FilingProviderKind,
 } from '@vibe1099/core';
-import { firms, formRecords, payers, transmissions, getDb, type Db } from '@vibe1099/db';
+import { appSettings, firms, formRecords, payers, transmissions, getDb, type Db } from '@vibe1099/db';
+import { eq as eqCol } from 'drizzle-orm';
+
+/**
+ * Whether the TaxBandits provider is available on this appliance. Resolves from
+ * the process env flag OR a latched DB setting, so once the box has ever booted
+ * with TAXBANDITS_ENABLED=1 the feature stays available across restarts even if
+ * the env var is later missing (the recurring "TaxBandits disappeared" bug).
+ */
+export async function isTaxBanditsAvailable(db: Db = getDb()): Promise<boolean> {
+  if (loadEnv().TAXBANDITS_ENABLED === 1) return true;
+  const row = await db.query.appSettings.findFirst({ where: eqCol(appSettings.key, 'taxbandits_feature_enabled') });
+  return row?.value === true;
+}
 
 export async function resolveProviderKind(db: Db, firmId: string, payerId: string): Promise<FilingProviderKind> {
   const [firm, payer] = await Promise.all([
@@ -121,10 +134,10 @@ export interface TaxBanditsConfig {
 }
 
 export async function loadTaxBanditsConfig(db: Db, firmId: string): Promise<TaxBanditsConfig> {
-  const env = loadEnv();
-  // Feature flag: the whole provider is off unless the appliance operator enables it.
-  if (!env.TAXBANDITS_ENABLED) {
-    throw new AppError(ErrorCodes.E_IRIS_AUTH, 'TaxBandits provider is not enabled on this appliance (TAXBANDITS_ENABLED=0)', 409);
+  // Feature flag: the whole provider is off unless the appliance operator enabled
+  // it (env flag OR the latched DB setting).
+  if (!(await isTaxBanditsAvailable(db))) {
+    throw new AppError(ErrorCodes.E_IRIS_AUTH, 'TaxBandits provider is not enabled on this appliance', 409);
   }
   const firm = await db.query.firms.findFirst({ where: eq(firms.id, firmId) });
   if (!firm) throw AppError.notFound('Firm');

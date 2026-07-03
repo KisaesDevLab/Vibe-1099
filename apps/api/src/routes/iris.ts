@@ -12,7 +12,7 @@ import { errorTranslations, firms, formRecords, getDb, recipients, taxbanditsWeb
 import { h } from '../middleware/error.js';
 import { requireStaff } from '../middleware/auth.js';
 import { composeTransmission } from '../services/iris.js';
-import { buildTaxBanditsClient, buildTax1099Client } from '../services/filing.js';
+import { buildTaxBanditsClient, buildTax1099Client, isTaxBanditsAvailable } from '../services/filing.js';
 
 export const irisRouter = Router();
 irisRouter.use(requireStaff());
@@ -37,8 +37,8 @@ irisRouter.get(
       tax1099Mailing: firm.tax1099Mailing,
       hasTax1099Key: !!firm.tax1099ApiKeyEncrypted,
       tax1099DisclosureAckAt: firm.tax1099DisclosureAckAt,
-      // TaxBandits backend
-      taxbanditsAvailable: loadEnv().TAXBANDITS_ENABLED === 1,
+      // TaxBandits backend (env flag OR latched DB setting — survives restarts)
+      taxbanditsAvailable: await isTaxBanditsAvailable(getDb()),
       taxbanditsEnabled: firm.taxbanditsEnabled,
       taxbanditsEnvironment: firm.taxbanditsEnvironment,
       taxbanditsPostalMailing: firm.taxbanditsPostalMailing,
@@ -99,8 +99,8 @@ irisRouter.put(
       patch['tax1099DisclosureAckAt'] = new Date();
       patch['tax1099DisclosureAckBy'] = req.staff!.userId;
     }
-    // TaxBandits config (only when the appliance feature flag is on)
-    if (loadEnv().TAXBANDITS_ENABLED) {
+    // TaxBandits config (only when the provider is available on this appliance)
+    if (await isTaxBanditsAvailable(db)) {
       if (input.taxbanditsEnabled !== undefined) patch['taxbanditsEnabled'] = input.taxbanditsEnabled;
       if (input.taxbanditsEnvironment !== undefined) patch['taxbanditsEnvironment'] = input.taxbanditsEnvironment;
       if (input.taxbanditsPostalMailing !== undefined) patch['taxbanditsPostalMailing'] = input.taxbanditsPostalMailing;
