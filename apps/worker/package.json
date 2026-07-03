@@ -5,7 +5,7 @@
   "license": "PolyForm-Internal-Use-1.0.0",
   "type": "module",
   "scripts": {
-    "dev": "tsx watch src/index.ts",
+    "dev": "tsx watch --env-file-if-exists=../../.env src/index.ts",
     "start": "tsx src/index.ts",
     "mock-iris": "tsx src/mock-iris.ts",
     "mock-tax1099": "tsx src/mock-tax1099.ts",
