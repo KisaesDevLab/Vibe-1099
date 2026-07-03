@@ -7,7 +7,7 @@ import { Router } from 'express';
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { AppError, zFormType, zTaxYear } from '@vibe1099/shared';
-import { getBlob, getQueue, QUEUE_NAMES, type RenderBatchJob } from '@vibe1099/core';
+import { deleteBlob, getBlob, getQueue, QUEUE_NAMES, type RenderBatchJob } from '@vibe1099/core';
 import { deliveries, formRecords, getDb, paperBatches, payers, recipients } from '@vibe1099/db';
 import { h } from '../middleware/error.js';
 import { requireStaff } from '../middleware/auth.js';
@@ -248,6 +248,27 @@ batchesRouter.post(
       });
     }
     res.locals['audit'] = { action: 'batch.printed', entityType: 'paper_batch', entityId: id };
+    res.json({ ok: true });
+  }),
+);
+
+/** Delete an UNPRINTED batch (building / built / failed). Once printed or
+ * delivered a batch is part of the mailing record and cannot be deleted. */
+batchesRouter.delete(
+  '/:id',
+  h(async (req, res) => {
+    const id = z.string().uuid().parse(req.params['id']);
+    const db = getDb();
+    const batch = await db.query.paperBatches.findFirst({
+      where: and(eq(paperBatches.id, id), eq(paperBatches.firmId, req.staff!.firmId)),
+    });
+    if (!batch) throw AppError.notFound('Batch');
+    if (batch.status === 'printed' || batch.status === 'delivered') {
+      throw AppError.state('This batch is already printed — it is part of the mailing record and cannot be deleted');
+    }
+    if (batch.pdfBlobId) await deleteBlob(db, batch.pdfBlobId);
+    await db.delete(paperBatches).where(eq(paperBatches.id, id));
+    res.locals['audit'] = { action: 'batch.delete', entityType: 'paper_batch', entityId: id, detail: { status: batch.status } };
     res.json({ ok: true });
   }),
 );

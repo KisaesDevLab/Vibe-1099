@@ -15,6 +15,7 @@ interface Payer {
   contactMobile: string | null;
   moWithholdingId: string | null;
   moSourceDefault: boolean;
+  filingProviderOverride: 'iris' | 'tax1099' | null;
   defaultFormTypes: string[];
 }
 
@@ -22,6 +23,7 @@ const emptyForm = {
   legalName: '', dbaName: '', tin: '', tinType: 'EIN' as 'SSN' | 'EIN',
   line1: '', line2: '', city: '', state: 'MO', zip: '',
   phone: '', contactEmail: '', contactMobile: '', moWithholdingId: '', moSourceDefault: true,
+  filingProviderOverride: '' as '' | 'iris' | 'tax1099',
   defaultFormTypes: ['NEC'] as string[],
 };
 
@@ -79,6 +81,7 @@ export function Payers() {
       contactMobile: form.contactMobile || null,
       moWithholdingId: form.moWithholdingId || null,
       moSourceDefault: form.moSourceDefault,
+      filingProviderOverride: form.filingProviderOverride || null,
       defaultFormTypes: form.defaultFormTypes.length ? form.defaultFormTypes : ['NEC'],
     };
     try {
@@ -102,6 +105,7 @@ export function Payers() {
       state: p.address['state'] ?? 'MO', zip: p.address['zip'] ?? '',
       phone: p.phone, contactEmail: p.contactEmail ?? '', contactMobile: p.contactMobile ?? '',
       moWithholdingId: p.moWithholdingId ?? '', moSourceDefault: p.moSourceDefault,
+      filingProviderOverride: p.filingProviderOverride ?? '',
       defaultFormTypes: p.defaultFormTypes ?? ['NEC'],
     });
   };
@@ -174,6 +178,13 @@ export function Payers() {
             <div className="field"><label>MO-source default</label>
               <select value={form.moSourceDefault ? '1' : '0'} onChange={(e) => setForm((f) => ({ ...f, moSourceDefault: e.target.value === '1' }))}>
                 <option value="1">Yes</option><option value="0">No</option>
+              </select>
+            </div>
+            <div className="field"><label>Filing backend</label>
+              <select value={form.filingProviderOverride} onChange={(e) => setForm((f) => ({ ...f, filingProviderOverride: e.target.value as '' | 'iris' | 'tax1099' }))}>
+                <option value="">Firm default</option>
+                <option value="iris">IRIS (self-file)</option>
+                <option value="tax1099">Tax1099 (managed)</option>
               </select>
             </div>
             <div className="field">

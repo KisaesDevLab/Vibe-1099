@@ -3,7 +3,7 @@
  */
 import { useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { api, ApiError, formatCents, parseCentsInput } from '../api';
+import { api, ApiError, downloadBlob, formatCents, parseCentsInput } from '../api';
 import { useDialogs } from '../components/Dialogs';
 
 interface Session {
@@ -15,8 +15,14 @@ interface Session {
   draftState: { entries?: Entry[] } | null;
   registry: Array<{ formType: string; title: string; boxes: Array<{ id: string; boxNumber: string; label: string; kind: string }> }>;
 }
-interface Contractor { recipientId: string; name1: string; maskedAddress: string; tinLast4: string; w9Status: string }
+interface Contractor {
+  recipientId: string; name1: string; maskedAddress: string; tinLast4: string; w9Status: string;
+  name2?: string;
+  address?: { line1: string; line2: string; city: string; state: string; zip: string };
+  email?: string; mobile?: string; tinType?: 'SSN' | 'EIN';
+}
 interface Entry { recipientId: string; formType: string; boxValues: Record<string, number | boolean | string | null> }
+interface ServerEntry { formId: string; recipientId: string; formType: string; boxValues: Record<string, number | boolean | string | null>; status: string; filed: boolean }
 
 export function ClientPortal() {
   const dialogs = useDialogs();
@@ -26,6 +32,7 @@ export function ClientPortal() {
 
   const [session, setSession] = useState<Session | null>(null);
   const [contractors, setContractors] = useState<Contractor[]>([]);
+  const [entries, setEntries] = useState<ServerEntry[]>([]);
   const [formType, setFormType] = useState('');
   const [amounts, setAmounts] = useState<Record<string, string>>({}); // recipientId -> raw amount (primary box)
   const [error, setError] = useState('');
@@ -35,6 +42,7 @@ export function ClientPortal() {
   const [add, setAdd] = useState({ tin: '', tinType: 'SSN' as 'SSN' | 'EIN', name1: '', line1: '', city: '', state: 'MO', zip: '', email: '', mobile: '' });
   const [lookup, setLookup] = useState<{ recipientId: string; maskedName: string; maskedAddress: string } | null>(null);
   const [step, setStep] = useState<'landing' | 'grid' | 'confirm'>('landing');
+  const [detail, setDetail] = useState<Contractor | null>(null);
 
   useEffect(() => {
     if (!token) { setError('Missing invite token — use the link from your accountant.'); return; }
@@ -42,28 +50,45 @@ export function ClientPortal() {
       .then((s) => {
         setSession(s);
         if (s.formTypes[0]) setFormType(s.formTypes[0]);
-        const draft = s.draftState?.entries;
-        if (draft?.length) {
-          const map: Record<string, string> = {};
-          for (const e of draft) {
-            const primary = e.boxValues['box1'] ?? e.boxValues['box1a'];
-            if (typeof primary === 'number') map[e.recipientId] = formatCents(primary);
-          }
-          setAmounts(map);
-        }
       })
       .catch((err: unknown) => setError(err instanceof ApiError ? err.message : 'Could not open this link'));
   }, [token, opts]);
 
+  // Always load contractors + entries — even after submit — so the review/thank-you
+  // screen can show the full picture of who was reported and how much.
   useEffect(() => {
-    if (!session || session.submitted) return;
-    api.get<{ contractors: Contractor[]; entries: Array<{ recipientId: string; boxValues: Record<string, unknown> }> }>('/api/client-portal/contractors', opts)
-      .then((r) => setContractors(r.contractors))
+    if (!session) return;
+    api.get<{ contractors: Contractor[]; entries: ServerEntry[] }>('/api/client-portal/contractors', opts)
+      .then((r) => { setContractors(r.contractors); setEntries(r.entries); })
       .catch(() => {});
   }, [session, opts]);
 
   const primaryBoxId = formType === 'DIV' ? 'box1a' : 'box1';
   const currentReg = session?.registry.find((r) => r.formType === formType);
+
+  // Recipients whose form for the current type is already filed → amount is locked.
+  const filedSet = useMemo(
+    () => new Set(entries.filter((e) => e.formType === formType && e.filed).map((e) => e.recipientId)),
+    [entries, formType],
+  );
+
+  // Seed amounts from server records (filed + previously-entered), then overlay the
+  // unsaved draft for still-editable rows. Never clobber the client's active typing.
+  useEffect(() => {
+    const primaryOf = (bv: Record<string, unknown>) => bv['box1'] ?? bv['box1a'];
+    const seed: Record<string, string> = {};
+    for (const e of entries) {
+      if (e.formType !== formType) continue;
+      const p = primaryOf(e.boxValues);
+      if (typeof p === 'number') seed[e.recipientId] = formatCents(p);
+    }
+    for (const e of session?.draftState?.entries ?? []) {
+      if (filedSet.has(e.recipientId)) continue;
+      const p = primaryOf(e.boxValues);
+      if (typeof p === 'number') seed[e.recipientId] = formatCents(p);
+    }
+    setAmounts((prev) => ({ ...seed, ...prev }));
+  }, [entries, formType, session, filedSet]);
 
   const onAddTin = async (value: string) => {
     setAdd((a) => ({ ...a, tin: value }));
@@ -106,8 +131,20 @@ export function ClientPortal() {
     dialogs.toast('W-9 request sent — your accountant will see the result.', 'success');
   };
 
+  const printSubstitute = async (recipientId: string, name: string) => {
+    const entry = entries.find((e) => e.recipientId === recipientId && e.formType === formType && e.filed);
+    if (!entry) return;
+    try {
+      const blob = await api.get<Blob>(`/api/client-portal/forms/${entry.formId}/copy-b`, opts);
+      downloadBlob(blob, `1099-${formType}-${name.replace(/[^\w.-]+/g, '_') || 'recipient'}.pdf`);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not generate the 1099 PDF');
+    }
+  };
+
   const buildEntries = (): Entry[] =>
     contractors
+      .filter((c) => !filedSet.has(c.recipientId)) // filed forms are locked — never re-submitted
       .filter((c) => (amounts[c.recipientId] ?? '').trim() !== '')
       .map((c) => ({ recipientId: c.recipientId, formType, boxValues: { [primaryBoxId]: parseCentsInput(amounts[c.recipientId]!) } }));
 
@@ -141,15 +178,37 @@ export function ClientPortal() {
   if (!session) return <div className="portal-shell"><div className="portal-card">Loading…</div></div>;
 
   if (session.submitted || done) {
+    const reported = contractors.filter((c) => (amounts[c.recipientId] ?? '').trim());
     return (
-      <div className="portal-shell">
+      <div className="portal-shell" style={{ maxWidth: 780 }}>
         <div className="portal-card">
           <div className="portal-brand">{session.firmName}</div>
           <div className="ok-box">
             <strong>Thank you — your {session.taxYear} information for {session.payerName} has been submitted.</strong><br />
-            {done && <>You reported {contractors.filter((c) => (amounts[c.recipientId] ?? '').trim()).length} contractor(s), total ${formatCents(total)}.<br /></>}
+            You reported {reported.length} contractor(s), total ${formatCents(total)}.<br />
             Your accountant will review it. If anything needs to change, contact them to re-open this link.
           </div>
+          {reported.length > 0 && (
+            <>
+              <h3>What you reported</h3>
+              <table className="grid">
+                <thead><tr><th>Who</th><th className="num">Total paid {session.taxYear}</th><th></th></tr></thead>
+                <tbody>
+                  {reported.map((c) => {
+                    const filed = filedSet.has(c.recipientId);
+                    return (
+                      <tr key={c.recipientId}>
+                        <td>{c.name1}</td>
+                        <td className="num">${amounts[c.recipientId]}{filed && <span className="badge ok" style={{ marginLeft: 6 }}>filed</span>}</td>
+                        <td>{filed && <a style={{ cursor: 'pointer' }} onClick={() => printSubstitute(c.recipientId, c.name1)}>Print 1099</a>}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+              <p className="muted">Filed 1099s can be printed for your records. Tax ID numbers are truncated for privacy.</p>
+            </>
+          )}
         </div>
       </div>
     );
@@ -186,22 +245,39 @@ export function ClientPortal() {
 
         {step === 'grid' && (
           <>
-            <div className="row" style={{ justifyContent: 'space-between' }}>
-              <h2 style={{ margin: 0 }}>Contractors — 1099-{formType}</h2>
+            <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+              <button className="secondary small" onClick={() => setStep('landing')}>← Back</button>
               <span className="muted">step 2 of 3</span>
             </div>
+            <h2 style={{ margin: '8px 0 0' }}>{session.payerName}</h2>
+            <div className="muted" style={{ marginBottom: 10 }}>{session.taxYear} 1099-{formType} — contractors &amp; amounts paid</div>
             <table className="grid" style={{ marginTop: 10 }}>
               <thead><tr><th>Who</th><th style={{ width: 140 }} className="num">Total paid {session.taxYear}</th></tr></thead>
               <tbody>
-                {contractors.map((c) => (
-                  <tr key={c.recipientId}>
-                    <td>{c.name1}<div className="muted">{c.maskedAddress}
-                      {c.w9Status === 'none' && <> · <a style={{ cursor: 'pointer' }} onClick={() => requestW9(c.name1)}>no W-9 — request one</a></>}
-                    </div></td>
-                    <td><input className="num" inputMode="decimal" placeholder="0.00" value={amounts[c.recipientId] ?? ''}
-                      onChange={(e) => setAmounts((a) => ({ ...a, [c.recipientId]: e.target.value }))} /></td>
-                  </tr>
-                ))}
+                {contractors.map((c) => {
+                  const filed = filedSet.has(c.recipientId);
+                  return (
+                    <tr key={c.recipientId}>
+                      <td>
+                        <a style={{ cursor: 'pointer', fontWeight: 600 }} onClick={() => setDetail(c)} title="View name & mailing info">{c.name1}</a>
+                        <div className="muted">{c.maskedAddress}
+                          {c.w9Status === 'none' && !filed && <> · <a style={{ cursor: 'pointer' }} onClick={() => requestW9(c.name1)}>no W-9 — request one</a></>}
+                        </div>
+                      </td>
+                      <td>
+                        {filed ? (
+                          <div className="num" style={{ whiteSpace: 'nowrap' }}>
+                            ${amounts[c.recipientId] ?? '0.00'} <span className="badge ok" title="Already filed with the IRS — locked">filed</span>
+                            <div><a style={{ cursor: 'pointer', fontSize: 12 }} onClick={() => printSubstitute(c.recipientId, c.name1)}>Print 1099</a></div>
+                          </div>
+                        ) : (
+                          <input className="num" inputMode="decimal" placeholder="0.00" value={amounts[c.recipientId] ?? ''}
+                            onChange={(e) => setAmounts((a) => ({ ...a, [c.recipientId]: e.target.value }))} />
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
                 {!contractors.length && <tr><td colSpan={2} className="muted">No contractors yet — add your first below.</td></tr>}
               </tbody>
             </table>
@@ -253,14 +329,16 @@ export function ClientPortal() {
 
         {step === 'confirm' && (
           <>
-            <div className="row" style={{ justifyContent: 'space-between' }}>
-              <h2 style={{ margin: 0 }}>Review</h2>
+            <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+              <button className="secondary small" onClick={() => setStep('grid')}>← Back</button>
               <span className="muted">step 3 of 3</span>
             </div>
+            <h2 style={{ margin: '8px 0 0' }}>Review — {session.payerName}</h2>
+            <div className="muted" style={{ marginBottom: 10 }}>{session.taxYear} 1099-{formType}</div>
             <table className="grid" style={{ marginTop: 10 }}>
               <tbody>
                 {contractors.filter((c) => (amounts[c.recipientId] ?? '').trim()).map((c) => (
-                  <tr key={c.recipientId}><td>{c.name1}</td><td className="num">${amounts[c.recipientId]}</td></tr>
+                  <tr key={c.recipientId}><td><a style={{ cursor: 'pointer' }} onClick={() => setDetail(c)}>{c.name1}</a></td><td className="num">${amounts[c.recipientId]}</td></tr>
                 ))}
                 <tr><td><strong>Total ({contractors.filter((c) => (amounts[c.recipientId] ?? '').trim()).length} contractors)</strong></td>
                   <td className="num"><strong>${formatCents(total)}</strong></td></tr>
@@ -274,6 +352,37 @@ export function ClientPortal() {
           </>
         )}
       </div>
+
+      {detail && (
+        <div
+          onClick={() => setDetail(null)}
+          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16, zIndex: 50 }}
+        >
+          <div className="portal-card" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 420, width: '100%' }}>
+            <div className="row" style={{ justifyContent: 'space-between', alignItems: 'flex-start' }}>
+              <h2 style={{ margin: 0 }}>{detail.name1}</h2>
+              <span onClick={() => setDetail(null)} style={{ cursor: 'pointer', fontWeight: 700, fontSize: 18, lineHeight: 1 }} title="Close">×</span>
+            </div>
+            {detail.name2 && <div className="muted">{detail.name2}</div>}
+            <h3 style={{ marginBottom: 4 }}>Mailing address</h3>
+            {detail.address ? (
+              <div>
+                {detail.address.line1}<br />
+                {detail.address.line2 && <>{detail.address.line2}<br /></>}
+                {detail.address.city}, {detail.address.state} {detail.address.zip}
+              </div>
+            ) : <div className="muted">{detail.maskedAddress}</div>}
+            <h3 style={{ marginBottom: 4 }}>Details</h3>
+            <div className="muted">
+              Tax ID: {detail.tinLast4 ? (detail.tinType === 'SSN' ? `XXX-XX-${detail.tinLast4}` : `XX-XXX${detail.tinLast4}`) : '—'}<br />
+              {detail.email && <>Email: {detail.email}<br /></>}
+              {detail.mobile && <>Mobile: {detail.mobile}<br /></>}
+              W-9: {detail.w9Status}
+            </div>
+            <p className="muted" style={{ fontSize: 12, marginTop: 10 }}>Copy B is mailed to this address. To correct it, contact your accountant.</p>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

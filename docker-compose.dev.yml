@@ -12,3 +12,9 @@ services:
   render:
     ports:
       - "8212:8212"
+    # dev: mount templates/css/xsd from the host so edits to the Copy B layout,
+    # instructions, and CSS take effect on the next render — no image rebuild.
+    volumes:
+      - ./render/templates:/app/templates:ro
+      - ./render/css:/app/css:ro
+      - ./render/xsd:/app/xsd:ro

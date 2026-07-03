@@ -3,9 +3,17 @@
  * retention, portal availability, W-9 staleness threshold.
  */
 import { eq } from 'drizzle-orm';
+import { AppError, MAX_TAX_YEAR, MIN_TAX_YEAR, SUPPORTED_TAX_YEARS } from '@vibe1099/shared';
 import { appSettings, getDb } from '@vibe1099/db';
 
+const DEFAULT_FILING_YEARS = {
+  years: [...SUPPORTED_TAX_YEARS],
+  current: Math.max(...SUPPORTED_TAX_YEARS),
+};
+
 export const SETTING_DEFAULTS: Record<string, unknown> = {
+  /** enabled filing years + the default ("current") one; admins roll this forward */
+  filing_years: DEFAULT_FILING_YEARS,
   reviewer_gate_enabled: false,
   /** per-(formType, taxYear) federal threshold overrides in cents, e.g. {"NEC:2026": 200000} — registry defaults apply when unset */
   federal_thresholds: {},
@@ -37,6 +45,40 @@ export async function allSettings(): Promise<Record<string, unknown>> {
   const out: Record<string, unknown> = { ...SETTING_DEFAULTS };
   for (const r of rows) out[r.key] = r.value;
   return out;
+}
+
+export interface FilingYears {
+  years: number[];
+  current: number;
+}
+
+/** Enabled filing years (descending) + the default current year. */
+export async function getFilingYears(): Promise<FilingYears> {
+  const raw = (await getSetting<FilingYears>('filing_years')) ?? DEFAULT_FILING_YEARS;
+  const years = [...new Set(raw.years)].sort((a, b) => b - a);
+  const current = years.includes(raw.current) ? raw.current : (years[0] ?? Math.max(...SUPPORTED_TAX_YEARS));
+  return { years, current };
+}
+
+/** Roll forward: enable a new filing year and make it current. */
+export async function addFilingYear(taxYear: number): Promise<FilingYears> {
+  if (taxYear < MIN_TAX_YEAR || taxYear > MAX_TAX_YEAR) {
+    throw AppError.validation(`Tax year must be between ${MIN_TAX_YEAR} and ${MAX_TAX_YEAR}`);
+  }
+  const cur = await getFilingYears();
+  if (cur.years.includes(taxYear)) throw AppError.conflict(`Tax year ${taxYear} already exists`);
+  const next: FilingYears = { years: [...cur.years, taxYear].sort((a, b) => b - a), current: taxYear };
+  await setSetting('filing_years', next);
+  return next;
+}
+
+/** Change which enabled year is the default without adding a new one. */
+export async function setCurrentFilingYear(taxYear: number): Promise<FilingYears> {
+  const cur = await getFilingYears();
+  if (!cur.years.includes(taxYear)) throw AppError.validation(`Tax year ${taxYear} is not enabled`);
+  const next: FilingYears = { years: cur.years, current: taxYear };
+  await setSetting('filing_years', next);
+  return next;
 }
 
 /** Admin threshold override for (formType, taxYear) in cents; undefined = use registry default. */

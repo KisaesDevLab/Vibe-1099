@@ -12,6 +12,7 @@ export type BlobKind =
   | 'w9_pdf'
   | 'iris_xml'
   | 'iris_ack'
+  | 'tax1099_payload'
   | 'mo_txt'
   | 'report_pdf'
   | 'export_zip';

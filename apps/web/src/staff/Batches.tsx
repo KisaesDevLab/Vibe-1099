@@ -7,6 +7,7 @@
 import { FormEvent, useEffect, useState } from 'react';
 import { api, ApiError, downloadBlob } from '../api';
 import { EntityPicker } from '../components/EntityPicker';
+import { useTaxYears } from '../components/useTaxYears';
 import { Paginator } from '../components/Paginator';
 import { Modal } from '../components/Modal';
 import { useDialogs } from '../components/Dialogs';
@@ -29,6 +30,8 @@ export function Batches() {
   const [payerIds, setPayerIds] = useState<string[]>([]);
   const [formTypes, setFormTypes] = useState<string[]>(['NEC', 'MISC', 'INT', 'DIV']);
   const [taxYear, setTaxYear] = useState(2026);
+  const { years: taxYears, current: currentYear } = useTaxYears();
+  useEffect(() => { setTaxYear(currentYear); }, [currentYear]);
   const [label, setLabel] = useState('');
   const [statuses, setStatuses] = useState<string[]>(['accepted', 'accepted_with_errors']);
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -82,6 +85,11 @@ export function Batches() {
 
   const download = async (b: Batch) => { downloadBlob(await api.get<Blob>(`/api/batches/${b.id}/pdf`), `${b.label}.pdf`); };
   const mark = async (id: string, verb: 'mark-printed' | 'mark-delivered') => { await api.post(`/api/batches/${id}/${verb}`); load(offset); };
+  const del = async (b: Batch) => {
+    if (!(await dialogs.confirm(`Delete batch “${b.label}”? It hasn't been printed, so this just removes the queued/built PDF.`, { title: 'Delete batch', danger: true }))) return;
+    try { await api.del(`/api/batches/${b.id}`); load(offset); }
+    catch (err) { setError(err instanceof ApiError ? err.message : String(err)); }
+  };
   const openDrill = async (b: Batch) => { const r = await api.get<{ forms: BatchForm[] }>(`/api/batches/${b.id}/forms`); setDrill({ batch: b, forms: r.forms }); };
   const reprintOne = async (formId: string, name: string) => { downloadBlob(await api.get<Blob>(`/api/batches/preview/zfold/${formId}`), `reprint-${name}.pdf`); };
   const testPattern = async () => { downloadBlob(await api.get<Blob>('/api/batches/test-pattern'), 'pressure-seal-calibration.pdf'); };
@@ -97,7 +105,7 @@ export function Batches() {
       <form className="panel" onSubmit={build}>
         <div className="row">
           <div className="field"><label>Tax year</label>
-            <select value={taxYear} onChange={(e) => setTaxYear(Number(e.target.value))}><option value={2026}>2026</option><option value={2025}>2025</option></select></div>
+            <select value={taxYear} onChange={(e) => setTaxYear(Number(e.target.value))}>{taxYears.map((y) => <option key={y} value={y}>{y}</option>)}</select></div>
           <div className="field grow"><label>Label</label><input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="January mailing" /></div>
           <div className="field">
             <label>Form types</label>
@@ -157,7 +165,7 @@ export function Batches() {
             </table>
           </div>
         )}
-        <p className="muted">One sheet per form, duplex (front: mailer + form; back: instructions). Order: payer → recipient. Sheet 1 is the manifest.</p>
+        <p className="muted">One single-sided sheet per form (Z-fold: mailer panel, fold 1 = form, fold 2 = instructions). Order: payer → recipient. Sheet 1 is the manifest.</p>
       </form>
 
       <table className="grid">
@@ -175,6 +183,7 @@ export function Batches() {
                 {['built', 'printed', 'delivered'].includes(b.status) && <button className="small secondary" onClick={() => download(b)}>Download</button>}
                 {b.status === 'built' && <button className="small" onClick={() => mark(b.id, 'mark-printed')}>Mark printed</button>}
                 {b.status === 'printed' && <button className="small" onClick={() => mark(b.id, 'mark-delivered')}>Mark delivered</button>}
+                {!['printed', 'delivered'].includes(b.status) && <button className="small danger" onClick={() => del(b)}>Delete</button>}
               </td>
             </tr>
           ))}

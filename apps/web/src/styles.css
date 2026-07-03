@@ -95,6 +95,25 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   .sidebar { width: 100%; }
   .main { padding: 12px; }
   table.grid { font-size: 12px; }
+
+  /* larger touch targets; 16px inputs stop iOS zoom-on-focus */
+  input, select, textarea { font-size: 16px; padding: 9px 10px; }
+  button, .btn { padding: 10px 16px; }
+}
+
+/* --- Client portal on a smartphone --- */
+@media (max-width: 560px) {
+  .portal-shell { margin: 10px auto; padding: 0 8px; max-width: 100%; }
+  .portal-card { padding: 16px; border-radius: 8px; }
+  .portal-brand { font-size: 16px; }
+  /* one field per line so long forms (add contractor) stack cleanly */
+  .portal-card .field { min-width: 100%; margin-bottom: 12px; }
+  /* full-width, stacked action buttons */
+  .portal-card .row { gap: 10px; }
+  .portal-card .row > button { width: 100%; }
+  /* keep the amount cell comfortable in the contractor grid */
+  .portal-card table.grid th, .portal-card table.grid td { padding: 8px; }
+  .portal-card input.num { font-size: 16px; }
 }
 .login-shell { max-width: 380px; margin: 80px auto; }
 .tabs { display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; }

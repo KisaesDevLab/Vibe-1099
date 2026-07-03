@@ -47,6 +47,7 @@ export const zPayerInput = z.object({
   moWithholdingId: z.string().max(14).optional().nullable(),
   moSourceDefault: z.boolean().optional().default(false),
   defaultFormTypes: z.array(zFormType).optional(), // preset for invites/grid
+  filingProviderOverride: z.enum(['iris', 'tax1099']).nullable().optional(), // null = inherit firm
 });
 export type PayerInput = z.infer<typeof zPayerInput>;
 

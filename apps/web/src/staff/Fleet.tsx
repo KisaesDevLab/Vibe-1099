@@ -8,6 +8,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api, ApiError, downloadBlob } from '../api';
 import { EntityPicker } from '../components/EntityPicker';
+import { useTaxYears } from '../components/useTaxYears';
 import { Paginator } from '../components/Paginator';
 import { Modal } from '../components/Modal';
 import { useDialogs } from '../components/Dialogs';
@@ -23,6 +24,8 @@ export function Fleet() {
   const [payers, setPayers] = useState<Payer[]>([]);
   const [payerIds, setPayerIds] = useState<string[]>([]);
   const [taxYear, setTaxYear] = useState(2026);
+  const { years: taxYears, current: currentYear } = useTaxYears();
+  useEffect(() => { setTaxYear(currentYear); setPayerIds([]); }, [currentYear]);
   const [elig, setElig] = useState<Eligibility | null>(null);
   const [preview, setPreview] = useState<{ items: RunItem[]; total: number } | null>(null);
   const [runs, setRuns] = useState<Run[]>([]);
@@ -105,7 +108,7 @@ export function Fleet() {
       <div className="panel">
         <div className="row" style={{ marginBottom: 8 }}>
           <div className="field"><label>Tax year</label>
-            <select value={taxYear} onChange={(e) => { setTaxYear(Number(e.target.value)); setPayerIds([]); }}><option value={2026}>2026</option><option value={2025}>2025</option></select></div>
+            <select value={taxYear} onChange={(e) => { setTaxYear(Number(e.target.value)); setPayerIds([]); }}>{taxYears.map((y) => <option key={y} value={y}>{y}</option>)}</select></div>
         </div>
         <label>Working list — add the entities to act on</label>
         <EntityPicker

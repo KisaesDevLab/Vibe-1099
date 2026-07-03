@@ -67,24 +67,33 @@ clientPortalRouter.get(
       .selectDistinct({ recipientId: formRecords.recipientId })
       .from(formRecords)
       .where(and(eq(formRecords.payerId, scope.payerId), eq(formRecords.taxYear, scope.taxYear - 1)));
+    // ALL current-year records for this payer (not just this invite) so the client
+    // sees every recipient + amount already entered — including staff-entered and
+    // already-filed forms, which come back locked.
     const current = await db
       .select()
       .from(formRecords)
-      .where(
-        and(
-          eq(formRecords.payerId, scope.payerId),
-          eq(formRecords.taxYear, scope.taxYear),
-          eq(formRecords.clientInviteId, scope.inviteId),
-        ),
-      );
+      .where(and(eq(formRecords.payerId, scope.payerId), eq(formRecords.taxYear, scope.taxYear)));
     const ids = [...new Set([...prior.map((p) => p.recipientId), ...current.map((c) => c.recipientId)])];
     const recips = ids.length ? await db.select().from(recipients).where(inArray(recipients.id, ids)) : [];
     res.json({
       contractors: recips.map((r) => ({
         recipientId: r.id,
-        // masked identity only — no full TIN echo to client zone
         name1: r.name1,
+        name2: r.name2 ?? '',
         maskedAddress: `${(r.address['line1'] ?? '').slice(0, 12)}… ${r.address['city'] ?? ''}`,
+        // full mailing address IS shown to the payer for their OWN contractors so
+        // they can verify where Copy B is mailed. TIN stays truncated to last-4.
+        address: {
+          line1: r.address['line1'] ?? '',
+          line2: r.address['line2'] ?? '',
+          city: r.address['city'] ?? '',
+          state: r.address['state'] ?? '',
+          zip: r.address['zip'] ?? '',
+        },
+        email: r.email ?? '',
+        mobile: r.mobile ?? '',
+        tinType: r.tinType,
         tinLast4: r.tinLast4,
         w9Status: r.w9Status,
       })),
@@ -93,8 +102,47 @@ clientPortalRouter.get(
         recipientId: c.recipientId,
         formType: c.formType,
         boxValues: c.boxValues,
+        status: c.status,
+        // "filed" for the client = anything staff has advanced past draft. These are
+        // shown read-only; the client cannot change or re-submit an amount once filed.
+        filed: c.status !== 'draft',
       })),
     });
+  }),
+);
+
+/**
+ * Substitute Copy B for a FILED form — client can print their contractors' 1099s.
+ * Scoped hard to (payer, tax year); only filed forms; both TINs truncated.
+ */
+clientPortalRouter.get(
+  '/forms/:formId/copy-b',
+  h(async (req, res) => {
+    const scope = req.clientScope!;
+    const formId = z.string().uuid().parse(req.params['formId']);
+    const db = getDb();
+    const form = await db.query.formRecords.findFirst({ where: eq(formRecords.id, formId) });
+    // must belong to THIS engagement's payer + year, and actually be filed
+    if (!form || form.payerId !== scope.payerId || form.taxYear !== scope.taxYear) {
+      throw AppError.notFound('Form');
+    }
+    if (form.status === 'draft') {
+      throw AppError.state('This 1099 has not been filed yet — a copy is available once your accountant files it.');
+    }
+    const { renderSubstitutePdf } = await import('../services/render.js');
+    const pdf = await renderSubstitutePdf(db, scope.firmId, formId);
+    await touchActivity(scope.inviteId);
+    await audit(db, {
+      firmId: scope.firmId,
+      actorType: 'client',
+      actorId: scope.inviteId,
+      action: 'client.form.print',
+      entityType: 'form_record',
+      entityId: formId,
+      ip: req.ip,
+    });
+    res.setHeader('content-disposition', `attachment; filename="1099-${form.formType}-${scope.taxYear}.pdf"`);
+    res.type('application/pdf').send(pdf);
   }),
 );
 

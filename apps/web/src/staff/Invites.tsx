@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useState } from 'react';
 import { api, ApiError } from '../api';
 import { Combobox } from '../components/Combobox';
+import { useTaxYears } from '../components/useTaxYears';
 
 interface Invite {
   id: string;
@@ -23,6 +24,8 @@ export function Invites() {
   const [payers, setPayers] = useState<Payer[]>([]);
   const [payerId, setPayerId] = useState('');
   const [taxYear, setTaxYear] = useState(2026);
+  const { years: taxYears, current: currentYear } = useTaxYears();
+  useEffect(() => { setTaxYear(currentYear); }, [currentYear]);
   const [formTypes, setFormTypes] = useState<string[]>(['NEC']);
   const [link, setLink] = useState('');
   const [error, setError] = useState('');
@@ -80,7 +83,7 @@ export function Invites() {
             <Combobox options={payers.map((p) => ({ value: p.id, label: p.legalName }))} value={payerId} onChange={onPayerChange} placeholder="Search payers…" /></div>
           <div className="field"><label>Tax year</label>
             <select value={taxYear} onChange={(e) => setTaxYear(Number(e.target.value))}>
-              <option value={2026}>2026</option><option value={2025}>2025</option>
+              {taxYears.map((y) => <option key={y} value={y}>{y}</option>)}
             </select></div>
           <div className="field">
             <label>Form types the client may enter</label>

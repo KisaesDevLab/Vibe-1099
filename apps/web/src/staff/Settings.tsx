@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react';
 import { useOutletContext } from 'react-router-dom';
 import { api, ApiError, downloadBlob } from '../api';
 import { useDialogs } from '../components/Dialogs';
+import { Modal } from '../components/Modal';
+import { refreshTaxYears } from '../components/useTaxYears';
 import type { Me } from './Shell';
 
 interface Firm {
@@ -9,7 +11,14 @@ interface Firm {
   irisEnvironment: string; moWithholdingId: string;
   impositionOffsetX16: number; impositionOffsetY16: number; licenseTier: string;
 }
-interface IrisSettings { tcc: string; apiClientId: string; hasJwk: boolean; publicJwk: Record<string, unknown> | null; environment: 'ATS' | 'PROD' }
+interface IrisSettings {
+  tcc: string; apiClientId: string; hasJwk: boolean; publicJwk: Record<string, unknown> | null; environment: 'ATS' | 'PROD';
+  filingProvider: 'iris' | 'tax1099';
+  tax1099Environment: 'sandbox' | 'production';
+  tax1099Mailing: boolean;
+  hasTax1099Key: boolean;
+  tax1099ApiKey?: string; // transient input only
+}
 interface User { id: string; email: string; name: string; role: string; active: boolean; totpEnabled: boolean; lastLoginAt: string | null }
 interface AuditEntry { id: number; createdAt: string; actorType: string; actorId: string | null; action: string; entityType: string; entityId: string | null; ip: string | null }
 
@@ -31,6 +40,9 @@ export function Settings() {
   const [totpSetup, setTotpSetup] = useState<{ secret: string; otpauthUrl: string } | null>(null);
   const [totpCode, setTotpCode] = useState('');
   const [sms, setSms] = useState({ provider: 'env', textlinkApiKey: '', twilioAccountSid: '', twilioAuthToken: '', twilioFromNumber: '', hasTextlinkKey: false, hasTwilioAuth: false, envProvider: 'none' });
+  const [email, setEmail] = useState({ provider: 'env', from: '', replyTo: '', emailitApiKey: '', host: '', port: '587', user: '', pass: '', secure: false, hasEmailitKey: false, hasSmtpPass: false, envProvider: 'auto' });
+  const [editUser, setEditUser] = useState<User | null>(null);
+  const [filingYears, setFilingYears] = useState<{ years: number[]; current: number }>({ years: [], current: 0 });
   const [thresholds, setThresholds] = useState<Record<string, string>>({});
   const isAdmin = me.role === 'admin';
 
@@ -43,7 +55,9 @@ export function Settings() {
     }).catch(() => {});
     if (me.role === 'admin') {
       api.get<typeof sms>('/api/admin/sms').then((r) => setSms((s) => ({ ...s, ...r }))).catch(() => {});
+      api.get<typeof email>('/api/admin/email').then((r) => setEmail((s) => ({ ...s, ...r }))).catch(() => {});
     }
+    api.get<{ years: number[]; current: number }>('/api/admin/tax-years').then(setFilingYears).catch(() => {});
     if (isAdmin) {
       api.get<IrisSettings>('/api/iris/settings').then(setIris).catch(() => {});
       api.get<{ users: User[] }>('/api/auth/users').then((r) => setUsers(r.users)).catch(() => {});
@@ -71,8 +85,15 @@ export function Settings() {
   const saveIris = async () => {
     if (!iris) return;
     try {
-      await api.put('/api/iris/settings', { tcc: iris.tcc, apiClientId: iris.apiClientId, environment: iris.environment });
-      setNotice('IRIS settings saved.');
+      await api.put('/api/iris/settings', {
+        tcc: iris.tcc, apiClientId: iris.apiClientId, environment: iris.environment,
+        filingProvider: iris.filingProvider,
+        tax1099Environment: iris.tax1099Environment,
+        tax1099Mailing: iris.tax1099Mailing,
+        ...(iris.tax1099ApiKey ? { tax1099ApiKey: iris.tax1099ApiKey } : {}),
+      });
+      setIris((i) => (i ? { ...i, tax1099ApiKey: '', hasTax1099Key: i.hasTax1099Key || !!i.tax1099ApiKey } : i));
+      setNotice('E-file settings saved.');
     } catch (err) { setError(err instanceof ApiError ? err.message : String(err)); }
   };
 
@@ -94,6 +115,63 @@ export function Settings() {
   const toggleUser = async (u: User) => {
     await api.patch(`/api/auth/users/${u.id}`, { active: !u.active });
     loadAll();
+  };
+
+  const saveUser = async () => {
+    if (!editUser) return;
+    try {
+      await api.patch(`/api/auth/users/${editUser.id}`, { name: editUser.name, email: editUser.email, role: editUser.role });
+      setEditUser(null);
+      dialogs.toast('User updated.', 'success');
+      loadAll();
+    } catch (err) { setError(err instanceof ApiError ? err.message : String(err)); }
+  };
+
+  const resetPassword = async (u: User) => {
+    const pw = await dialogs.prompt(`Set a new password for ${u.name} (12+ chars). They must sign in again.`, { title: 'Reset password' });
+    if (!pw) return;
+    try {
+      await api.post(`/api/auth/users/${u.id}/reset-password`, { password: pw });
+      dialogs.toast(`Password reset for ${u.name}.`, 'success');
+    } catch (err) { setError(err instanceof ApiError ? err.message : String(err)); }
+  };
+
+  const saveEmail = async () => {
+    try {
+      await api.put('/api/admin/email', {
+        provider: email.provider,
+        from: email.from, replyTo: email.replyTo,
+        ...(email.emailitApiKey ? { emailitApiKey: email.emailitApiKey } : {}),
+        ...(email.host ? { host: email.host } : {}),
+        port: Number(email.port) || 587,
+        ...(email.user ? { user: email.user } : {}),
+        ...(email.pass ? { pass: email.pass } : {}),
+        secure: email.secure,
+      });
+      dialogs.toast('Email settings saved (credentials stored encrypted).', 'success');
+      setEmail((s) => ({ ...s, emailitApiKey: '', pass: '' }));
+      loadAll();
+    } catch (err) { setError(err instanceof ApiError ? err.message : String(err)); }
+  };
+
+  const rolloverYear = async () => {
+    const next = (filingYears.current || new Date().getFullYear()) + 1;
+    if (!(await dialogs.confirm(`Create filing year ${next} and make it the default? Existing years stay available.`, { title: 'Roll over filing year' }))) return;
+    try {
+      const r = await api.post<{ years: number[]; current: number }>('/api/admin/tax-years/rollover', {});
+      setFilingYears(r);
+      refreshTaxYears();
+      dialogs.toast(`Filing year ${r.current} is now active.`, 'success');
+    } catch (err) { setError(err instanceof ApiError ? err.message : String(err)); }
+  };
+
+  const setCurrentYear = async (taxYear: number) => {
+    try {
+      const r = await api.put<{ years: number[]; current: number }>('/api/admin/tax-years/current', { taxYear });
+      setFilingYears(r);
+      refreshTaxYears();
+      dialogs.toast(`Default filing year set to ${taxYear}.`, 'success');
+    } catch (err) { setError(err instanceof ApiError ? err.message : String(err)); }
   };
 
   const loadAudit = async () => {
@@ -204,6 +282,38 @@ export function Settings() {
 
       {tab === 'efile' && isAdmin && iris && (
         <div className="panel">
+          <div className="row" style={{ alignItems: 'flex-end' }}>
+            <div className="field"><label>Filing backend</label>
+              <select value={iris.filingProvider} onChange={(e) => setIris({ ...iris, filingProvider: e.target.value as 'iris' | 'tax1099' })}>
+                <option value="iris">IRIS A2A — we are the Transmitter (needs our TCC)</option>
+                <option value="tax1099">Tax1099 (Zenwork) — files on our behalf (no TCC)</option>
+              </select></div>
+            <button onClick={saveIris}>Save</button>
+          </div>
+          <p className="muted">Default backend for all payers; individual payers can override it on their record. IRIS uses this firm's TCC/JWK below. Tax1099 files through Zenwork so no IRS TCC is needed.</p>
+
+          {iris.filingProvider === 'tax1099' && (
+            <div className="panel" style={{ background: '#fff7ed', borderColor: '#fed7aa' }}>
+              <h2 style={{ marginTop: 0 }}>Tax1099 (Zenwork)</h2>
+              <div className="row" style={{ alignItems: 'flex-end' }}>
+                <div className="field grow"><label>API key {iris.hasTax1099Key && <span className="muted">(saved — leave blank to keep)</span>}</label>
+                  <input type="password" placeholder={iris.hasTax1099Key ? '••••••••' : 'Tax1099 app key'} value={iris.tax1099ApiKey ?? ''}
+                    onChange={(e) => setIris({ ...iris, tax1099ApiKey: e.target.value })} /></div>
+                <div className="field"><label>Environment</label>
+                  <select value={iris.tax1099Environment} onChange={(e) => setIris({ ...iris, tax1099Environment: e.target.value as 'sandbox' | 'production' })}>
+                    <option value="sandbox">Sandbox (test)</option><option value="production">Production</option>
+                  </select></div>
+                <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13 }}>
+                  <input type="checkbox" style={{ width: 'auto' }} checked={iris.tax1099Mailing}
+                    onChange={(e) => setIris({ ...iris, tax1099Mailing: e.target.checked })} /> Let Tax1099 USPS-mail recipient copies
+                </label>
+                <button onClick={saveIris}>Save</button>
+              </div>
+              {iris.tax1099Environment === 'sandbox' && <div className="warn-box">Sandbox — submissions are TEST filings, not sent to the IRS.</div>}
+            </div>
+          )}
+
+          <h2>IRIS A2A (self-file)</h2>
           <div className="row">
             <div className="field"><label>TCC (Transmitter Control Code)</label><input value={iris.tcc} onChange={(e) => setIris({ ...iris, tcc: e.target.value })} /></div>
             <div className="field grow"><label>API Client ID</label><input value={iris.apiClientId} onChange={(e) => setIris({ ...iris, apiClientId: e.target.value })} /></div>
@@ -231,27 +341,76 @@ export function Settings() {
             <li>IRS flips the TCC to Production → switch the environment above</li>
           </ol>
           <h2>Federal filing thresholds (warn-only, per form type & year)</h2>
-          <p className="muted">Amounts below the threshold warn but never block (LOCKED decision). Blank = registry default (TY2026 NEC/MISC: $2,000 per OBBBA).</p>
-          <div className="row">
-            {['NEC:2026', 'MISC:2026', 'NEC:2025', 'MISC:2025'].map((key) => (
-              <div className="field" key={key}>
-                <label>1099-{key.replace(':', ' TY')} ($)</label>
-                <input className="num" value={thresholds[key] ?? ''} placeholder="registry default"
-                  onChange={(e) => setThresholds((t) => ({ ...t, [key]: e.target.value }))} />
-              </div>
-            ))}
-            <button className="secondary" onClick={() => {
-              const map: Record<string, number> = {};
-              for (const [k, v] of Object.entries(thresholds)) if (v.trim() !== '') map[k] = Math.round(parseFloat(v) * 100);
-              void saveSetting('federal_thresholds', map);
-            }}>Save thresholds</button>
-          </div>
+          <p className="muted">Amounts below the threshold warn but never block (LOCKED decision). Blank = registry default (TY2026+ NEC/MISC: $2,000 per OBBBA; earlier years: $600). Rows follow your enabled filing years.</p>
+          <table className="grid" style={{ maxWidth: 460 }}>
+            <thead><tr><th>Tax year</th><th className="num">1099-NEC ($)</th><th className="num">1099-MISC ($)</th></tr></thead>
+            <tbody>
+              {filingYears.years.map((y) => (
+                <tr key={y}>
+                  <td>{y}{y === filingYears.current && <span className="badge ok" style={{ marginLeft: 6 }}>current</span>}</td>
+                  {['NEC', 'MISC'].map((ft) => {
+                    const key = `${ft}:${y}`;
+                    return (
+                      <td key={key}>
+                        <input className="num" value={thresholds[key] ?? ''} placeholder="default"
+                          onChange={(e) => setThresholds((t) => ({ ...t, [key]: e.target.value }))} />
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+              {!filingYears.years.length && <tr><td colSpan={3} className="muted">Loading enabled years…</td></tr>}
+            </tbody>
+          </table>
+          <button className="secondary" style={{ marginTop: 8 }} onClick={() => {
+            const map: Record<string, number> = {};
+            for (const [k, v] of Object.entries(thresholds)) if (v.trim() !== '') map[k] = Math.round(parseFloat(v) * 100);
+            void saveSetting('federal_thresholds', map);
+          }}>Save thresholds</button>
         </div>
       )}
 
       {tab === 'delivery' && isAdmin && (
         <div className="panel">
-          <h2 style={{ marginTop: 0 }}>SMS provider <span className="muted" style={{ fontWeight: 400 }}>(firm-level; overrides appliance env: {sms.envProvider})</span></h2>
+          <h2 style={{ marginTop: 0 }}>Email provider <span className="muted" style={{ fontWeight: 400 }}>(firm-level; overrides appliance env: {email.envProvider})</span></h2>
+          <div className="row" style={{ alignItems: 'flex-end' }}>
+            <div className="field"><label>Provider</label>
+              <select value={email.provider} onChange={(e) => setEmail((s) => ({ ...s, provider: e.target.value }))}>
+                <option value="env">Use appliance env config</option>
+                <option value="emailit">EmailIt.com (API)</option>
+                <option value="smtp">SMTP relay</option>
+                <option value="none">Disabled</option>
+              </select></div>
+            {email.provider !== 'env' && email.provider !== 'none' && (
+              <>
+                <div className="field grow"><label>From address</label>
+                  <input placeholder="1099s@yourfirm.com" value={email.from} onChange={(e) => setEmail((s) => ({ ...s, from: e.target.value }))} /></div>
+                <div className="field grow"><label>Reply-to (optional)</label>
+                  <input value={email.replyTo} onChange={(e) => setEmail((s) => ({ ...s, replyTo: e.target.value }))} /></div>
+              </>
+            )}
+          </div>
+          {email.provider === 'emailit' && (
+            <div className="row" style={{ alignItems: 'flex-end' }}>
+              <div className="field grow"><label>EmailIt API key {email.hasEmailitKey && <span className="muted">(saved — blank keeps current)</span>}</label>
+                <input type="password" placeholder={email.hasEmailitKey ? '••••••••' : 'EmailIt API key (v2)'} value={email.emailitApiKey} onChange={(e) => setEmail((s) => ({ ...s, emailitApiKey: e.target.value }))} /></div>
+            </div>
+          )}
+          {email.provider === 'smtp' && (
+            <div className="row" style={{ alignItems: 'flex-end' }}>
+              <div className="field grow"><label>Host</label><input value={email.host} onChange={(e) => setEmail((s) => ({ ...s, host: e.target.value }))} /></div>
+              <div className="field" style={{ maxWidth: 90 }}><label>Port</label><input value={email.port} onChange={(e) => setEmail((s) => ({ ...s, port: e.target.value }))} /></div>
+              <div className="field"><label>Username</label><input value={email.user} onChange={(e) => setEmail((s) => ({ ...s, user: e.target.value }))} /></div>
+              <div className="field"><label>Password {email.hasSmtpPass && <span className="muted">(saved)</span>}</label>
+                <input type="password" value={email.pass} onChange={(e) => setEmail((s) => ({ ...s, pass: e.target.value }))} /></div>
+              <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13 }}>
+                <input type="checkbox" style={{ width: 'auto' }} checked={email.secure} onChange={(e) => setEmail((s) => ({ ...s, secure: e.target.checked }))} /> TLS
+              </label>
+            </div>
+          )}
+          <button className="secondary" onClick={saveEmail}>Save email settings</button>
+
+          <h2 style={{ marginTop: 20 }}>SMS provider <span className="muted" style={{ fontWeight: 400 }}>(firm-level; overrides appliance env: {sms.envProvider})</span></h2>
           <div className="row">
             <div className="field"><label>Provider</label>
               <select value={sms.provider} onChange={(e) => setSms((s) => ({ ...s, provider: e.target.value }))}>
@@ -298,18 +457,41 @@ export function Settings() {
       {tab === 'users' && isAdmin && (
         <div className="panel">
           <table className="grid">
-            <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>TOTP</th><th>Last login</th><th>Active</th></tr></thead>
+            <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>TOTP</th><th>Last login</th><th></th></tr></thead>
             <tbody>
               {users.map((u) => (
-                <tr key={u.id}>
+                <tr key={u.id} style={{ opacity: u.active ? 1 : 0.5 }}>
                   <td>{u.name}</td><td>{u.email}</td><td>{u.role}</td>
                   <td>{u.totpEnabled ? '✓' : '—'}</td>
                   <td>{u.lastLoginAt ? new Date(u.lastLoginAt).toLocaleString() : '—'}</td>
-                  <td><button className={`small ${u.active ? 'danger' : ''}`} onClick={() => toggleUser(u)}>{u.active ? 'Deactivate' : 'Activate'}</button></td>
+                  <td style={{ whiteSpace: 'nowrap' }}>
+                    <button className="small secondary" onClick={() => setEditUser(u)}>Edit</button>
+                    <button className="small secondary" onClick={() => resetPassword(u)}>Reset password</button>
+                    <button className={`small ${u.active ? 'danger' : ''}`} onClick={() => toggleUser(u)}>{u.active ? 'Deactivate' : 'Activate'}</button>
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
+
+          {editUser && (
+            <Modal title={`Edit ${editUser.name}`} width={520} onClose={() => setEditUser(null)}>
+              <div className="row">
+                <div className="field grow"><label>Name</label><input value={editUser.name} onChange={(e) => setEditUser({ ...editUser, name: e.target.value })} /></div>
+              </div>
+              <div className="row">
+                <div className="field grow"><label>Email</label><input value={editUser.email} onChange={(e) => setEditUser({ ...editUser, email: e.target.value })} /></div>
+                <div className="field"><label>Role</label>
+                  <select value={editUser.role} onChange={(e) => setEditUser({ ...editUser, role: e.target.value })}>
+                    <option>admin</option><option>preparer</option><option>reviewer</option>
+                  </select></div>
+              </div>
+              <div className="row" style={{ justifyContent: 'flex-end' }}>
+                <button className="secondary" onClick={() => setEditUser(null)}>Cancel</button>
+                <button onClick={saveUser}>Save changes</button>
+              </div>
+            </Modal>
+          )}
           <h2>Add user</h2>
           <div className="row">
             <div className="field"><label>Name</label><input value={newUser.name} onChange={(e) => setNewUser({ ...newUser, name: e.target.value })} /></div>
@@ -320,6 +502,24 @@ export function Settings() {
               </select></div>
             <div className="field"><label>Password (12+)</label><input type="password" value={newUser.password} onChange={(e) => setNewUser({ ...newUser, password: e.target.value })} /></div>
             <button onClick={addUser}>Create</button>
+          </div>
+        </div>
+      )}
+
+      {tab === 'advanced' && (
+        <div className="panel">
+          <h2 style={{ marginTop: 0 }}>Filing years</h2>
+          <p className="muted">The default year is preselected on new filings and pickers. Roll over to open the next year — existing years stay available for prior-year work and corrections.</p>
+          <div className="row" style={{ alignItems: 'flex-end' }}>
+            <div className="field"><label>Default (current) year</label>
+              <select value={filingYears.current || ''} onChange={(e) => setCurrentYear(Number(e.target.value))} disabled={!isAdmin}>
+                {filingYears.years.map((y) => <option key={y} value={y}>{y}</option>)}
+              </select></div>
+            <div className="field"><label>Enabled years</label>
+              <div className="row" style={{ gap: 6 }}>{filingYears.years.map((y) => (
+                <span key={y} className={`badge ${y === filingYears.current ? 'ok' : 'draft'}`}>{y}</span>
+              ))}</div></div>
+            {isAdmin && <button onClick={rolloverYear}>Roll over to {(filingYears.current || new Date().getFullYear()) + 1}</button>}
           </div>
         </div>
       )}

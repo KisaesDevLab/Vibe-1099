@@ -27,6 +27,7 @@ function toPublicPayer(p: typeof payers.$inferSelect) {
     contactMobile: p.contactMobile,
     moWithholdingId: p.moWithholdingId,
     moSourceDefault: p.moSourceDefault,
+    filingProviderOverride: p.filingProviderOverride,
     defaultFormTypes: p.defaultFormTypes,
     active: p.active,
     createdAt: p.createdAt,
@@ -81,6 +82,7 @@ payersRouter.post(
         contactMobile: input.contactMobile ?? null,
         moWithholdingId: input.moWithholdingId ?? null,
         moSourceDefault: input.moSourceDefault ?? false,
+        filingProviderOverride: input.filingProviderOverride ?? null,
         defaultFormTypes: input.defaultFormTypes?.length ? input.defaultFormTypes : ['NEC'],
       })
       .returning({ id: payers.id });
@@ -260,6 +262,7 @@ payersRouter.patch(
     if (input.contactMobile !== undefined) patch.contactMobile = input.contactMobile;
     if (input.moWithholdingId !== undefined) patch.moWithholdingId = input.moWithholdingId;
     if (input.moSourceDefault !== undefined) patch.moSourceDefault = input.moSourceDefault;
+    if (input.filingProviderOverride !== undefined) patch.filingProviderOverride = input.filingProviderOverride;
     if (input.defaultFormTypes !== undefined) patch.defaultFormTypes = input.defaultFormTypes.length ? input.defaultFormTypes : ['NEC'];
     if (input.tin !== undefined) {
       const { tin } = checkTin(input.tin, input.tinType ?? row.tinType);

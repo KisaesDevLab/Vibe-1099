@@ -11,33 +11,51 @@ import {
   getCrypto,
   getQueue,
   IrisClient,
+  IrisFilingProvider,
   irisEndpoints,
   loadEnv,
   putBlob,
   QUEUE_NAMES,
+  Tax1099Client,
+  tax1099Endpoints,
   type DeliveryJob,
+  type FilingProvider,
+  type FilingProviderKind,
   type IrisPollJob,
   type IrisTransmitJob,
 } from '@vibe1099/core';
 import { applyAckToRecords, notify } from '@vibe1099/core';
-import { firms, formRecords, getDb, transmissions, users } from '@vibe1099/db';
+import { deliveries, firms, formRecords, getDb, transmissions, users } from '@vibe1099/db';
 
 const log = createLogger('worker:iris');
 
 const POLL_DELAYS_MS = [60_000, 120_000, 300_000, 600_000, 1_800_000, 3_600_000]; // exp backoff → hourly
 const MAX_POLLS = 96; // ~4 days at terminal cadence
 
-async function clientFor(firmId: string): Promise<IrisClient> {
+/** Build the FilingProvider a transmission targets (IRIS A2A or Tax1099 REST). */
+async function providerFor(firmId: string, kind: FilingProviderKind): Promise<FilingProvider> {
   const env = loadEnv();
   const db = getDb();
   const firm = await db.query.firms.findFirst({ where: eq(firms.id, firmId) });
-  if (!firm?.irisJwkEncrypted) throw new Error('IRIS not configured');
+  if (!firm) throw new Error('firm missing');
+
+  if (kind === 'tax1099') {
+    if (!firm.tax1099ApiKeyEncrypted) throw new Error('Tax1099 not configured');
+    const base =
+      env.TAX1099_MOCK_BASE_URL ||
+      (firm.tax1099Environment === 'production' ? env.TAX1099_PROD_BASE_URL : env.TAX1099_SANDBOX_BASE_URL);
+    return new Tax1099Client(tax1099Endpoints(base), { apiKey: getCrypto().decrypt(firm.tax1099ApiKeyEncrypted) });
+  }
+
+  if (!firm.irisJwkEncrypted) throw new Error('IRIS not configured');
   const base = env.IRIS_MOCK_BASE_URL || (firm.irisEnvironment === 'PROD' ? env.IRIS_PROD_BASE_URL : env.IRIS_ATS_BASE_URL);
-  return new IrisClient(irisEndpoints(base), {
-    apiClientId: firm.irisApiClientId,
-    privateJwk: JSON.parse(getCrypto().decrypt(firm.irisJwkEncrypted)) as Record<string, unknown>,
-    tokenUrl: irisEndpoints(base).tokenUrl,
-  });
+  return new IrisFilingProvider(
+    new IrisClient(irisEndpoints(base), {
+      apiClientId: firm.irisApiClientId,
+      privateJwk: JSON.parse(getCrypto().decrypt(firm.irisJwkEncrypted)) as Record<string, unknown>,
+      tokenUrl: irisEndpoints(base).tokenUrl,
+    }),
+  );
 }
 
 async function alertStaff(firmId: string, subject: string, message: string): Promise<void> {
@@ -71,18 +89,18 @@ export async function handleIrisTransmit(job: Job): Promise<void> {
 
   await db.update(transmissions).set({ status: 'transmitting' }).where(eq(transmissions.id, tx.id));
   try {
-    const client = await clientFor(data.firmId);
-    const result = await client.transmit(blob.bytes.toString('utf8'));
+    const provider = await providerFor(data.firmId, tx.provider);
+    const result = await provider.transmit(blob.bytes.toString('utf8'));
     await db
       .update(transmissions)
-      .set({ status: 'polling', receiptId: result.receiptId, transmittedAt: new Date() })
+      .set({ status: 'polling', receiptId: result.providerRef, transmittedAt: new Date() })
       .where(eq(transmissions.id, tx.id));
     // mark linked records transmitted
     await db
       .update(formRecords)
       .set({ status: 'transmitted', updatedAt: new Date() })
       .where(eq(formRecords.transmissionId, tx.id));
-    log.info({ tx: tx.id, receiptId: result.receiptId }, 'transmitted');
+    log.info({ tx: tx.id, receiptId: result.providerRef, provider: tx.provider }, 'transmitted');
 
     const pollJob: IrisPollJob = { kind: 'poll', transmissionId: tx.id, firmId: data.firmId, attempt: 0 };
     await getQueue(QUEUE_NAMES.iris).add('poll', pollJob, { delay: POLL_DELAYS_MS[0] });
@@ -113,8 +131,8 @@ export async function handleIrisPoll(job: Job): Promise<void> {
   if (!tx?.receiptId) throw new Error('transmission missing or has no receipt');
   if (tx.status === 'accepted' || tx.status === 'accepted_with_errors' || tx.status === 'rejected') return;
 
-  const client = await clientFor(data.firmId);
-  const result = await client.status(tx.receiptId);
+  const provider = await providerFor(data.firmId, tx.provider);
+  const result = await provider.status(tx.receiptId);
 
   if (result.status === 'Processing' || result.status === 'NotFound') {
     if (data.attempt + 1 >= MAX_POLLS) {
@@ -149,6 +167,34 @@ export async function handleIrisPoll(job: Job): Promise<void> {
 
   await applyAckToRecords(db, tx.id, overall, result.errors);
   log.info({ tx: tx.id, status: overall, errors: result.errors.length }, 'ack applied');
+
+  // Tax1099 add-on: let Zenwork USPS-mail recipient copies for accepted forms
+  // (alternative to the local Z-fold path). Best-effort — a mail failure must
+  // not undo the accepted ack.
+  if (tx.provider === 'tax1099' && overall !== 'rejected' && tx.receiptId) {
+    const firm = await db.query.firms.findFirst({ where: eq(firms.id, data.firmId) });
+    if (firm?.tax1099Mailing) {
+      try {
+        const provider = await providerFor(data.firmId, 'tax1099');
+        if (provider instanceof Tax1099Client) {
+          const mail = await provider.mailRecipients(tx.receiptId);
+          // record a paper delivery for each accepted (error-free) form
+          const errored = new Set(result.errors.map((e) => e.recordId));
+          const recs = await db
+            .select({ id: formRecords.id })
+            .from(formRecords)
+            .where(eq(formRecords.transmissionId, tx.id));
+          for (const r of recs) {
+            if (errored.has(r.id)) continue;
+            await db.insert(deliveries).values({ firmId: data.firmId, formRecordId: r.id, channel: 'paper', sentAt: new Date() });
+          }
+          log.info({ tx: tx.id, mailId: mail.mailId, mailed: recs.length - errored.size }, 'tax1099 USPS mailing queued');
+        }
+      } catch (e) {
+        log.warn({ err: (e as Error).message, tx: tx.id }, 'tax1099 mailing failed (non-fatal)');
+      }
+    }
+  }
   // best-effort — a notify failure must not skip the staff rejection alert below
   await notify(db, {
     firmId: data.firmId,

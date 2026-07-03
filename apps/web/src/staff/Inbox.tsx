@@ -4,6 +4,7 @@
  */
 import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
+import { useTaxYears } from '../components/useTaxYears';
 import { api } from '../api';
 import { Paginator } from '../components/Paginator';
 
@@ -24,6 +25,8 @@ const KINDS = [
 
 export function Inbox() {
   const [taxYear, setTaxYear] = useState(2026);
+  const { years: taxYears, current: currentYear } = useTaxYears();
+  useEffect(() => { setTaxYear(currentYear); }, [currentYear]);
   const [items, setItems] = useState<Item[]>([]);
   const [counts, setCounts] = useState<Record<string, number>>({});
   const [total, setTotal] = useState(0);
@@ -60,7 +63,7 @@ export function Inbox() {
       <div className="row" style={{ justifyContent: 'space-between' }}>
         <h1>Work inbox</h1>
         <div className="field" style={{ minWidth: 100 }}><label>Tax year</label>
-          <select value={taxYear} onChange={(e) => setTaxYear(Number(e.target.value))}><option value={2026}>2026</option><option value={2025}>2025</option></select></div>
+          <select value={taxYear} onChange={(e) => setTaxYear(Number(e.target.value))}>{taxYears.map((y) => <option key={y} value={y}>{y}</option>)}</select></div>
       </div>
       {notice && <div className="ok-box">{notice}</div>}
 

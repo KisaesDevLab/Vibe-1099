@@ -8,14 +8,17 @@ import { eq as eqOp } from 'drizzle-orm';
 import {
   createLogger,
   DEFAULT_TEMPLATES,
+  EmailItEmailAdapter,
   getCrypto,
   getEmailAdapter,
   getSmsAdapter,
   renderTemplate,
+  SmtpEmailAdapter,
   TextLinkSmsAdapter,
   toE164,
   TwilioSmsAdapter,
   type DeliveryJob,
+  type EmailAdapter,
   type MessageTemplate,
   type SmsAdapter,
 } from '@vibe1099/core';
@@ -47,6 +50,38 @@ async function resolveSmsAdapter(firmId: string): Promise<SmsAdapter> {
   return getSmsAdapter();
 }
 
+/**
+ * Per-firm email adapter resolution: Settings-configured override (secrets
+ * envelope-encrypted in firms.smtp_override) wins; env-configured adapter is
+ * the fallback. Supports EmailIt (API) and SMTP.
+ */
+async function resolveEmailAdapter(firmId: string): Promise<EmailAdapter> {
+  const firm = await getDb().query.firms.findFirst({ where: eqOp(firms.id, firmId) });
+  const o = (firm?.smtpOverride ?? null) as Record<string, string> | null;
+  const crypto = getCrypto();
+  if (o?.['provider'] === 'emailit' && o['emailitApiKeyEncrypted']) {
+    return new EmailItEmailAdapter({
+      apiKey: crypto.decrypt(o['emailitApiKeyEncrypted']),
+      from: o['from'] ?? '',
+      replyTo: o['replyTo'] || undefined,
+    });
+  }
+  if (o?.['provider'] === 'smtp' && o['host']) {
+    return new SmtpEmailAdapter({
+      host: o['host'],
+      port: Number(o['port'] ?? 587),
+      user: o['user'] ?? '',
+      pass: o['passEncrypted'] ? crypto.decrypt(o['passEncrypted']) : '',
+      from: o['from'] ?? '',
+      secure: o['secure'] === '1',
+    });
+  }
+  if (o?.['provider'] === 'none') {
+    throw new Error('Email disabled for this firm (Settings → Email provider)');
+  }
+  return getEmailAdapter();
+}
+
 async function resolveTemplate(key: string): Promise<MessageTemplate> {
   const db = getDb();
   const row = await db.query.appSettings.findFirst({ where: eq(appSettings.key, 'message_templates') });
@@ -66,7 +101,8 @@ export async function handleDeliveryJob(job: Job): Promise<void> {
   try {
     if (data.channel === 'email') {
       const subject = renderTemplate(template.subject, data.vars);
-      await getEmailAdapter().send({ to: data.to, subject, text: body });
+      const emailer = await resolveEmailAdapter(data.firmId);
+      await emailer.send({ to: data.to, subject, text: body });
     } else {
       const sms = await resolveSmsAdapter(data.firmId);
       await sms.send({ to: toE164(data.to), body });

@@ -121,6 +121,16 @@ export function Recipients() {
     setHistory(r.history);
   };
 
+  const tinCheck = async (r: Recipient) => {
+    try {
+      const res = await api.post<{ match: boolean; message: string }>('/api/iris/tin-match', { recipientId: r.id });
+      dialogs.toast(`TIN check for ${r.name1}: ${res.match ? 'match ✓' : 'MISMATCH — ' + res.message}`, res.match ? 'success' : 'error');
+      if (!res.match) await load();
+    } catch (err) {
+      dialogs.toast(err instanceof ApiError ? err.message : 'TIN check failed', 'error');
+    }
+  };
+
   const requestW9 = async (r: Recipient) => {
     const email = r.email ?? (await dialogs.prompt('Recipient email for the W-9 request:', { title: 'Request W-9' }));
     if (!email) return;
@@ -219,6 +229,7 @@ export function Recipients() {
                 {r.w9Status !== 'on_file' && <button className="small secondary" style={{ marginLeft: 4 }} onClick={() => requestW9(r)}>request</button>}</td>
               <td style={{ whiteSpace: 'nowrap' }}>
                 <button className="small secondary" onClick={() => openEdit(r)}>Edit</button>
+                <button className="small secondary" onClick={() => tinCheck(r)} title="Real-time IRS TIN/name match via Tax1099">TIN check</button>
                 <button className="small secondary" onClick={() => showHistory(r.id)}>History</button>
                 <button className="small secondary" onClick={() => setMergeDup({ id: r.id, name: r.name1 })} title="Mark this as a duplicate of another recipient">Merge</button>
               </td>

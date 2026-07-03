@@ -10,7 +10,7 @@ import { getCrypto, getQueue, loadEnv, QUEUE_NAMES, type QueueName } from '@vibe
 import { auditLog, firms, getDb } from '@vibe1099/db';
 import { h } from '../middleware/error.js';
 import { requireStaff } from '../middleware/auth.js';
-import { allSettings, setSetting } from '../services/settings.js';
+import { addFilingYear, allSettings, getFilingYears, setCurrentFilingYear, setSetting } from '../services/settings.js';
 
 export const adminRouter = Router();
 
@@ -121,6 +121,117 @@ adminRouter.put(
     }
     res.locals['audit'] = { action: 'sms.configure', entityType: 'firm', entityId: req.staff!.firmId, detail: { provider: input.provider } };
     res.json({ ok: true });
+  }),
+);
+
+// --- Email provider (firm-level, secrets encrypted at rest) -------------------------
+
+adminRouter.get(
+  '/email',
+  requireStaff('admin'),
+  h(async (req, res) => {
+    const firm = await getDb().query.firms.findFirst({ where: eq(firms.id, req.staff!.firmId) });
+    const o = (firm?.smtpOverride ?? {}) as Record<string, string>;
+    res.json({
+      provider: o['provider'] ?? 'env',
+      from: o['from'] ?? '',
+      replyTo: o['replyTo'] ?? '',
+      hasEmailitKey: !!o['emailitApiKeyEncrypted'],
+      // smtp
+      host: o['host'] ?? '',
+      port: o['port'] ?? '587',
+      user: o['user'] ?? '',
+      hasSmtpPass: !!o['passEncrypted'],
+      secure: o['secure'] === '1',
+      envProvider: loadEnv().EMAIL_PROVIDER,
+    });
+  }),
+);
+
+adminRouter.put(
+  '/email',
+  requireStaff('admin'),
+  h(async (req, res) => {
+    const input = z
+      .object({
+        provider: z.enum(['env', 'none', 'emailit', 'smtp']),
+        from: z.string().max(200).optional(),
+        replyTo: z.string().max(200).optional(),
+        emailitApiKey: z.string().max(400).optional(),
+        host: z.string().max(200).optional(),
+        port: z.coerce.number().int().min(1).max(65535).optional(),
+        user: z.string().max(200).optional(),
+        pass: z.string().max(400).optional(),
+        secure: z.boolean().optional(),
+      })
+      .parse(req.body);
+    const db = getDb();
+    if (input.provider === 'env') {
+      await db.update(firms).set({ smtpOverride: null, updatedAt: new Date() }).where(eq(firms.id, req.staff!.firmId));
+      res.locals['audit'] = { action: 'email.configure', entityType: 'firm', entityId: req.staff!.firmId, detail: { provider: 'env' } };
+      return void res.json({ ok: true });
+    }
+    const firm = await db.query.firms.findFirst({ where: eq(firms.id, req.staff!.firmId) });
+    const prev = (firm?.smtpOverride ?? {}) as Record<string, string>;
+    const crypto = getCrypto();
+    const next: Record<string, string> = { provider: input.provider, from: input.from ?? prev['from'] ?? '' };
+    if (input.replyTo !== undefined) next['replyTo'] = input.replyTo;
+    else if (prev['replyTo']) next['replyTo'] = prev['replyTo'];
+
+    if (input.provider === 'emailit') {
+      const key = input.emailitApiKey ?? '';
+      next['emailitApiKeyEncrypted'] = key ? crypto.encrypt(key) : (prev['emailitApiKeyEncrypted'] ?? '');
+      if (!next['emailitApiKeyEncrypted']) throw AppError.validation('EmailIt API key required');
+      if (!next['from']) throw AppError.validation('From address required');
+    } else if (input.provider === 'smtp') {
+      next['host'] = input.host ?? prev['host'] ?? '';
+      next['port'] = String(input.port ?? prev['port'] ?? '587');
+      next['user'] = input.user ?? prev['user'] ?? '';
+      next['secure'] = (input.secure ?? prev['secure'] === '1') ? '1' : '0';
+      const pass = input.pass ?? '';
+      next['passEncrypted'] = pass ? crypto.encrypt(pass) : (prev['passEncrypted'] ?? '');
+      if (!next['host'] || !next['from']) throw AppError.validation('SMTP requires host and from address');
+    }
+    await db.update(firms).set({ smtpOverride: next, updatedAt: new Date() }).where(eq(firms.id, req.staff!.firmId));
+    res.locals['audit'] = { action: 'email.configure', entityType: 'firm', entityId: req.staff!.firmId, detail: { provider: input.provider } };
+    res.json({ ok: true });
+  }),
+);
+
+// --- filing years (rollover) --------------------------------------------------------
+
+/** Any staff can read enabled years (used to populate year pickers). */
+adminRouter.get(
+  '/tax-years',
+  requireStaff(),
+  h(async (_req, res) => {
+    res.json(await getFilingYears());
+  }),
+);
+
+/** Roll forward to a new filing year (defaults to current + 1) and make it current. */
+adminRouter.post(
+  '/tax-years/rollover',
+  requireStaff('admin'),
+  h(async (req, res) => {
+    const { taxYear } = z.object({ taxYear: z.number().int().optional() }).parse(req.body);
+    const cur = await getFilingYears();
+    const target = taxYear ?? cur.current + 1;
+    const result = await addFilingYear(target);
+    res.locals['audit'] = { action: 'tax-year.rollover', entityType: 'firm', entityId: req.staff!.firmId, detail: { taxYear: target } };
+    res.status(201).json(result);
+  }),
+);
+
+/** Change the default ("current") filing year among enabled years. */
+adminRouter.put(
+  '/tax-years/current',
+  requireStaff('admin'),
+  h(async (req, res) => {
+    const { taxYear } = z.object({ taxYear: z.number().int() }).parse(req.body);
+    const result = await setCurrentFilingYear(taxYear);
+    res.locals['audit'] = { action: 'tax-year.set-current', entityType: 'firm', entityId: req.staff!.firmId, detail: { taxYear } };
+    res.json(result);
   }),
 );
 

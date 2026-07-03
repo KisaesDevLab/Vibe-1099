@@ -41,23 +41,30 @@
 
 <div class="form-grid" style="border-top: none;">
   <div class="boxes-2col" style="grid-column: span 2;">
+    {# Substitute recipient statement (Pub 1179): show only boxes with an entry —
+       a checked checkbox or a non-empty amount/text. Corrected forms keep zeroed
+       amounts (rendered as "0.00", still truthy) so voids/corrections show. #}
     {% for box in form.boxes %}
+    {% if box.value %}
     <div class="cell">
       <div class="box-label"><span class="box-num">{{ box.number }}</span> {{ box.label }}</div>
       <div class="box-value">
         {%- if box.kind == 'checkbox' -%}
-          <span class="checkbox">{{ 'X' if box.value else '' }}</span>
+          <span class="checkbox">X</span>
         {%- else -%}
           {{ box.value }}
         {%- endif -%}
       </div>
     </div>
+    {% endif %}
     {% endfor %}
     {% for box in form.state_boxes %}
+    {% if box.value %}
     <div class="cell">
       <div class="box-label"><span class="box-num">{{ box.number }}</span> {{ box.label }}</div>
       <div class="box-value">{{ box.value }}</div>
     </div>
+    {% endif %}
     {% endfor %}
   </div>
 </div>

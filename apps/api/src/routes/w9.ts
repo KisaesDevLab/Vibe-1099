@@ -98,6 +98,17 @@ export async function createW9Request(opts: {
     const job: DeliveryJob = { kind: 'w9_request', channel: 'sms', firmId: opts.firmId, to: opts.mobile, templateKey: 'w9_request', vars, w9RequestId: created.id };
     await getQueue(QUEUE_NAMES.delivery).add('w9_request', job);
   }
+  // Tax1099 add-on: firms filing through Tax1099 can also collect the W-9 via
+  // Zenwork's hosted flow. Best-effort — our own request above is the source of truth.
+  if (firm?.filingProvider === 'tax1099' && firm.tax1099ApiKeyEncrypted) {
+    try {
+      const { buildTax1099Client } = await import('../services/filing.js');
+      const client = await buildTax1099Client(db, opts.firmId);
+      await client.requestW9({ name: opts.requestedName ?? '', email: opts.email, mobile: opts.mobile });
+    } catch {
+      /* non-fatal: local W-9 request still stands */
+    }
+  }
   return { id: created.id, link };
 }
 

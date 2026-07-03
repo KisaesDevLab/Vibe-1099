@@ -8,6 +8,7 @@ import { useSearchParams } from 'react-router-dom';
 import { api, ApiError, downloadBlob, formatCents, parseCentsInput } from '../api';
 import { Combobox } from '../components/Combobox';
 import { RecipientPicker } from '../components/RecipientPicker';
+import { useTaxYears } from '../components/useTaxYears';
 import { Paginator } from '../components/Paginator';
 import { useDialogs } from '../components/Dialogs';
 
@@ -42,7 +43,8 @@ export function FormsGrid() {
   const LIMIT = 250;
 
   const payerId = params.get('payerId') ?? '';
-  const taxYear = Number(params.get('taxYear') ?? 2026);
+  const { years: taxYears, current: currentYear } = useTaxYears();
+  const taxYear = Number(params.get('taxYear') ?? currentYear);
   const formType = params.get('formType') ?? 'NEC';
 
   const currentDef = useMemo(() => registry.find((r) => r.formType === formType), [registry, formType]);
@@ -194,7 +196,7 @@ export function FormsGrid() {
           <div className="field grow" style={{ position: 'relative' }}><label>Payer (type to search {payers.length})</label>
             <Combobox options={payers.map((p) => ({ value: p.id, label: p.legalName }))} value={payerId} onChange={(v) => setParam('payerId', v)} placeholder="Search payers…" /></div>
           <div className="field"><label>Tax year</label>
-            <select value={taxYear} onChange={(e) => setParam('taxYear', e.target.value)}><option value={2026}>2026</option><option value={2025}>2025</option></select></div>
+            <select value={taxYear} onChange={(e) => setParam('taxYear', e.target.value)}>{taxYears.map((y) => <option key={y} value={y}>{y}</option>)}</select></div>
           <div className="field"><label>Form type</label>
             <select value={formType} onChange={(e) => setParam('formType', e.target.value)}>
               {registry.map((r) => <option key={r.formType} value={r.formType}>1099-{r.formType}</option>)}

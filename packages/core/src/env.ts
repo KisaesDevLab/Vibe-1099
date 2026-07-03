@@ -26,12 +26,17 @@ const zEnv = z.object({
   LICENSE_REQUIRED: z.coerce.number().int().default(0),
   LICENSE_SERVER_URL: z.string().default('https://licensing.kisaes.com'),
 
+  // appliance-level email default (firms can override in Settings). 'env' resolves
+  // to SMTP if SMTP_HOST is set, else EmailIt if EMAILIT_API_KEY is set, else null.
+  EMAIL_PROVIDER: z.enum(['auto', 'smtp', 'emailit', 'none']).default('auto'),
   SMTP_HOST: z.string().default(''),
   SMTP_PORT: z.coerce.number().int().default(587),
   SMTP_USER: z.string().default(''),
   SMTP_PASS: z.string().default(''),
   SMTP_FROM: z.string().default('Vibe 1099 <no-reply@localhost>'),
   SMTP_SECURE: z.coerce.number().int().default(0),
+  EMAILIT_API_KEY: z.string().default(''),
+  EMAILIT_FROM: z.string().default(''),
 
   SMS_PROVIDER: z.enum(['none', 'textlink', 'twilio']).default('none'),
   TEXTLINK_API_KEY: z.string().default(''),
@@ -42,6 +47,12 @@ const zEnv = z.object({
   IRIS_ATS_BASE_URL: z.string().default('https://la.alt.www4.irs.gov/iris'),
   IRIS_PROD_BASE_URL: z.string().default('https://la.www4.irs.gov/iris'),
   IRIS_MOCK_BASE_URL: z.string().default(''),
+
+  // Tax1099 (Zenwork) managed-filing backend — used when a firm/payer selects
+  // provider 'tax1099'. Point *_MOCK_BASE_URL at the mock server for testing.
+  TAX1099_SANDBOX_BASE_URL: z.string().default('https://api.sandbox.tax1099.com'),
+  TAX1099_PROD_BASE_URL: z.string().default('https://api.tax1099.com'),
+  TAX1099_MOCK_BASE_URL: z.string().default(''),
 
   // Number of trusted reverse-proxy hops in front of the API (Express trust proxy).
   // Per-IP rate limiting keys on the resolved client IP, so this MUST match the

@@ -7,6 +7,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../api';
 import { useDialogs } from '../components/Dialogs';
+import { useTaxYears } from '../components/useTaxYears';
 
 interface SavedView { id: string; name: string; config: { sort?: string; dir?: number; filter?: string; search?: string } }
 
@@ -29,6 +30,8 @@ type FilterKey = 'all' | 'rejects' | 'unfiled' | 'undelivered';
 
 export function Dashboard() {
   const [taxYear, setTaxYear] = useState(CURRENT_TY);
+  const { years: taxYears, current: currentYear } = useTaxYears();
+  useEffect(() => { setTaxYear(currentYear); }, [currentYear]);
   const [season, setSeason] = useState<{ progress: Progress[]; deadlines: Record<string, string>; yearLocked: boolean } | null>(null);
   const [deadlines, setDeadlines] = useState<{ deadlines: Record<string, { date: string; note: string }>; counts: Record<string, number> } | null>(null);
   const [inbox, setInbox] = useState<{ total: number; counts: Record<string, number> } | null>(null);
@@ -105,7 +108,7 @@ export function Dashboard() {
         <h1>Season dashboard — TY{taxYear}</h1>
         <div className="field" style={{ minWidth: 100 }}>
           <label>Tax year</label>
-          <select value={taxYear} onChange={(e) => setTaxYear(Number(e.target.value))}><option value={2026}>2026</option><option value={2025}>2025</option></select>
+          <select value={taxYear} onChange={(e) => setTaxYear(Number(e.target.value))}>{taxYears.map((y) => <option key={y} value={y}>{y}</option>)}</select>
         </div>
       </div>
 

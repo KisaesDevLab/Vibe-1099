@@ -40,8 +40,12 @@
   font-weight: bold;
   vertical-align: middle;
 }
-.instructions { page-break-before: always; font-size: 7.5pt; line-height: 1.35; column-count: 2; column-gap: 0.25in; }
-.instructions h2 { font-size: 9pt; margin-bottom: 4pt; }
-.instructions h3 { font-size: 8pt; margin: 6pt 0 2pt; }
+/* Instructions flow directly under the form on the SAME page (single-page Copy B).
+   Tightened to fit one letter page: small font, condensed leading, minimal margins. */
+.instructions { margin-top: 6pt; padding-top: 4pt; border-top: 0.75pt solid #000; font-size: 6pt; line-height: 1.15; column-count: 2; column-gap: 0.2in; }
+.instructions p { margin: 0 0 2pt; }
+.instructions h2 { font-size: 7.5pt; margin: 0 0 2pt; }
+.instructions h3 { font-size: 6.5pt; margin: 3pt 0 1pt; }
+.instructions .tiny { font-size: 5.25pt; }
 .boxes-2col { display: grid; grid-template-columns: 1fr 1fr; }
 .boxes-3col { display: grid; grid-template-columns: 1fr 1fr 1fr; }

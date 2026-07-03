@@ -33,7 +33,12 @@ function addressLines(addr: Record<string, string>): string[] {
   return lines.filter(Boolean);
 }
 
-export async function buildFormPayload(db: Db, firmId: string, formRecordId: string) {
+export async function buildFormPayload(
+  db: Db,
+  firmId: string,
+  formRecordId: string,
+  opts: { maskPayerTin?: boolean } = {},
+) {
   const record = await db.query.formRecords.findFirst({
     where: and(eq(formRecords.id, formRecordId), eq(formRecords.firmId, firmId)),
   });
@@ -103,7 +108,9 @@ export async function buildFormPayload(db: Db, firmId: string, formRecordId: str
       payer: {
         name: payer.dbaName || payer.legalName,
         address_lines: addressLines(payer.address),
-        tin_display: formatTin(payerTin, payer.tinType), // payer TIN in full per Pub 1179
+        // payer TIN full per Pub 1179 on firm/staff output; truncated on the
+        // client-portal substitute copy (opts.maskPayerTin) for privacy
+        tin_display: opts.maskPayerTin ? maskTin(payerTin, payer.tinType) : formatTin(payerTin, payer.tinType),
         phone: payer.phone,
       },
       recipient: {
@@ -125,6 +132,21 @@ export async function renderPortalPdf(db: Db, firmId: string, formRecordId: stri
   return getRenderClient().render({
     template: 'copy_b.html',
     data: { form: payload.form, instructions_key: payload.instructions_key },
+  });
+}
+
+/**
+ * Client-portal substitute Copy B: payer AND recipient TINs both truncated for
+ * privacy (the client prints this themselves). Clearly labelled a substitute.
+ */
+export async function renderSubstitutePdf(db: Db, firmId: string, formRecordId: string): Promise<Buffer> {
+  const payload = await buildFormPayload(db, firmId, formRecordId, { maskPayerTin: true });
+  return getRenderClient().render({
+    template: 'copy_b.html',
+    data: {
+      form: { ...payload.form, copy_label: 'Copy B — Substitute (For Recipient)' },
+      instructions_key: payload.instructions_key,
+    },
   });
 }
 

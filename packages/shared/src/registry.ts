@@ -332,27 +332,55 @@ function divDef(taxYear: number): FormDef {
 
 // ---------------------------------------------------------------------------
 
+/** Baseline years shipped with the build; admins can roll forward to new years. */
 export const SUPPORTED_TAX_YEARS = [2025, 2026] as const;
+/** Earliest year the parameterized layouts are valid for (guards typo'd years). */
+export const MIN_TAX_YEAR = 2025;
+/** Furthest ahead an admin may roll the filing year (sanity bound). */
+export const MAX_TAX_YEAR = 2035;
 
 const REGISTRY = new Map<string, FormDef>();
+
+function buildDef(formType: FormType, taxYear: number): FormDef {
+  switch (formType) {
+    case 'NEC':
+      return necDef(taxYear);
+    case 'MISC':
+      return miscDef(taxYear);
+    case 'INT':
+      return intDef(taxYear);
+    case 'DIV':
+      return divDef(taxYear);
+  }
+}
+
 for (const ty of SUPPORTED_TAX_YEARS) {
-  for (const def of [necDef(ty), miscDef(ty), intDef(ty), divDef(ty)]) {
-    REGISTRY.set(`${def.formType}:${def.taxYear}`, def);
+  for (const ft of FORM_TYPES) {
+    REGISTRY.set(`${ft}:${ty}`, buildDef(ft, ty));
   }
 }
 
 export function getFormDef(formType: FormType, taxYear: number): FormDef {
-  const def = REGISTRY.get(`${formType}:${taxYear}`);
-  if (!def) throw new Error(`Unsupported form/year: ${formType} TY${taxYear}`);
+  const key = `${formType}:${taxYear}`;
+  let def = REGISTRY.get(key);
+  if (!def) {
+    // Layouts are parameterized by year, so any in-range year rolls forward from
+    // the same definitions (thresholds branch on year internally). Build + cache.
+    if (taxYear < MIN_TAX_YEAR || taxYear > MAX_TAX_YEAR) {
+      throw new Error(`Unsupported form/year: ${formType} TY${taxYear}`);
+    }
+    def = buildDef(formType, taxYear);
+    REGISTRY.set(key, def);
+  }
   return def;
 }
 
 export function listFormDefs(taxYear: number): FormDef[] {
-  return FORM_TYPES.map((ft) => REGISTRY.get(`${ft}:${taxYear}`)).filter((d): d is FormDef => !!d);
+  return FORM_TYPES.map((ft) => getFormDef(ft, taxYear));
 }
 
 export function isSupportedYear(taxYear: number): boolean {
-  return (SUPPORTED_TAX_YEARS as readonly number[]).includes(taxYear);
+  return taxYear >= MIN_TAX_YEAR && taxYear <= MAX_TAX_YEAR;
 }
 
 /** Pub 1220 A-record Amount Codes string: sorted 0-9 then A-Z, from box moAmountCode values. */

@@ -6,15 +6,20 @@
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { AppError, ErrorCodes, maskTin, type FormType } from '@vibe1099/shared';
 import {
+  buildTax1099Payload,
   buildTransmissionXml,
   generateUtid,
   getCrypto,
+  preSubmitCheck,
   preTransmitCheck,
   putBlob,
+  type FilingProviderKind,
   type IrisFormRecord,
   type IrisTransmissionInput,
 } from '@vibe1099/core';
+import { randomUUID } from 'node:crypto';
 import { firms, formRecords, getDb, payers, recipients, statesConfig, transmissions, type Db } from '@vibe1099/db';
+import { loadTax1099Config, resolveProviderKind } from './filing.js';
 
 export interface IrisFirmConfig {
   tcc: string;
@@ -57,7 +62,16 @@ export async function composeTransmission(
   const firm = await db.query.firms.findFirst({ where: eq(firms.id, firmId) });
   const payer = await db.query.payers.findFirst({ where: and(eq(payers.id, payerId), eq(payers.firmId, firmId)) });
   if (!firm || !payer) throw AppError.notFound('Payer');
-  const config = await loadIrisConfig(db, firmId);
+
+  // provider selection (per-payer override → firm default). IRIS needs a TCC/JWK;
+  // Tax1099 needs only the firm's app key, so the payer never registers with IRS.
+  const provider: FilingProviderKind = await resolveProviderKind(db, firmId, payerId);
+  const irisConfig = provider === 'iris' ? await loadIrisConfig(db, firmId) : null;
+  const tax1099Config = provider === 'tax1099' ? await loadTax1099Config(db, firmId) : null;
+  // reuse the environment column: sandbox↔ATS, production↔PROD (provider disambiguates)
+  const environment: 'ATS' | 'PROD' =
+    provider === 'iris' ? irisConfig!.environment : tax1099Config!.environment === 'production' ? 'PROD' : 'ATS';
+  const tcc = irisConfig?.tcc ?? '';
 
   const conds = [
     eq(formRecords.firmId, firmId),
@@ -121,15 +135,16 @@ export async function composeTransmission(
     };
   });
 
-  const utid = generateUtid(config.tcc, config.environment);
+  // idempotency id: IRIS uses the Pub 5718 UTID; Tax1099 gets a stable submission ref
+  const utid = provider === 'iris' ? generateUtid(tcc, environment) : `T99-${randomUUID()}`;
   const payerTin = crypto.decrypt(payer.tinEncrypted);
   const input: IrisTransmissionInput = {
     utid,
-    tcc: config.tcc,
+    tcc,
     taxYear,
-    environment: config.environment,
+    environment,
     transmitter: {
-      tcc: config.tcc,
+      tcc,
       tin: firm.ein.replace(/\D/g, ''),
       tinType: 'EIN',
       name1: firm.name,
@@ -160,19 +175,32 @@ export async function composeTransmission(
     isCorrection: !!opts.isCorrection,
   };
 
-  const problems = preTransmitCheck(input);
-  if (problems.length) {
-    throw AppError.validation('Pre-transmit checks failed', problems);
+  // Build the provider payload + run its pre-checks, then stash it in a blob the
+  // worker will send. IRIS → XML (Pub 5718); Tax1099 → JSON form model.
+  let xmlBlobId: string;
+  if (provider === 'iris') {
+    const problems = preTransmitCheck(input);
+    if (problems.length) throw AppError.validation('Pre-transmit checks failed', problems);
+    const xml = buildTransmissionXml(input);
+    xmlBlobId = await putBlob(db, {
+      firmId,
+      kind: 'iris_xml',
+      contentType: 'application/xml',
+      filename: `${utid}.xml`,
+      bytes: Buffer.from(xml, 'utf8'),
+    });
+  } else {
+    const payload = buildTax1099Payload(input, tax1099Config!.environment);
+    const problems = preSubmitCheck(payload);
+    if (problems.length) throw AppError.validation('Pre-submit checks failed', problems);
+    xmlBlobId = await putBlob(db, {
+      firmId,
+      kind: 'tax1099_payload',
+      contentType: 'application/json',
+      filename: `${utid}.json`,
+      bytes: Buffer.from(JSON.stringify(payload), 'utf8'),
+    });
   }
-
-  const xml = buildTransmissionXml(input);
-  const xmlBlobId = await putBlob(db, {
-    firmId,
-    kind: 'iris_xml',
-    contentType: 'application/xml',
-    filename: `${utid}.xml`,
-    bytes: Buffer.from(xml, 'utf8'),
-  });
 
   // CLAIM the records atomically to prevent a double-file race (concurrent
   // transmit-all + single transmit, or a double-click). An advisory xact lock
@@ -195,7 +223,8 @@ export async function composeTransmission(
       .values({
         firmId,
         taxYear,
-        environment: config.environment,
+        provider,
+        environment,
         utid,
         status: 'building',
         isCorrection: !!opts.isCorrection,

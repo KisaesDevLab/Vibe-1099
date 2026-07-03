@@ -8,10 +8,11 @@ import { and, desc, eq, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { AppError, deadlinesFor, zTaxYear } from '@vibe1099/shared';
 import { generateJwkPair, getBlob, getCrypto, getQueue, QUEUE_NAMES, type IrisTransmitJob } from '@vibe1099/core';
-import { errorTranslations, firms, formRecords, getDb, transmissions } from '@vibe1099/db';
+import { errorTranslations, firms, formRecords, getDb, recipients, transmissions } from '@vibe1099/db';
 import { h } from '../middleware/error.js';
 import { requireStaff } from '../middleware/auth.js';
 import { composeTransmission } from '../services/iris.js';
+import { buildTax1099Client } from '../services/filing.js';
 
 export const irisRouter = Router();
 irisRouter.use(requireStaff());
@@ -30,6 +31,11 @@ irisRouter.get(
       hasJwk: !!firm.irisJwkEncrypted,
       publicJwk: firm.irisJwkPublic,
       environment: firm.irisEnvironment,
+      // filing backend
+      filingProvider: firm.filingProvider,
+      tax1099Environment: firm.tax1099Environment,
+      tax1099Mailing: firm.tax1099Mailing,
+      hasTax1099Key: !!firm.tax1099ApiKeyEncrypted,
     });
   }),
 );
@@ -44,12 +50,23 @@ irisRouter.put(
         apiClientId: z.string().max(100).optional(),
         environment: z.enum(['ATS', 'PROD']).optional(),
         privateJwk: z.record(z.unknown()).optional(), // upload existing JWK
+        // filing backend
+        filingProvider: z.enum(['iris', 'tax1099']).optional(),
+        tax1099ApiKey: z.string().max(500).optional(),
+        tax1099Environment: z.enum(['sandbox', 'production']).optional(),
+        tax1099Mailing: z.boolean().optional(),
       })
       .parse(req.body);
     const patch: Record<string, unknown> = { updatedAt: new Date() };
     if (input.tcc !== undefined) patch['irisTcc'] = input.tcc.toUpperCase();
     if (input.apiClientId !== undefined) patch['irisApiClientId'] = input.apiClientId;
     if (input.environment !== undefined) patch['irisEnvironment'] = input.environment;
+    if (input.filingProvider !== undefined) patch['filingProvider'] = input.filingProvider;
+    if (input.tax1099Environment !== undefined) patch['tax1099Environment'] = input.tax1099Environment;
+    if (input.tax1099Mailing !== undefined) patch['tax1099Mailing'] = input.tax1099Mailing;
+    if (input.tax1099ApiKey !== undefined && input.tax1099ApiKey !== '') {
+      patch['tax1099ApiKeyEncrypted'] = getCrypto().encrypt(input.tax1099ApiKey);
+    }
     if (input.privateJwk) {
       patch['irisJwkEncrypted'] = getCrypto().encrypt(JSON.stringify(input.privateJwk));
       // derive public JWK (strip private members)
@@ -105,6 +122,31 @@ irisRouter.post(
     await getQueue(QUEUE_NAMES.iris).add('transmit', job);
     res.locals['audit'] = { action: 'iris.transmit', entityType: 'transmission', entityId: result.transmissionId, detail: { recordCount: result.recordCount } };
     res.status(202).json(result);
+  }),
+);
+
+/**
+ * Real-time IRS TIN/name matching via Tax1099 (Phase 2 add-on). Decrypts the
+ * recipient TIN server-side; only the match verdict crosses back to the client.
+ */
+irisRouter.post(
+  '/tin-match',
+  h(async (req, res) => {
+    const { recipientId } = z.object({ recipientId: z.string().uuid() }).parse(req.body);
+    const db = getDb();
+    const recip = await db.query.recipients.findFirst({
+      where: and(eq(recipients.id, recipientId), eq(recipients.firmId, req.staff!.firmId)),
+    });
+    if (!recip) throw AppError.notFound('Recipient');
+    const client = await buildTax1099Client(db, req.staff!.firmId);
+    const tin = getCrypto().decrypt(recip.tinEncrypted);
+    const result = await client.tinMatch(tin, recip.name1, recip.tinType);
+    // reflect a mismatch onto the recipient's W-9 status so staff see it in-grid
+    if (!result.match && recip.w9Status !== 'requested') {
+      await db.update(recipients).set({ w9Status: 'stale', updatedAt: new Date() }).where(eq(recipients.id, recip.id));
+    }
+    res.locals['audit'] = { action: 'tax1099.tin-match', entityType: 'recipient', entityId: recip.id, detail: { match: result.match } };
+    res.json(result);
   }),
 );
 

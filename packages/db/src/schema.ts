@@ -41,6 +41,12 @@ export const firms = pgTable('firms', {
   irisJwkEncrypted: text('iris_jwk_encrypted'), // private JWK, envelope-encrypted
   irisJwkPublic: jsonb('iris_jwk_public').$type<Record<string, unknown>>(),
   irisEnvironment: text('iris_environment').notNull().default('ATS'), // ATS | PROD
+  // filing backend: 'iris' (firm is transmitter, needs TCC) | 'tax1099' (Zenwork
+  // files on the payer's behalf, no TCC). Default provider for the firm's payers.
+  filingProvider: text('filing_provider').notNull().default('iris').$type<'iris' | 'tax1099'>(),
+  tax1099ApiKeyEncrypted: text('tax1099_api_key_encrypted'), // Tax1099 app key, envelope-encrypted
+  tax1099Environment: text('tax1099_environment').notNull().default('sandbox').$type<'sandbox' | 'production'>(),
+  tax1099Mailing: boolean('tax1099_mailing').notNull().default(false), // let Tax1099 USPS-mail recipient copies
   // Missouri
   moWithholdingId: text('mo_withholding_id').notNull().default(''),
   // delivery config
@@ -102,6 +108,8 @@ export const payers = pgTable('payers', {
   contactEmail: text('contact_email'),
   contactMobile: text('contact_mobile'),
   moWithholdingId: text('mo_withholding_id'), // nullable
+  // per-payer override of the firm's default filing backend (null = inherit firm)
+  filingProviderOverride: text('filing_provider_override').$type<'iris' | 'tax1099'>(),
   moSourceDefault: boolean('mo_source_default').notNull().default(false),
   defaultFormTypes: jsonb('default_form_types').notNull().default(['NEC']).$type<string[]>(),
   active: boolean('active').notNull().default(true),
@@ -239,8 +247,10 @@ export const transmissions = pgTable('transmissions', {
     .references(() => firms.id),
   taxYear: integer('tax_year').notNull(),
   environment: text('environment').notNull().$type<'ATS' | 'PROD'>(),
-  utid: text('utid').notNull(), // unique transmission id (idempotency guard)
-  receiptId: text('receipt_id'),
+  // filing backend that owns this transmission (worker dispatches accordingly)
+  provider: text('provider').notNull().default('iris').$type<'iris' | 'tax1099'>(),
+  utid: text('utid').notNull(), // unique transmission id / submission ref (idempotency guard)
+  receiptId: text('receipt_id'), // IRIS Receipt ID or Tax1099 submission id
   status: text('status')
     .notNull()
     .default('building')

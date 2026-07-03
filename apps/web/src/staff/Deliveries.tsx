@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useState } from 'react';
 import { api, ApiError } from '../api';
 import { EntityPicker } from '../components/EntityPicker';
+import { useTaxYears } from '../components/useTaxYears';
 
 interface Pending { undeliveredElectronic: string[]; accepted: string[] }
 
@@ -26,6 +27,8 @@ export function Deliveries() {
   const [payers, setPayers] = useState<Payer[]>([]);
   const [payerIds, setPayerIds] = useState<string[]>([]);
   const [taxYear, setTaxYear] = useState(2026);
+  const { years: taxYears, current: currentYear } = useTaxYears();
+  useEffect(() => { setTaxYear(currentYear); }, [currentYear]);
   const [pending, setPending] = useState<Pending | null>(null);
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
@@ -79,7 +82,7 @@ export function Deliveries() {
         <div className="row">
           <div className="field"><label>Tax year</label>
             <select value={taxYear} onChange={(e) => setTaxYear(Number(e.target.value))}>
-              <option value={2026}>2026</option><option value={2025}>2025</option>
+              {taxYears.map((y) => <option key={y} value={y}>{y}</option>)}
             </select></div>
           <div className="field grow">
             <label>Payers <span className="muted">(search & add, or “add all …”)</span></label>

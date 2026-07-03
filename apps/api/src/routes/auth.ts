@@ -251,21 +251,52 @@ authRouter.patch(
   '/users/:id',
   requireStaff('admin'),
   h(async (req, res) => {
-    const patch = z
-      .object({ name: z.string().min(1).max(120).optional(), role: zUserRole.optional(), active: z.boolean().optional() })
+    const input = z
+      .object({
+        name: z.string().min(1).max(120).optional(),
+        email: zEmail.optional(),
+        role: zUserRole.optional(),
+        active: z.boolean().optional(),
+      })
       .parse(req.body);
     const db = getDb();
     const id = z.string().uuid().parse(req.params['id']);
-    await db
-      .update(users)
-      .set(patch)
-      .where(and(eq(users.id, id), eq(users.firmId, req.staff!.firmId)));
-    // a deactivation or role change must take effect immediately: drop the
+    const target = await db.query.users.findFirst({ where: and(eq(users.id, id), eq(users.firmId, req.staff!.firmId)) });
+    if (!target) throw AppError.notFound('User');
+    const patch: Record<string, unknown> = { ...input };
+    if (input.email !== undefined) patch['email'] = input.email.toLowerCase();
+    try {
+      await db.update(users).set(patch).where(and(eq(users.id, id), eq(users.firmId, req.staff!.firmId)));
+    } catch (err) {
+      // unique(firm_id, email) violation → friendly conflict
+      if (String((err as Error).message).includes('users_email_uq')) {
+        throw AppError.conflict('Another user already uses that email');
+      }
+      throw err;
+    }
+    // a deactivation, role, or email change must take effect immediately: drop the
     // target user's live sessions so the change can't be outrun by a stale session
-    if (patch.active === false || patch.role !== undefined) {
+    if (input.active === false || input.role !== undefined || input.email !== undefined) {
       await destroyAllUserSessions(id);
     }
-    res.locals['audit'] = { action: 'user.update', entityType: 'user', entityId: id, detail: patch };
+    res.locals['audit'] = { action: 'user.update', entityType: 'user', entityId: id, detail: input };
+    res.json({ ok: true });
+  }),
+);
+
+/** Admin sets a new password for a user (all their sessions are dropped). */
+authRouter.post(
+  '/users/:id/reset-password',
+  requireStaff('admin'),
+  h(async (req, res) => {
+    const { password } = z.object({ password: z.string().min(12).max(200) }).parse(req.body);
+    const db = getDb();
+    const id = z.string().uuid().parse(req.params['id']);
+    const target = await db.query.users.findFirst({ where: and(eq(users.id, id), eq(users.firmId, req.staff!.firmId)) });
+    if (!target) throw AppError.notFound('User');
+    await db.update(users).set({ passwordHash: await argonHash(password, ARGON_OPTS) }).where(eq(users.id, id));
+    await destroyAllUserSessions(id);
+    res.locals['audit'] = { action: 'user.reset-password', entityType: 'user', entityId: id };
     res.json({ ok: true });
   }),
 );

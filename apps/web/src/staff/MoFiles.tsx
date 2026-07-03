@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useState } from 'react';
 import { api, ApiError, downloadBlob } from '../api';
 import { EntityPicker } from '../components/EntityPicker';
+import { useTaxYears } from '../components/useTaxYears';
 import { useDialogs } from '../components/Dialogs';
 
 interface StateFile {
@@ -33,6 +34,8 @@ export function MoFiles() {
   const [payers, setPayers] = useState<Payer[]>([]);
   const [payerIds, setPayerIds] = useState<string[]>([]);
   const [taxYear, setTaxYear] = useState(2026);
+  const { years: taxYears, current: currentYear } = useTaxYears();
+  useEffect(() => { setTaxYear(currentYear); }, [currentYear]);
   const [includeBelowThreshold, setIncludeBelowThreshold] = useState(false);
   const [preview, setPreview] = useState<PreviewRow[] | null>(null);
   const [guidance, setGuidance] = useState<Record<string, string> | null>(null);
@@ -99,7 +102,7 @@ export function MoFiles() {
         <div className="row">
           <div className="field"><label>Tax year</label>
             <select value={taxYear} onChange={(e) => setTaxYear(Number(e.target.value))}>
-              <option value={2026}>2026</option><option value={2025}>2025</option>
+              {taxYears.map((y) => <option key={y} value={y}>{y}</option>)}
             </select></div>
           <div className="field">
             <label>$1,200 threshold</label>
