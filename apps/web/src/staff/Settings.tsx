@@ -409,6 +409,7 @@ export function Settings() {
             </div>
           )}
 
+          {iris.filingProvider === 'iris' && (<>
           <h2>IRIS A2A (self-file)</h2>
           <div className="row">
             <div className="field"><label>TCC (Transmitter Control Code)</label><input value={iris.tcc} onChange={(e) => setIris({ ...iris, tcc: e.target.value })} /></div>
@@ -436,6 +437,7 @@ export function Settings() {
             <li>Pass ATS communication/scenario testing in ATS mode</li>
             <li>IRS flips the TCC to Production → switch the environment above</li>
           </ol>
+          </>)}
           <h2>Federal filing thresholds (warn-only, per form type & year)</h2>
           <p className="muted">Amounts below the threshold warn but never block (LOCKED decision). Blank = registry default (TY2026+ NEC/MISC: $2,000 per OBBBA; earlier years: $600). Rows follow your enabled filing years.</p>
           <table className="grid" style={{ maxWidth: 460 }}>
