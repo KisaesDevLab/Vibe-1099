@@ -7,7 +7,7 @@ import { Router } from 'express';
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { AppError, zFormType, zTaxYear } from '@vibe1099/shared';
-import { deleteBlob, getBlob, getQueue, QUEUE_NAMES, type RenderBatchJob } from '@vibe1099/core';
+import { deleteBlob, getBlob, getQueue, getRenderClient, QUEUE_NAMES, type RenderBatchJob } from '@vibe1099/core';
 import { deliveries, formRecords, getDb, paperBatches, payers, recipients } from '@vibe1099/db';
 import { h } from '../middleware/error.js';
 import { requireStaff } from '../middleware/auth.js';
@@ -143,6 +143,28 @@ batchesRouter.get(
     const formId = z.string().uuid().parse(req.params['formId']);
     const pdf = await renderPortalPdf(getDb(), req.staff!.firmId, formId);
     res.type('application/pdf').send(pdf);
+  }),
+);
+
+/** Batch print: merge selected forms' Copy B PDFs into one printable PDF. */
+batchesRouter.post(
+  '/print',
+  h(async (req, res) => {
+    const { formRecordIds } = z.object({ formRecordIds: z.array(z.string().uuid()).min(1).max(500) }).parse(req.body);
+    const db = getDb();
+    // scope to the firm + keep a stable order (recipient name)
+    const owned = await db
+      .select({ id: formRecords.id })
+      .from(formRecords)
+      .innerJoin(recipients, eq(recipients.id, formRecords.recipientId))
+      .where(and(eq(formRecords.firmId, req.staff!.firmId), inArray(formRecords.id, formRecordIds)))
+      .orderBy(recipients.name1);
+    if (!owned.length) throw AppError.notFound('Forms');
+    const pdfs: Buffer[] = [];
+    for (const f of owned) pdfs.push(await renderPortalPdf(db, req.staff!.firmId, f.id));
+    const merged = pdfs.length === 1 ? pdfs[0]! : await getRenderClient().merge(pdfs);
+    res.locals['audit'] = { action: 'forms.batch-print', entityType: 'form_record', detail: { count: owned.length } };
+    res.type('application/pdf').send(merged);
   }),
 );
 

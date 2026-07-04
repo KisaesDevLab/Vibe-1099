@@ -124,14 +124,29 @@ export function FormsGrid() {
     }
   };
 
+  // Accepted / accepted-with-errors / corrected forms are terminal — their status
+  // can only change through the correction path, so exclude them from status moves.
+  const isTerminal = (s: string) => ['accepted', 'accepted_with_errors', 'corrected'].includes(s);
+
   const bulkStatus = async (to: 'ready' | 'queued' | 'draft') => {
-    const ids = [...selected];
-    if (!ids.length) return setError('Select rows first');
+    const ids = rows.filter((r) => selected.has(r.id) && !isTerminal(r.status)).map((r) => r.id);
+    if (!ids.length) return setError('Select forms that aren’t already accepted — accepted forms change only via a correction.');
     const r = await api.post<{ results: Array<{ id: string; ok: boolean; error?: string }> }>('/api/forms/bulk-status', { ids, to });
     const failed = r.results.filter((x) => !x.ok);
     setNotice(`${r.results.length - failed.length} moved to ${to}${failed.length ? `; ${failed.length} failed: ${failed[0]?.error}` : ''}`);
     setSelected(new Set());
     load();
+  };
+
+  const printSelected = async () => {
+    const ids = [...selected];
+    if (!ids.length) return setError('Select rows to print.');
+    try {
+      const blob = await api.post<Blob>('/api/batches/print', { formRecordIds: ids });
+      downloadBlob(blob, `1099-${formType}-${taxYear}-print.pdf`);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : String(err));
+    }
   };
 
   const transmit = async () => {
@@ -213,10 +228,17 @@ export function FormsGrid() {
           <button className="secondary" onClick={rollforward}>Rollforward TY{taxYear - 1}</button>
           <div className="spacer" />
           <span className="group-label">Filing {selected.size > 0 ? `(${selected.size} selected)` : ''}</span>
-          <button className="secondary" disabled={!selected.size} onClick={() => bulkStatus('ready')}>Mark ready</button>
-          <button className="secondary" disabled={!selected.size} onClick={() => bulkStatus('queued')}>Queue</button>
-          <button className="secondary" disabled={!selected.size} onClick={() => bulkStatus('draft')}>↩ Draft</button>
-          <button onClick={transmit} title="Transmit this payer's queued records to the IRS">Transmit queued →</button>
+          {(() => {
+            const selectedActionable = rows.some((r) => selected.has(r.id) && !isTerminal(r.status));
+            const hasQueued = rows.some((r) => r.status === 'queued');
+            return (<>
+              <button className="secondary" disabled={!selectedActionable} onClick={() => bulkStatus('ready')} title={!selectedActionable ? 'Accepted forms can’t change status' : ''}>Mark ready</button>
+              <button className="secondary" disabled={!selectedActionable} onClick={() => bulkStatus('queued')}>Queue</button>
+              <button className="secondary" disabled={!selectedActionable} onClick={() => bulkStatus('draft')}>↩ Draft</button>
+              <button className="secondary" disabled={!selected.size} onClick={printSelected} title="Print the selected forms (Copy B) as one PDF">🖨 Print selected</button>
+              <button disabled={!hasQueued} onClick={transmit} title={hasQueued ? "Transmit this payer's queued records to the IRS" : 'No queued records to transmit'}>Transmit queued →</button>
+            </>);
+          })()}
         </div>
       </div>
 
