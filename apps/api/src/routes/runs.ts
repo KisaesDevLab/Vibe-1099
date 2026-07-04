@@ -10,7 +10,7 @@ import { getBlob } from '@vibe1099/core';
 import { filingRuns, getDb } from '@vibe1099/db';
 import { h } from '../middleware/error.js';
 import { requireStaff } from '../middleware/auth.js';
-import { fleetEligibility, getRun, previewMo, previewTransmit, retryRun, runSummaryAll, runTransmitAll, type RunScope } from '../services/filing-runs.js';
+import { fleetEligibility, getRun, previewMo, previewTransmit, retryRun, runArchiveAll, runSummaryAll, runTransmitAll, type RunScope } from '../services/filing-runs.js';
 
 export const runsRouter = Router();
 runsRouter.use(requireStaff());
@@ -57,6 +57,17 @@ runsRouter.post(
     const scope = zScope.parse(req.body) as RunScope;
     const runId = await runSummaryAll(getDb(), req.staff!.firmId, scope, req.staff!.userId);
     res.locals['audit'] = { action: 'run.summary-all', entityType: 'filing_run', entityId: runId, detail: { payers: scope.payerIds.length } };
+    res.status(202).json({ runId });
+  }),
+);
+
+/** Execute archive-all: one PDF per payer (summary + forms) bundled into a ZIP. */
+runsRouter.post(
+  '/archive',
+  h(async (req, res) => {
+    const scope = zScope.parse(req.body) as RunScope;
+    const runId = await runArchiveAll(getDb(), req.staff!.firmId, scope, req.staff!.userId);
+    res.locals['audit'] = { action: 'run.archive-all', entityType: 'filing_run', entityId: runId, detail: { payers: scope.payerIds.length } };
     res.status(202).json({ runId });
   }),
 );
@@ -119,7 +130,9 @@ runsRouter.get(
     if (!run?.resultBlobId) throw AppError.notFound('Run result');
     const blob = await getBlob(getDb(), run.resultBlobId, req.staff!.firmId);
     if (!blob) throw AppError.notFound('Run result blob');
-    res.setHeader('content-disposition', `attachment; filename="filing-summaries-${run.taxYear}.pdf"`);
-    res.type('application/pdf').send(blob.bytes);
+    // use the blob's stored filename + content-type (PDF for summaries, ZIP for archives)
+    const filename = blob.filename || `run-${run.kind}-${run.taxYear}`;
+    res.setHeader('content-disposition', `attachment; filename="${filename}"`);
+    res.type(blob.contentType || 'application/octet-stream').send(blob.bytes);
   }),
 );

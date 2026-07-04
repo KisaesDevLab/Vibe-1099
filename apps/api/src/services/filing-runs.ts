@@ -14,10 +14,10 @@ import { AppError, formatCents } from '@vibe1099/shared';
 import { getQueue, getRenderClient, notify, putBlob, QUEUE_NAMES, type IrisTransmitJob } from '@vibe1099/core';
 import { clientInvites, filingRuns, formRecords, getDb, payers, recipients, type Db } from '@vibe1099/db';
 import { composeTransmission } from './iris.js';
-import { renderPayerSummaryIfAny } from './reports.js';
+import { renderPayerArchive, renderPayerSummaryIfAny } from './reports.js';
 import { getSetting } from './settings.js';
 
-export type RunKind = 'transmit' | 'mo_file' | 'paper_batch' | 'summary_zip' | 'invite' | 'w9';
+export type RunKind = 'transmit' | 'mo_file' | 'paper_batch' | 'summary_zip' | 'archive_zip' | 'invite' | 'w9';
 
 export interface RunItem {
   payerId?: string;
@@ -117,7 +117,7 @@ async function finishRun(db: Db, runId: string, firmId: string, kind: RunKind, i
 }
 
 function kindLabel(kind: RunKind): string {
-  return { transmit: 'Bulk IRS transmit', mo_file: 'Bulk MO file', paper_batch: 'Bulk paper batch', summary_zip: 'Bulk summary PDFs', invite: 'Bulk invite', w9: 'Bulk W-9 request' }[kind];
+  return { transmit: 'Bulk IRS transmit', mo_file: 'Bulk MO file', paper_batch: 'Bulk paper batch', summary_zip: 'Bulk summary PDFs', archive_zip: 'Bulk 1099 archive (ZIP)', invite: 'Bulk invite', w9: 'Bulk W-9 request' }[kind];
 }
 
 /**
@@ -219,6 +219,65 @@ export async function runSummaryAll(db: Db, firmId: string, scope: RunScope, cre
   return runId;
 }
 
+/**
+ * Archive run: one PDF per payer (summary + that payer's 1099 forms), each named
+ * YYYY_ClientName_Forms1099_ClientID.pdf, all bundled into a single ZIP for bulk
+ * download. Stored as a run blob (encrypted).
+ */
+export async function runArchiveAll(db: Db, firmId: string, scope: RunScope, createdBy: string): Promise<string> {
+  const runId = await createRun(db, firmId, 'archive_zip', scope, createdBy);
+  const items: RunItem[] = [];
+  const files: Array<{ name: string; pdf: Buffer }> = [];
+  for (const payerId of scope.payerIds) {
+    try {
+      const { hasForms, pdf, filename } = await renderPayerArchive(db, firmId, payerId, scope.taxYear);
+      if (!hasForms || !pdf) { items.push({ payerId, label: payerId, ok: true, message: 'no forms — skipped' }); continue; }
+      files.push({ name: filename, pdf });
+      items.push({ payerId, label: payerId, ok: true, message: filename });
+    } catch (err) {
+      items.push({ payerId, label: payerId, ok: false, message: err instanceof AppError ? err.message : String(err) });
+    }
+  }
+  await labelPayers(db, items);
+  let resultBlobId: string | null = null;
+  if (files.length) {
+    const zip = await getRenderClient().zip(files);
+    resultBlobId = await putBlob(db, {
+      firmId,
+      kind: 'export_zip',
+      contentType: 'application/zip',
+      filename: `1099-archive-${scope.taxYear}.zip`,
+      bytes: zip,
+      encrypt: true,
+    });
+  }
+  const succeeded = items.filter((i) => i.ok).length;
+  const failed = items.length - succeeded;
+  await db
+    .update(filingRuns)
+    .set({
+      status: failed === 0 ? 'completed' : succeeded === 0 ? 'failed' : 'partial',
+      total: items.length,
+      succeeded,
+      failed,
+      items,
+      resultBlobId,
+      resolvedAt: new Date(),
+    })
+    .where(eq(filingRuns.id, runId));
+  await notify(db, {
+    firmId,
+    kind: 'filing_run',
+    severity: failed === 0 ? 'success' : 'warning',
+    title: `1099 archive ${failed === 0 ? 'ready' : 'partial'}`,
+    body: `${files.length} payer 1099 archive(s) bundled into a ZIP.`,
+    link: '/fleet',
+    entityType: 'filing_run',
+    entityId: runId,
+  });
+  return runId;
+}
+
 export async function getRun(db: Db, firmId: string, runId: string) {
   const row = await db.query.filingRuns.findFirst({ where: and(eq(filingRuns.id, runId), eq(filingRuns.firmId, firmId)) });
   if (!row) throw AppError.notFound('Filing run');
@@ -274,6 +333,7 @@ export async function retryRun(db: Db, firmId: string, runId: string, createdBy:
   const scope: RunScope = { payerIds: [...new Set(failedPayerIds)], taxYear: run.taxYear };
   if (run.kind === 'transmit') return runTransmitAll(db, firmId, scope, createdBy, actorRole);
   if (run.kind === 'summary_zip') return runSummaryAll(db, firmId, scope, createdBy);
+  if (run.kind === 'archive_zip') return runArchiveAll(db, firmId, scope, createdBy);
   throw AppError.validation(`Retry is not supported for run kind ${run.kind}`);
 }
 

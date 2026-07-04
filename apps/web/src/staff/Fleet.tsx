@@ -81,7 +81,26 @@ export function Fleet() {
     const r = await api.post<{ requested: number; eligible: number; more: boolean }>('/api/w9/campaign', { payerIds, taxYear });
     done(`W-9 campaign: ${r.requested} sent (${r.eligible} eligible${r.more ? ', more remain — run again' : ''}).`);
   }); };
-  const downloadRun = async (r: Run) => downloadBlob(await api.get<Blob>(`/api/runs/${r.id}/download`), `filing-summaries-${r.taxYear}.pdf`);
+  const downloadRun = async (r: Run) => {
+    const name = r.kind === 'archive_zip' ? `1099-archive-${r.taxYear}.zip` : `filing-summaries-${r.taxYear}.pdf`;
+    downloadBlob(await api.get<Blob>(`/api/runs/${r.id}/download`), name);
+  };
+  const runArchive = () => { if (!guardScope()) return; return wrap(async () => {
+    if (!(await dialogs.confirm(`Build a 1099 archive for each of ${elig?.summaries.payers ?? 0} payer(s) with forms (summary + their 1099s per payer), bundled into one ZIP? Files: YYYY_ClientName_Forms1099_ClientID.pdf`, { title: 'Archive 1099s (ZIP)' }))) return;
+    const { runId } = await api.post<{ runId: string }>('/api/runs/archive', scope());
+    dialogs.toast('Building archive… the ZIP downloads automatically when ready.', 'info');
+    for (let i = 0; i < 120; i++) {
+      await new Promise((r) => setTimeout(r, 2000));
+      const { run } = await api.get<{ run: Run }>(`/api/runs/${runId}`);
+      if (['completed', 'partial', 'failed'].includes(run.status)) {
+        loadRuns(0);
+        if (run.resultBlobId) { await downloadRun(run); dialogs.toast(`Archive ready — ${run.succeeded} payer file(s) zipped.`, 'success'); }
+        else dialogs.toast('Archive finished but produced no files (no forms for the selected payers).', 'warning');
+        return;
+      }
+    }
+    dialogs.toast('Archive is taking a while — it will appear in run history to download when ready.', 'warning');
+  }); };
   const retryFailed = (r: Run) => wrap(async () => { await api.post(`/api/runs/${r.id}/retry`, {}); setDrill(null); done('Retry run started for the failed payers.'); });
 
   const Count = ({ n, unit }: { n: number | undefined; unit: string }) => <span className="muted"> · {n ?? '…'} {unit}</span>;
@@ -144,7 +163,10 @@ export function Fleet() {
             <button disabled={busy || !preview} onClick={runTransmit} title={!preview ? 'Preview first' : ''}>Transmit all queued →</button>
           </div>
           <h2 style={{ marginBottom: 4 }}>Reports</h2>
-          <button className="secondary" disabled={busy} onClick={runSummaries}>Generate summary PDFs<Count n={elig?.summaries.payers} unit="payers" /></button>
+          <div className="actionbar">
+            <button className="secondary" disabled={busy} onClick={runSummaries}>Generate summary PDFs<Count n={elig?.summaries.payers} unit="payers" /></button>
+            <button className="secondary" disabled={busy} onClick={runArchive}>Archive 1099s (ZIP)<Count n={elig?.summaries.payers} unit="payers" /></button>
+          </div>
         </div>
       </div>
 
@@ -184,7 +206,7 @@ export function Fleet() {
 
       {drill && (
         <Modal title={`${drill.kind.replace('_', ' ')} — ${drill.succeeded} ok / ${drill.failed} failed`} width={640} onClose={() => setDrill(null)}>
-          {drill.failed > 0 && ['transmit', 'summary_zip'].includes(drill.kind) && (
+          {drill.failed > 0 && ['transmit', 'summary_zip', 'archive_zip'].includes(drill.kind) && (
             <div className="row" style={{ marginBottom: 8 }}>
               <button disabled={busy} onClick={() => retryFailed(drill)}>Retry {drill.failed} failed payer(s)</button>
             </div>

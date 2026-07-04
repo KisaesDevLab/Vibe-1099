@@ -6,6 +6,7 @@ import { and, eq, inArray, sql } from 'drizzle-orm';
 import { AppError, formatCents, getFormDef, maskTin, type FormType } from '@vibe1099/shared';
 import { getRenderClient } from '@vibe1099/core';
 import { deliveries, firms, formRecords, getDb, payers, transmissions, type Db } from '@vibe1099/db';
+import { renderPortalPdf } from './render.js';
 
 export async function buildSummaryData(db: Db, firmId: string, payerId: string, taxYear: number) {
   const payer = await db.query.payers.findFirst({ where: and(eq(payers.id, payerId), eq(payers.firmId, firmId)) });
@@ -77,6 +78,48 @@ export async function renderPayerSummaryIfAny(
   if (!data.hasForms) return { hasForms: false, pdf: null };
   const pdf = await getRenderClient().render({ template: 'report_summary.html', data });
   return { hasForms: true, pdf };
+}
+
+/** Filename-safe archive name: YYYY_ClientName_Forms1099_ClientID.pdf */
+export function archiveFileName(taxYear: number, legalName: string, clientId: string | null): string {
+  const name = legalName.replace(/[^A-Za-z0-9]+/g, '') || 'Payer';
+  const id = (clientId ?? '').replace(/[^A-Za-z0-9-]+/g, '') || 'NoID';
+  return `${taxYear}_${name}_Forms1099_${id}.pdf`;
+}
+
+/**
+ * Build one payer's 1099 archive: a summary/cover page followed by each of the
+ * payer's 1099 forms for the year, merged into a single PDF. Returns the
+ * formatted filename. Skips corrected records (the summary already excludes them).
+ */
+export async function renderPayerArchive(
+  db: Db,
+  firmId: string,
+  payerId: string,
+  taxYear: number,
+): Promise<{ hasForms: boolean; pdf: Buffer | null; filename: string }> {
+  const payer = await db.query.payers.findFirst({ where: and(eq(payers.id, payerId), eq(payers.firmId, firmId)) });
+  if (!payer) throw AppError.notFound('Payer');
+  const filename = archiveFileName(taxYear, payer.legalName, payer.clientId);
+
+  const forms = await db
+    .select({ id: formRecords.id })
+    .from(formRecords)
+    .where(
+      and(
+        eq(formRecords.firmId, firmId),
+        eq(formRecords.payerId, payerId),
+        eq(formRecords.taxYear, taxYear),
+        sql`${formRecords.status} != 'corrected'`,
+      ),
+    );
+  if (!forms.length) return { hasForms: false, pdf: null, filename };
+
+  const summary = await renderPayerSummary(db, firmId, payerId, taxYear);
+  const formPdfs: Buffer[] = [];
+  for (const f of forms) formPdfs.push(await renderPortalPdf(db, firmId, f.id));
+  const pdf = await getRenderClient().merge([summary, ...formPdfs]);
+  return { hasForms: true, pdf, filename };
 }
 
 export { getDb };

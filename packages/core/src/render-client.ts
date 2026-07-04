@@ -61,6 +61,24 @@ export class RenderClient {
     return { pdf: Buffer.from(body.pdf, 'base64'), pageCount: body.pageCount };
   }
 
+  /** Bundle named PDFs into a single zip (sidecar endpoint). */
+  async zip(files: Array<{ name: string; pdf: Buffer }>, timeoutMs = 180_000): Promise<Buffer> {
+    const res = await fetch(`${this.baseUrl}/zip`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ files: files.map((f) => ({ name: f.name, pdf: f.pdf.toString('base64') })) }),
+      signal: AbortSignal.timeout(timeoutMs),
+    }).catch((err: Error) => {
+      throw new AppError(ErrorCodes.E_RENDER, `Render sidecar unreachable: ${err.message}`, 502);
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new AppError(ErrorCodes.E_RENDER, `Zip failed (${res.status}): ${text.slice(0, 500)}`, 502);
+    }
+    const body = (await res.json()) as { zip: string };
+    return Buffer.from(body.zip, 'base64');
+  }
+
   async health(): Promise<boolean> {
     try {
       const res = await fetch(`${this.baseUrl}/health`, { signal: AbortSignal.timeout(3_000) });

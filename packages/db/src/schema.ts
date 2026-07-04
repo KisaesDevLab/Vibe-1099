@@ -526,7 +526,7 @@ export const filingRuns = pgTable(
     firmId: uuid('firm_id')
       .notNull()
       .references(() => firms.id),
-    kind: text('kind').notNull().$type<'transmit' | 'mo_file' | 'paper_batch' | 'summary_zip' | 'invite' | 'w9'>(),
+    kind: text('kind').notNull().$type<'transmit' | 'mo_file' | 'paper_batch' | 'summary_zip' | 'archive_zip' | 'invite' | 'w9'>(),
     taxYear: integer('tax_year').notNull(),
     status: text('status').notNull().default('preview').$type<'preview' | 'running' | 'completed' | 'partial' | 'failed'>(),
     scope: jsonb('scope').notNull().$type<Record<string, unknown>>(),

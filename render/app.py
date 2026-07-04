@@ -14,6 +14,7 @@ import base64
 import io
 import os
 import re
+import zipfile
 
 from flask import Flask, jsonify, request
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
@@ -110,6 +111,33 @@ def merge_pdfs():
     except Exception as exc:  # noqa: BLE001
         return jsonify(error=f"merge failed: {exc}"), 500
     return jsonify(pdf=base64.b64encode(out.getvalue()).decode(), pageCount=page_count)
+
+
+@app.post("/zip")
+def zip_files():
+    """Bundle named files into a single zip. {files: [{name, pdf(base64)}]} -> {zip: base64}."""
+    body = request.get_json(force=True)
+    files = body.get("files", [])
+    if not files:
+        return jsonify(error="no files provided"), 400
+    out = io.BytesIO()
+    seen = {}
+    try:
+        with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zf:
+            for f in files:
+                raw = (f.get("name") or "file.pdf").strip() or "file.pdf"
+                # keep the entry flat + filename-safe; de-dupe collisions
+                name = re.sub(r"[^A-Za-z0-9._-]+", "_", os.path.basename(raw))
+                if name in seen:
+                    seen[name] += 1
+                    stem, ext = os.path.splitext(name)
+                    name = f"{stem}_{seen[name]}{ext}"
+                else:
+                    seen[name] = 0
+                zf.writestr(name, base64.b64decode(f.get("pdf", "")))
+    except Exception as exc:  # noqa: BLE001
+        return jsonify(error=f"zip failed: {exc}"), 500
+    return jsonify(zip=base64.b64encode(out.getvalue()).decode(), count=len(files))
 
 
 @app.post("/validate-xml")
