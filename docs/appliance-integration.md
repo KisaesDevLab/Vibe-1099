@@ -38,6 +38,12 @@ via **Cloudflare Tunnel**. Route only these paths (plus their `/api/portal/`, `/
 Belt-and-braces: set `STAFF_IP_ALLOWLIST` so staff APIs refuse tunnel-origin traffic even if a
 route leaks.
 
+> **Do not enable the app's in-app tunnel on the appliance.** The compose file ships an optional
+> `cloudflared` sidecar (profile `tunnel`, `INAPP_TUNNEL_ENABLED`) for *standalone* deployments that
+> aren't behind the appliance Caddy. On the appliance leave `INAPP_TUNNEL_ENABLED=0` and never start
+> the `tunnel` profile — Caddy above owns ingress. With it off, Settings → Public access becomes an
+> informational reference (the paths to allowlist) rather than a tunnel manager.
+
 ## Resource footprint (compatibility addendum)
 
 | service | idle RAM | season peak | notes |

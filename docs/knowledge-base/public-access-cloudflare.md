@@ -4,9 +4,14 @@
 
 **What it's for:** exposing the appliance's public pages to the internet without opening any inbound ports. The recipient portal, W-9 links, client portal, and provider webhooks reach the box only through a **Cloudflare Tunnel**; everything else (the staff app) stays on your LAN/Tailscale.
 
-## How it works
+## Two deployment modes
 
-The appliance ships a `cloudflared` sidecar container. You create a **remotely-managed tunnel** in Cloudflare and paste its **token** into **Settings → Public access**. The app stores the token encrypted, writes it to a shared volume the sidecar runs with, and reads the sidecar's metrics to show live connection status. Ingress hostnames are managed in the Cloudflare dashboard (that's how token-based tunnels work) — the app shows you exactly which paths must be reachable.
+- **On the Vibe Appliance (default):** public ingress is handled **at the appliance level** by the shared **Caddy** reverse proxy in front of a path-restricted Cloudflare Tunnel — the app does **not** run its own tunnel. Configure it in the appliance (see `docs/appliance-integration.md`); the Settings → Public access screen shows the paths to allowlist and confirms staff stays private. `INAPP_TUNNEL_ENABLED=0`.
+- **Standalone:** if you run this app's `docker-compose.yml` by itself, the app can manage its own tunnel. Set `INAPP_TUNNEL_ENABLED=1` and start with `docker compose --profile tunnel up` — then the setup below applies.
+
+## How it works (standalone)
+
+The compose file includes a `cloudflared` sidecar (behind the `tunnel` profile). You create a **remotely-managed tunnel** in Cloudflare and paste its **token** into **Settings → Public access**. The app stores the token encrypted, writes it to a shared volume the sidecar runs with, and reads the sidecar's metrics to show live connection status. Ingress hostnames are managed in the Cloudflare dashboard (that's how token-based tunnels work) — the app shows you exactly which paths must be reachable.
 
 ## Setup
 

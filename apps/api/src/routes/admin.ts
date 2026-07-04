@@ -21,9 +21,11 @@ adminRouter.get(
   '/cloudflare',
   requireStaff('admin'),
   h(async (_req, res) => {
-    const [config, status] = await Promise.all([getCloudflareConfig(), tunnelStatus()]);
+    const inAppTunnel = loadEnv().INAPP_TUNNEL_ENABLED === 1;
+    const [config, status] = await Promise.all([getCloudflareConfig(), inAppTunnel ? tunnelStatus() : Promise.resolve(null)]);
     res.json({
       ...config,
+      inAppTunnel,
       status,
       publicPaths: PUBLIC_PATHS,
       portalBaseUrl: loadEnv().PORTAL_BASE_URL,
@@ -35,6 +37,9 @@ adminRouter.put(
   '/cloudflare',
   requireStaff('admin'),
   h(async (req, res) => {
+    if (loadEnv().INAPP_TUNNEL_ENABLED !== 1) {
+      throw AppError.validation('In-app tunnel management is off. On the Vibe Appliance, configure ingress at the appliance level (Caddy). For a standalone deployment, set INAPP_TUNNEL_ENABLED=1 and run with --profile tunnel.');
+    }
     const input = z
       .object({ token: z.string().max(4000).optional(), hostname: z.string().max(253).optional() })
       .parse(req.body);

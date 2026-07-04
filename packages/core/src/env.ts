@@ -73,9 +73,14 @@ const zEnv = z.object({
   // real topology or req.ip collapses to the proxy address (global throttle) or
   // trusts a spoofable X-Forwarded-For. Cloudflare Tunnel + Caddy = 2 hops.
   TRUST_PROXY_HOPS: z.coerce.number().int().min(0).max(10).default(2),
-  // Cloudflare Tunnel (public ingress). The app manages the tunnel token via the
-  // admin UI: it writes the token to CLOUDFLARE_TOKEN_FILE (shared volume) which
-  // the cloudflared sidecar runs, and reads the sidecar's metrics for live status.
+  // In-app Cloudflare Tunnel management. OFF by default: on the Vibe Appliance,
+  // public ingress is handled at the appliance level (shared Caddy + a
+  // path-restricted tunnel), so the app must NOT run its own sidecar. Set to 1
+  // only for a STANDALONE deployment (with `docker compose --profile tunnel up`),
+  // where the app manages the tunnel token itself.
+  INAPP_TUNNEL_ENABLED: z.coerce.number().int().default(0),
+  // The app writes the token to CLOUDFLARE_TOKEN_FILE (shared volume) which the
+  // cloudflared sidecar runs with, and reads the sidecar's metrics for live status.
   CLOUDFLARE_METRICS_URL: z.string().default('http://cloudflared:2000'),
   CLOUDFLARE_TOKEN_FILE: z.string().default('/shared/cloudflared/token'),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),

@@ -45,7 +45,8 @@ interface WebhookEvent {
 interface CloudflareInfo {
   hasToken: boolean;
   hostname: string;
-  status: { running: boolean; readyConnections: number | null; detail: string };
+  inAppTunnel: boolean;
+  status: { running: boolean; readyConnections: number | null; detail: string } | null;
   publicPaths: Array<{ path: string; desc: string }>;
   portalBaseUrl: string;
   token?: string; // transient input
@@ -688,31 +689,39 @@ export function Settings() {
       {tab === 'network' && isAdmin && cf && (
         <div className="panel">
           <h2 style={{ marginTop: 0 }}>Public access (Cloudflare Tunnel)</h2>
-          <p className="muted">The recipient portal, W-9 links, client portal, and provider webhooks are reachable from the internet only through a Cloudflare Tunnel — no inbound ports are opened on the appliance. Configure a remotely-managed tunnel token below.</p>
+          <p className="muted">The public pages (recipient portal, W-9, client portal) and provider webhooks reach the internet only through a Cloudflare Tunnel — no inbound ports are opened.</p>
 
-          <div className="panel" style={{ background: cf.status.running ? '#f0fdf4' : '#fef2f2', borderColor: cf.status.running ? '#bbf7d0' : '#fecaca' }}>
-            <strong>Tunnel status:</strong>{' '}
-            {cf.status.running ? <span style={{ color: '#15803d' }}>connected ✓</span> : <span style={{ color: '#b91c1c' }}>not connected</span>}
-            <div className="muted" style={{ fontSize: 12 }}>{cf.status.detail}</div>
-            <button type="button" className="secondary" style={{ marginTop: 6 }} onClick={loadCloudflare}>Refresh</button>
-          </div>
+          {cf.inAppTunnel ? (<>
+            <div className="panel" style={{ background: cf.status?.running ? '#f0fdf4' : '#fef2f2', borderColor: cf.status?.running ? '#bbf7d0' : '#fecaca' }}>
+              <strong>Tunnel status:</strong>{' '}
+              {cf.status?.running ? <span style={{ color: '#15803d' }}>connected ✓</span> : <span style={{ color: '#b91c1c' }}>not connected</span>}
+              <div className="muted" style={{ fontSize: 12 }}>{cf.status?.detail}</div>
+              <button type="button" className="secondary" style={{ marginTop: 6 }} onClick={loadCloudflare}>Refresh</button>
+            </div>
 
-          <h3>Setup</h3>
-          <ol className="muted" style={{ lineHeight: 1.6 }}>
-            <li>In the <strong>Cloudflare Zero Trust dashboard</strong> → Networks → Tunnels, create a tunnel (choose <em>cloudflared</em>) and copy its <strong>token</strong>.</li>
-            <li>Add a <strong>public hostname</strong> for the tunnel (e.g. <span className="mono">{cf.hostname || '1099.yourfirm.com'}</span>) routing to the web service <span className="mono">http://web:8211</span>. Cloudflare manages DNS automatically.</li>
-            <li>Paste the token here and Save, then restart the tunnel: <span className="mono">docker compose restart cloudflared</span>.</li>
-            <li>Set <span className="mono">PORTAL_BASE_URL</span> and <span className="mono">APP_BASE_URL</span> to <span className="mono">https://{cf.hostname || 'your-hostname'}</span> so emailed links and webhook URLs use it.</li>
-          </ol>
+            <h3>Setup</h3>
+            <ol className="muted" style={{ lineHeight: 1.6 }}>
+              <li>In the <strong>Cloudflare Zero Trust dashboard</strong> → Networks → Tunnels, create a tunnel (choose <em>cloudflared</em>) and copy its <strong>token</strong>.</li>
+              <li>Add a <strong>public hostname</strong> for the tunnel (e.g. <span className="mono">{cf.hostname || '1099.yourfirm.com'}</span>) routing to the web service <span className="mono">http://web:8211</span>. Cloudflare manages DNS automatically.</li>
+              <li>Paste the token here and Save, then restart the tunnel: <span className="mono">docker compose restart cloudflared</span>.</li>
+              <li>Set <span className="mono">PORTAL_BASE_URL</span> and <span className="mono">APP_BASE_URL</span> to <span className="mono">https://{cf.hostname || 'your-hostname'}</span> so emailed links and webhook URLs use it.</li>
+            </ol>
 
-          <div className="row" style={{ alignItems: 'flex-end' }}>
-            <div className="field grow"><label>Tunnel token {cf.hasToken && <span className="muted">(saved — leave blank to keep)</span>}</label>
-              <input type="password" placeholder={cf.hasToken ? '••••••••' : 'Cloudflare tunnel token'} value={cf.token ?? ''}
-                onChange={(e) => setCf({ ...cf, token: e.target.value })} /></div>
-            <div className="field grow"><label>Public hostname</label>
-              <input placeholder="1099.yourfirm.com" value={cf.hostname} onChange={(e) => setCf({ ...cf, hostname: e.target.value })} /></div>
-            <button onClick={saveCloudflare}>Save</button>
-          </div>
+            <div className="row" style={{ alignItems: 'flex-end' }}>
+              <div className="field grow"><label>Tunnel token {cf.hasToken && <span className="muted">(saved — leave blank to keep)</span>}</label>
+                <input type="password" placeholder={cf.hasToken ? '••••••••' : 'Cloudflare tunnel token'} value={cf.token ?? ''}
+                  onChange={(e) => setCf({ ...cf, token: e.target.value })} /></div>
+              <div className="field grow"><label>Public hostname</label>
+                <input placeholder="1099.yourfirm.com" value={cf.hostname} onChange={(e) => setCf({ ...cf, hostname: e.target.value })} /></div>
+              <button onClick={saveCloudflare}>Save</button>
+            </div>
+          </>) : (
+            <div className="panel" style={{ background: '#eff6ff', borderColor: '#bfdbfe' }}>
+              <h3 style={{ marginTop: 0 }}>Managed at the appliance level</h3>
+              <p className="muted" style={{ marginTop: 0 }}>This deployment doesn't run its own tunnel. On the <strong>Vibe Appliance</strong>, public ingress is handled by the shared <strong>Caddy</strong> reverse proxy in front of a <em>path-restricted</em> Cloudflare Tunnel — configure it there (see <span className="mono">docs/appliance-integration.md</span>). Allowlist exactly the public paths below; everything else stays private (Caddy returns 404), so the staff app is never exposed.</p>
+              <p className="muted" style={{ fontSize: 12, marginBottom: 0 }}>Running Vibe 1099 <strong>standalone</strong> instead? Set <span className="mono">INAPP_TUNNEL_ENABLED=1</span> and start with <span className="mono">docker compose --profile tunnel up</span> to manage the tunnel from this screen.</p>
+            </div>
+          )}
 
           <h3>Public surface</h3>
           <p className="muted">Recipients and clients open the <strong>browser pages</strong> below; each page then calls its matching <span className="mono">/api</span> route (nginx proxies <span className="mono">/api</span> to the API). Webhooks are server-to-server. Everything else — the staff app and its APIs — needs a login.</p>
@@ -722,9 +731,13 @@ export function Settings() {
               <tr key={p.path}><td className="mono">{p.path}</td><td>{p.desc}</td></tr>
             ))}</tbody>
           </table>
-          <div className="warn-box" style={{ marginTop: 8 }}>
-            Cloudflare routes the whole hostname to the web service, so the <strong>staff app is also reachable</strong> at this hostname (behind login). To keep staff private, add a <strong>Cloudflare Access</strong> policy on this hostname that <em>bypasses</em> only the public paths above and requires authentication for the rest — or serve staff on a separate, non-tunneled hostname (LAN/Tailscale).
-          </div>
+          {cf.inAppTunnel ? (
+            <div className="warn-box" style={{ marginTop: 8 }}>
+              The in-app tunnel routes the <strong>whole hostname</strong> to the web service, so the staff app is also reachable at this hostname (behind login). To keep staff private, add a <strong>Cloudflare Access</strong> policy that bypasses only the public paths above and requires auth for the rest — or serve staff on a separate, non-tunneled hostname (LAN/Tailscale).
+            </div>
+          ) : (
+            <p className="muted" style={{ marginTop: 8, fontSize: 12 }}>On the appliance, Caddy exposes only these paths through the tunnel and returns 404 for everything else, so the staff app stays private.</p>
+          )}
           <p className="muted" style={{ fontSize: 12 }}>Current PORTAL_BASE_URL: <span className="mono">{cf.portalBaseUrl}</span></p>
         </div>
       )}

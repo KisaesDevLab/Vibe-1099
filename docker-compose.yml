@@ -87,6 +87,9 @@ services:
       # rate limits key off a spoofable X-Forwarded-For. The API is not
       # host-published (reached only via the web nginx proxy on the internal net).
       TRUST_PROXY_HOPS: ${TRUST_PROXY_HOPS:-2}
+      # Standalone only: manage the Cloudflare Tunnel in-app (with --profile tunnel).
+      # Leave 0 on the Vibe Appliance (appliance Caddy owns ingress).
+      INAPP_TUNNEL_ENABLED: ${INAPP_TUNNEL_ENABLED:-0}
       SESSION_INACTIVITY_MINUTES: ${SESSION_INACTIVITY_MINUTES:-30}
       SESSION_ABSOLUTE_HOURS: ${SESSION_ABSOLUTE_HOURS:-12}
       STAFF_IP_ALLOWLIST: ${STAFF_IP_ALLOWLIST:-}
@@ -139,12 +142,16 @@ services:
       - api
     restart: unless-stopped
 
-  # Cloudflare Tunnel — the ONLY public ingress (no inbound host ports for the
-  # portals). The tunnel token is managed in the app (Settings → Public access),
-  # which writes it to the shared volume; this sidecar waits for the token, then
-  # runs the remotely-managed tunnel and exposes metrics for the app's status view.
-  # Restart this service after changing the token: `docker compose restart cloudflared`.
+  # Cloudflare Tunnel — STANDALONE deployments only. Enable with:
+  #   INAPP_TUNNEL_ENABLED=1 docker compose --profile tunnel up -d
+  # On the Vibe Appliance, DO NOT enable this: public ingress is handled at the
+  # appliance level (shared Caddy + a path-restricted tunnel, see
+  # docs/appliance-integration.md). Running both would be redundant/conflicting.
+  # The token is managed in the app (Settings → Public access), written to the
+  # shared volume; this sidecar waits for it, runs the tunnel, and exposes metrics
+  # for the app's status view. Restart after a token change: `docker compose restart cloudflared`.
   cloudflared:
+    profiles: ["tunnel"]
     # Thin shell-capable wrapper (the official cloudflared image is distroless);
     # ENTRYPOINT is ["/bin/sh","-c"] so the command below is a single script.
     build: ./cloudflared
