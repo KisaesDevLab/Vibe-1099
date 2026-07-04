@@ -101,6 +101,102 @@ dashboardRouter.get(
   }),
 );
 
+/**
+ * Consolidated per-payer filing status: one row per payer with the filing
+ * date/receipt/status and the list of rejected 1099s (with reasons). Joins forms
+ * to their transmission (the transmissions table has no payer_id — the link is
+ * through the form records).
+ */
+dashboardRouter.get(
+  '/filing-status/:taxYear',
+  h(async (req, res) => {
+    const taxYear = zTaxYear.parse(Number(req.params['taxYear']));
+    const db = getDb();
+    const firmId = req.staff!.firmId;
+
+    const rows = await db
+      .select({
+        payerId: formRecords.payerId,
+        payerName: payers.legalName,
+        clientId: payers.clientId,
+        status: formRecords.status,
+        formType: formRecords.formType,
+        recordErrors: formRecords.recordErrors,
+        recipientName: recipients.name1,
+        receiptId: transmissions.receiptId,
+        transmittedAt: transmissions.transmittedAt,
+        txStatus: transmissions.status,
+        environment: transmissions.environment,
+      })
+      .from(formRecords)
+      .innerJoin(payers, eq(payers.id, formRecords.payerId))
+      .innerJoin(recipients, eq(recipients.id, formRecords.recipientId))
+      .leftJoin(transmissions, eq(transmissions.id, formRecords.transmissionId))
+      .where(and(eq(formRecords.firmId, firmId), eq(formRecords.taxYear, taxYear), sql`${formRecords.status} != 'corrected'`))
+      .orderBy(payers.legalName);
+
+    type Agg = {
+      payerId: string;
+      payerName: string;
+      clientId: string | null;
+      counts: Record<string, number>;
+      total: number;
+      lastFiledAt: Date | null;
+      receiptId: string | null;
+      environment: string | null;
+      rejects: Array<{ recipientName: string; formType: string; reasons: string[] }>;
+    };
+    const byPayer = new Map<string, Agg>();
+    for (const r of rows) {
+      let a = byPayer.get(r.payerId);
+      if (!a) {
+        a = { payerId: r.payerId, payerName: r.payerName, clientId: r.clientId, counts: {}, total: 0, lastFiledAt: null, receiptId: null, environment: null, rejects: [] };
+        byPayer.set(r.payerId, a);
+      }
+      a.total += 1;
+      a.counts[r.status] = (a.counts[r.status] ?? 0) + 1;
+      if (r.transmittedAt && (!a.lastFiledAt || r.transmittedAt > a.lastFiledAt)) {
+        a.lastFiledAt = r.transmittedAt;
+        a.receiptId = r.receiptId;
+        a.environment = r.environment;
+      }
+      if (r.status === 'rejected') {
+        const reasons = (r.recordErrors ?? []).map((e) => e.translated ?? e.message).filter(Boolean);
+        a.rejects.push({ recipientName: r.recipientName, formType: r.formType, reasons: reasons.length ? reasons : ['rejected by IRS'] });
+      }
+    }
+
+    // derive a single overall status label per payer
+    const overall = (a: Agg): string => {
+      const c = a.counts;
+      const accepted = (c['accepted'] ?? 0) + (c['accepted_with_errors'] ?? 0);
+      if (c['rejected']) return accepted ? 'partially rejected' : 'rejected';
+      if (accepted === a.total) return 'accepted';
+      if (c['transmitted']) return 'transmitted (awaiting ack)';
+      if (c['queued']) return 'queued';
+      if (c['ready']) return 'ready to file';
+      if (accepted) return 'partially accepted';
+      return 'not filed';
+    };
+
+    const filingStatus = [...byPayer.values()].map((a) => ({
+      payerId: a.payerId,
+      payerName: a.payerName,
+      clientId: a.clientId,
+      total: a.total,
+      status: overall(a),
+      counts: a.counts,
+      filedAt: a.lastFiledAt ? a.lastFiledAt.toISOString().slice(0, 10) : null,
+      receiptId: a.receiptId,
+      environment: a.environment,
+      rejectCount: a.rejects.length,
+      rejects: a.rejects,
+    }));
+
+    res.json({ taxYear, payers: filingStatus });
+  }),
+);
+
 /** Exception queue — one worklist: rejects, TIN failures, missing addresses, missing W-9s. */
 dashboardRouter.get(
   '/exceptions/:taxYear',

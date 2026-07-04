@@ -18,6 +18,7 @@ import { W9Dashboard } from './staff/W9Dashboard';
 import { Batches } from './staff/Batches';
 import { Deliveries } from './staff/Deliveries';
 import { Transmissions } from './staff/Transmissions';
+import { FilingStatus } from './staff/FilingStatus';
 import { MoFiles } from './staff/MoFiles';
 import { Corrections } from './staff/Corrections';
 import { MO_FILING_ENABLED } from './config';
@@ -50,6 +51,7 @@ const router = createBrowserRouter([
       { path: 'batches', element: <Batches /> },
       { path: 'deliveries', element: <Deliveries /> },
       { path: 'transmissions', element: <Transmissions /> },
+      { path: 'filing-status', element: <FilingStatus /> },
       ...(MO_FILING_ENABLED ? [{ path: 'missouri', element: <MoFiles /> }] : []),
       { path: 'corrections', element: <Corrections /> },
       { path: 'settings', element: <Settings /> },
