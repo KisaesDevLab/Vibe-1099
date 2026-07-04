@@ -117,6 +117,11 @@ export const payers = pgTable('payers', {
     .references(() => firms.id),
   legalName: text('legal_name').notNull(),
   dbaName: text('dba_name').notNull().default(''),
+  // external firm/practice-management identifier + individual name parts (for
+  // sole-proprietor / individual payers). legalName remains the name-of-record.
+  clientId: text('client_id'),
+  firstName: text('first_name'),
+  lastName: text('last_name'),
   tinEncrypted: text('tin_encrypted').notNull(), // payer EIN/SSN, encrypted at rest
   tinType: text('tin_type').notNull().$type<'SSN' | 'EIN'>(),
   tinLast4: text('tin_last4').notNull(),

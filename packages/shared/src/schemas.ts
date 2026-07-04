@@ -36,7 +36,12 @@ export const zRecipientInput = z.object({
 export type RecipientInput = z.infer<typeof zRecipientInput>;
 
 export const zPayerInput = z.object({
-  legalName: z.string().min(1).max(120),
+  // Optional: the create route derives it from first+last when blank (individual
+  // payers). Required-ness is enforced there, not here, so .partial() updates work.
+  legalName: z.string().max(120).optional().default(''),
+  clientId: z.string().max(64).optional().nullable(),
+  firstName: z.string().max(60).optional().nullable(),
+  lastName: z.string().max(60).optional().nullable(),
   dbaName: z.string().max(120).optional().default(''),
   tin: z.string().min(9).max(11),
   tinType: zTinType,

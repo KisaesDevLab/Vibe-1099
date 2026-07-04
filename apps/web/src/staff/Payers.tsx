@@ -6,6 +6,9 @@ import { useDialogs } from '../components/Dialogs';
 interface Payer {
   id: string;
   legalName: string;
+  clientId: string | null;
+  firstName: string | null;
+  lastName: string | null;
   dbaName: string;
   tinMasked: string;
   tinType: 'SSN' | 'EIN';
@@ -20,7 +23,7 @@ interface Payer {
 }
 
 const emptyForm = {
-  legalName: '', dbaName: '', tin: '', tinType: 'EIN' as 'SSN' | 'EIN',
+  legalName: '', clientId: '', firstName: '', lastName: '', dbaName: '', tin: '', tinType: 'EIN' as 'SSN' | 'EIN',
   line1: '', line2: '', city: '', state: 'MO', zip: '',
   phone: '', contactEmail: '', contactMobile: '', moWithholdingId: '', moSourceDefault: true,
   filingProviderOverride: '' as '' | 'iris' | 'tax1099',
@@ -73,6 +76,9 @@ export function Payers() {
     setError('');
     const body = {
       legalName: form.legalName,
+      clientId: form.clientId || null,
+      firstName: form.firstName || null,
+      lastName: form.lastName || null,
       dbaName: form.dbaName,
       ...(form.tin ? { tin: form.tin, tinType: form.tinType } : editing ? {} : { tin: form.tin, tinType: form.tinType }),
       address: { line1: form.line1, line2: form.line2, city: form.city, state: form.state, zip: form.zip },
@@ -100,7 +106,8 @@ export function Payers() {
     setEditing(p.id);
     setShowForm(true);
     setForm({
-      legalName: p.legalName, dbaName: p.dbaName, tin: '', tinType: p.tinType,
+      legalName: p.legalName, clientId: p.clientId ?? '', firstName: p.firstName ?? '', lastName: p.lastName ?? '',
+      dbaName: p.dbaName, tin: '', tinType: p.tinType,
       line1: p.address['line1'] ?? '', line2: p.address['line2'] ?? '', city: p.address['city'] ?? '',
       state: p.address['state'] ?? 'MO', zip: p.address['zip'] ?? '',
       phone: p.phone, contactEmail: p.contactEmail ?? '', contactMobile: p.contactMobile ?? '',
@@ -134,7 +141,7 @@ export function Payers() {
       <div className="panel">
         <div className="row">
           <div className="field grow"><label>Search payers</label>
-            <input value={search} onChange={(e) => setSearch(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && load(0, search)} placeholder="Legal name or DBA…" /></div>
+            <input value={search} onChange={(e) => setSearch(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && load(0, search)} placeholder="Client ID, name, or DBA…" /></div>
           <button className="secondary" onClick={() => load(0, search)}>Search</button>
         </div>
       </div>
@@ -142,8 +149,8 @@ export function Payers() {
       {showImport && (
         <div className="panel">
           <h2 style={{ marginTop: 0 }}>Payer CSV import (onboard many at once)</h2>
-          <p className="muted">Header row: legalName,dbaName,tin,tinType,line1,line2,city,state,zip,phone,contactEmail,contactMobile,moWithholdingId,defaultFormTypes (e.g. NEC|MISC)</p>
-          <textarea rows={6} value={importText} onChange={(e) => setImportText(e.target.value)} placeholder="legalName,dbaName,tin,..." />
+          <p className="muted">Header row: clientId,firstName,lastName,legalName,dbaName,tin,tinType,line1,line2,city,state,zip,phone,contactEmail,contactMobile,moWithholdingId,defaultFormTypes (e.g. NEC|MISC). Provide <strong>legalName</strong> for businesses, or <strong>firstName + lastName</strong> for individuals.</p>
+          <textarea rows={6} value={importText} onChange={(e) => setImportText(e.target.value)} placeholder="clientId,firstName,lastName,legalName,dbaName,tin,..." />
           <div className="row" style={{ marginTop: 8 }}>
             <button className="secondary" onClick={previewImport}>Preview</button>
             {importPreview && <button onClick={runImport}>Import {importPreview.filter((p) => p.status !== 'invalid').length} payers</button>}
@@ -166,7 +173,12 @@ export function Payers() {
       {showForm && (
         <form className="panel" onSubmit={submit}>
           <div className="row">
-            <div className="field grow"><label>Legal name</label><input value={form.legalName} onChange={set('legalName')} required /></div>
+            <div className="field"><label>Client ID</label><input value={form.clientId} onChange={set('clientId')} placeholder="Your practice ID" /></div>
+            <div className="field grow"><label>First name</label><input value={form.firstName} onChange={set('firstName')} placeholder="Individual payer" /></div>
+            <div className="field grow"><label>Last name</label><input value={form.lastName} onChange={set('lastName')} /></div>
+          </div>
+          <div className="row">
+            <div className="field grow"><label>Legal name <span className="muted">(businesses; leave blank to use First + Last)</span></label><input value={form.legalName} onChange={set('legalName')} /></div>
             <div className="field grow"><label>DBA (optional)</label><input value={form.dbaName} onChange={set('dbaName')} /></div>
           </div>
           <div className="row">
@@ -217,14 +229,14 @@ export function Payers() {
       )}
 
       <table className="grid">
-        <thead><tr><th>Legal name</th><th>TIN</th><th>City</th><th>MO WH ID</th><th>Contact</th><th></th></tr></thead>
+        <thead><tr><th>Client ID</th><th>Name</th><th>TIN</th><th>City</th><th>Contact</th><th></th></tr></thead>
         <tbody>
           {payers.map((p) => (
             <tr key={p.id}>
+              <td className="mono">{p.clientId ?? <span className="muted">—</span>}</td>
               <td>{p.legalName}{p.dbaName && <span className="muted"> dba {p.dbaName}</span>}</td>
               <td className="mono">{p.tinMasked} <button className="small secondary" onClick={() => revealTin(p.id)}>reveal</button></td>
               <td>{p.address['city']}, {p.address['state']}</td>
-              <td>{p.moWithholdingId ?? <span className="muted">—</span>}</td>
               <td>{p.contactEmail ?? p.contactMobile ?? <span className="muted">—</span>}</td>
               <td><button className="small secondary" onClick={() => edit(p)}>Edit</button></td>
             </tr>

@@ -14,10 +14,20 @@ import { checkTin } from '../services/vault.js';
 export const payersRouter = Router();
 payersRouter.use(requireStaff());
 
+/** Legal name of record: explicit legalName, else derived from first+last. */
+function deriveLegalName(legalName?: string | null, firstName?: string | null, lastName?: string | null): string {
+  const explicit = (legalName ?? '').trim();
+  if (explicit) return explicit;
+  return [firstName, lastName].map((s) => (s ?? '').trim()).filter(Boolean).join(' ');
+}
+
 function toPublicPayer(p: typeof payers.$inferSelect) {
   return {
     id: p.id,
     legalName: p.legalName,
+    clientId: p.clientId,
+    firstName: p.firstName,
+    lastName: p.lastName,
     dbaName: p.dbaName,
     tinMasked: maskTin(p.tinLast4, p.tinType),
     tinType: p.tinType,
@@ -45,7 +55,18 @@ payersRouter.get(
       })
       .parse(req.query);
     const conds = [eq(payers.firmId, req.staff!.firmId)];
-    if (q.search) conds.push(or(ilike(payers.legalName, `%${q.search}%`), ilike(payers.dbaName, `%${q.search}%`))!);
+    if (q.search) {
+      const t = `%${q.search}%`;
+      conds.push(
+        or(
+          ilike(payers.legalName, t),
+          ilike(payers.dbaName, t),
+          ilike(payers.clientId, t),
+          ilike(payers.firstName, t),
+          ilike(payers.lastName, t),
+        )!,
+      );
+    }
     const db = getDb();
     const [rows, [countRow]] = await Promise.all([
       db
@@ -65,13 +86,18 @@ payersRouter.post(
   '/',
   h(async (req, res) => {
     const input = zPayerInput.parse(req.body);
+    const legalName = deriveLegalName(input.legalName, input.firstName, input.lastName);
+    if (!legalName) throw AppError.validation('Provide a legal name, or a first and last name.');
     const { tin } = checkTin(input.tin, input.tinType);
     const crypto = getCrypto();
     const [created] = await getDb()
       .insert(payers)
       .values({
         firmId: req.staff!.firmId,
-        legalName: input.legalName,
+        legalName,
+        clientId: input.clientId?.trim() || null,
+        firstName: input.firstName?.trim() || null,
+        lastName: input.lastName?.trim() || null,
         dbaName: input.dbaName ?? '',
         tinEncrypted: crypto.encrypt(tin),
         tinType: input.tinType,
@@ -143,7 +169,10 @@ payersRouter.get(
 // --- CSV bulk import (onboard 100 payers at once) ------------------------------------
 
 const zPayerImportRow = z.object({
-  legalName: z.string().min(1),
+  legalName: z.string().optional().default(''), // blank OK when firstName+lastName given
+  clientId: z.string().optional().default(''),
+  firstName: z.string().optional().default(''),
+  lastName: z.string().optional().default(''),
   dbaName: z.string().optional().default(''),
   tin: z.string(),
   tinType: z.enum(['SSN', 'EIN']).optional().default('EIN'),
@@ -174,10 +203,12 @@ payersRouter.post(
       const parsed = zPayerImportRow.safeParse(raw);
       if (!parsed.success) return { row: i + 1, status: 'invalid' as const, reason: parsed.error.issues[0]?.message };
       const d = parsed.data;
+      const name = deriveLegalName(d.legalName, d.firstName, d.lastName);
+      if (!name) return { row: i + 1, status: 'invalid' as const, reason: 'Provide legalName, or firstName and lastName' };
       const digits = normalizeTin(d.tin);
-      if (digits.length !== 9) return { row: i + 1, status: 'invalid' as const, name: d.legalName, reason: 'TIN must be 9 digits' };
-      const dup = existingByName.has(d.legalName.toLowerCase());
-      return { row: i + 1, status: dup ? ('existing' as const) : ('new' as const), name: d.legalName };
+      if (digits.length !== 9) return { row: i + 1, status: 'invalid' as const, name, reason: 'TIN must be 9 digits' };
+      const dup = existingByName.has(name.toLowerCase());
+      return { row: i + 1, status: dup ? ('existing' as const) : ('new' as const), name };
     });
     res.json({ preview });
   }),
@@ -201,14 +232,19 @@ payersRouter.post(
       const parsed = zPayerImportRow.safeParse(rows[i]);
       if (!parsed.success) { errors.push({ row: i + 1, reason: parsed.error.issues[0]?.message ?? 'invalid' }); continue; }
       const d = parsed.data;
-      const nameKey = d.legalName.toLowerCase();
+      const legalName = deriveLegalName(d.legalName, d.firstName, d.lastName);
+      if (!legalName) { errors.push({ row: i + 1, reason: 'Provide legalName, or firstName and lastName' }); continue; }
+      const nameKey = legalName.toLowerCase();
       if (seen.has(nameKey)) { skipped++; continue; } // already exists or duplicated within the file
       try {
         const { tin } = checkTin(d.tin, d.tinType);
         const formTypes = d.defaultFormTypes.split(/[|,;]/).map((s) => s.trim().toUpperCase()).filter((s) => ['NEC', 'MISC', 'INT', 'DIV'].includes(s));
         await db.insert(payers).values({
           firmId,
-          legalName: d.legalName,
+          legalName,
+          clientId: d.clientId || null,
+          firstName: d.firstName || null,
+          lastName: d.lastName || null,
           dbaName: d.dbaName,
           tinEncrypted: crypto.encrypt(tin),
           tinType: d.tinType,
@@ -254,7 +290,19 @@ payersRouter.patch(
     if (!row) throw AppError.notFound('Payer');
 
     const patch: Partial<typeof payers.$inferInsert> = { updatedAt: new Date() };
-    if (input.legalName !== undefined) patch.legalName = input.legalName;
+    if (input.clientId !== undefined) patch.clientId = input.clientId?.trim() || null;
+    if (input.firstName !== undefined) patch.firstName = input.firstName?.trim() || null;
+    if (input.lastName !== undefined) patch.lastName = input.lastName?.trim() || null;
+    // legalName: explicit value wins; otherwise re-derive from the resulting
+    // first/last when either changed (keeps individual payers' name-of-record in sync).
+    const explicitLegal = (input.legalName ?? '').trim();
+    if (explicitLegal) patch.legalName = explicitLegal;
+    else if (input.firstName !== undefined || input.lastName !== undefined) {
+      const fn = input.firstName !== undefined ? input.firstName : row.firstName;
+      const ln = input.lastName !== undefined ? input.lastName : row.lastName;
+      const derived = deriveLegalName(null, fn, ln);
+      if (derived) patch.legalName = derived;
+    }
     if (input.dbaName !== undefined) patch.dbaName = input.dbaName;
     if (input.address !== undefined) patch.address = input.address as unknown as Record<string, string>;
     if (input.phone !== undefined) patch.phone = input.phone;
