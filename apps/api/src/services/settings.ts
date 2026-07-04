@@ -25,6 +25,8 @@ export const SETTING_DEFAULTS: Record<string, unknown> = {
   w9_reminder_days: [7, 14, 21],
   data_retention_years: 4,
   message_templates: null, // null = shipped defaults
+  /** require an emailed/texted one-time code before a portal is viewable (possession factor) */
+  portal_otp_required: true,
 };
 
 export async function getSetting<T>(key: string): Promise<T | undefined> {

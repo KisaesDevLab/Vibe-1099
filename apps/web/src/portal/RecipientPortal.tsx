@@ -6,7 +6,7 @@ import { FormEvent, useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { api, ApiError, downloadBlob } from '../api';
 
-interface Landing { firmName: string; taxYear: number; formType: string; challengePassed: boolean }
+interface Landing { firmName: string; taxYear: number; formType: string; challengePassed: boolean; otpRequired: boolean; otpContact: string | null }
 interface FormInfo { taxYear: number; formType: string; payerName: string; corrected: boolean; note: string }
 
 export function RecipientPortal() {
@@ -14,6 +14,8 @@ export function RecipientPortal() {
   const [landing, setLanding] = useState<Landing | null>(null);
   const [form, setForm] = useState<FormInfo | null>(null);
   const [last4, setLast4] = useState('');
+  const [code, setCode] = useState('');
+  const [codeSent, setCodeSent] = useState(false);
   const [error, setError] = useState('');
   const [attemptsRemaining, setAttemptsRemaining] = useState<number | null>(null);
   const [locked, setLocked] = useState(false);
@@ -30,11 +32,20 @@ export function RecipientPortal() {
   const loadForm = () =>
     api.get<FormInfo>(`/api/portal/${encodeURIComponent(token)}/form`).then(setForm).catch(() => {});
 
+  const sendCode = async () => {
+    setError('');
+    try {
+      const r = await api.post<{ sent: boolean; throttled: boolean; sentTo: string }>(`/api/portal/${encodeURIComponent(token)}/request-otp`, {});
+      setCodeSent(true);
+      if (r.throttled) setError('A code was just sent — check your messages (you can resend in a moment).');
+    } catch (err) { setError(err instanceof ApiError ? err.message : 'Could not send a code'); }
+  };
+
   const challenge = async (e: FormEvent) => {
     e.preventDefault();
     setError('');
     try {
-      await api.post(`/api/portal/${encodeURIComponent(token)}/challenge`, { last4 });
+      await api.post(`/api/portal/${encodeURIComponent(token)}/challenge`, { last4, ...(landing?.otpRequired ? { code } : {}) });
       setLanding((l) => (l ? { ...l, challengePassed: true } : l));
       await loadForm();
     } catch (err) {
@@ -76,7 +87,19 @@ export function RecipientPortal() {
                   <label>Last 4 digits</label>
                   <input value={last4} onChange={(e) => setLast4(e.target.value.replace(/\D/g, '').slice(0, 4))} inputMode="numeric" maxLength={4} autoFocus />
                 </div>
-                <button type="submit" style={{ width: '100%' }} disabled={last4.length !== 4}>Verify</button>
+                {landing.otpRequired && (
+                  <>
+                    <p className="muted" style={{ marginBottom: 6 }}>We'll also send a one-time code to {landing.otpContact ?? 'your contact on file'}.</p>
+                    <button type="button" className="secondary" style={{ width: '100%', marginBottom: 8 }} onClick={sendCode}>{codeSent ? 'Resend code' : 'Send code'}</button>
+                    {codeSent && (
+                      <div className="field">
+                        <label>6-digit code</label>
+                        <input value={code} onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))} inputMode="numeric" maxLength={6} />
+                      </div>
+                    )}
+                  </>
+                )}
+                <button type="submit" style={{ width: '100%' }} disabled={last4.length !== 4 || (landing.otpRequired && code.length !== 6)}>Verify</button>
               </form>
             ) : (
               <div className="warn-box">This link is temporarily locked. The issuing firm has been notified — contact them for assistance.</div>

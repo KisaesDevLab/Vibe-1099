@@ -62,7 +62,7 @@ export interface RenderSingleJob {
 }
 
 export interface DeliveryJob {
-  kind: 'form_notification' | 'w9_request' | 'w9_reminder' | 'client_invite' | 'staff_alert' | 'password_reset';
+  kind: 'form_notification' | 'w9_request' | 'w9_reminder' | 'client_invite' | 'staff_alert' | 'password_reset' | 'portal_code';
   channel: 'email' | 'sms';
   firmId: string;
   to: string;

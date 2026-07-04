@@ -71,6 +71,13 @@ export const DEFAULT_TEMPLATES: MessageTemplate[] = [
     body: '{{message}}',
     vars: ['subject', 'message'],
   },
+  {
+    key: 'portal_code',
+    channel: 'both',
+    subject: 'Your verification code: {{code}}',
+    body: 'Your one-time code to view your secure {{firmName}} portal is {{code}}. It expires in 10 minutes. If you did not request this, ignore this message.',
+    vars: ['code', 'firmName'],
+  },
 ];
 
 export function renderTemplate(template: string, vars: Record<string, string>): string {

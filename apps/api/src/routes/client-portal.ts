@@ -6,14 +6,17 @@
 import { Router } from 'express';
 import { and, eq, inArray } from 'drizzle-orm';
 import { z } from 'zod';
-import { AppError, getFormDef, zRecipientInput, zTinType, type FormType } from '@vibe1099/shared';
+import { randomUUID } from 'node:crypto';
+import { AppError, ErrorCodes, getFormDef, zRecipientInput, zTinType, type FormType } from '@vibe1099/shared';
 import { audit } from '@vibe1099/core';
 import { clientInvites, firms, formRecords, getDb, payers, recipients } from '@vibe1099/db';
 import { h } from '../middleware/error.js';
-import { requireClient } from '../middleware/auth.js';
+import { CLIENT_COOKIE, requireClient } from '../middleware/auth.js';
 import { rateLimit } from '../middleware/rate-limit.js';
 import { createRecipient, lookupByTin } from '../services/vault.js';
 import { validateFormRecord } from '../services/forms.js';
+import { isPortalOtpVerified, maskContact, portalOtpRequired, requestPortalOtp, verifyPortalOtp, type OtpChannel } from '../services/portal-otp.js';
+import { loadEnv } from '@vibe1099/core';
 
 export const clientPortalRouter = Router();
 clientPortalRouter.use(rateLimit({ key: 'client-portal', limit: 120, windowSec: 60 }));
@@ -22,6 +25,63 @@ clientPortalRouter.use(requireClient());
 async function touchActivity(inviteId: string): Promise<void> {
   await getDb().update(clientInvites).set({ lastActivityAt: new Date() }).where(eq(clientInvites.id, inviteId));
 }
+
+/** The client's reachable contact (from the payer record) for OTP delivery. */
+async function clientContact(payerId: string): Promise<{ channel: OtpChannel; to: string } | null> {
+  const payer = await getDb().query.payers.findFirst({ where: eq(payers.id, payerId) });
+  if (payer?.contactEmail) return { channel: 'email', to: payer.contactEmail };
+  if (payer?.contactMobile) return { channel: 'sms', to: payer.contactMobile };
+  return null;
+}
+const clientOtpKey = (inviteId: string, sid: string) => `client:${inviteId}:${sid}`;
+
+/** Gate the client's data behind a verified OTP when required + a contact exists. */
+function requireClientOtp() {
+  return h(async (req, res, next) => {
+    const scope = req.clientScope!;
+    if (!(await portalOtpRequired())) return next();
+    const contact = await clientContact(scope.payerId);
+    if (!contact) return next(); // no way to send a code — token-only fallback
+    const sid = (req.cookies as Record<string, string>)[CLIENT_COOKIE];
+    if (sid && (await isPortalOtpVerified(clientOtpKey(scope.inviteId, sid)))) return next();
+    throw new AppError(ErrorCodes.E_CHALLENGE_FAILED, 'Verification code required', 403);
+  });
+}
+
+/** Send a one-time code to the client's contact on file (binds to a browser cookie). */
+clientPortalRouter.post(
+  '/request-otp',
+  rateLimit({ key: 'client-otp', limit: 6, windowSec: 300 }),
+  h(async (req, res) => {
+    const scope = req.clientScope!;
+    const contact = await clientContact(scope.payerId);
+    if (!contact) throw AppError.validation('No contact on file to send a code — ask your accountant.');
+    let sid = (req.cookies as Record<string, string>)[CLIENT_COOKIE];
+    if (!sid) {
+      sid = randomUUID();
+      const secure = loadEnv().NODE_ENV === 'production' && loadEnv().PORTAL_BASE_URL.startsWith('https');
+      res.cookie(CLIENT_COOKIE, sid, { httpOnly: true, sameSite: 'strict', secure, path: '/', maxAge: 60 * 60 * 1000 });
+    }
+    const firm = await getDb().query.firms.findFirst({ where: eq(firms.id, scope.firmId) });
+    const r = await requestPortalOtp(scope.firmId, firm?.name ?? 'your accountant', clientOtpKey(scope.inviteId, sid), contact);
+    res.json({ sent: r.sent, throttled: !!r.throttled, sentTo: maskContact(contact.channel, contact.to), channel: contact.channel });
+  }),
+);
+
+/** Verify the code. */
+clientPortalRouter.post(
+  '/verify-otp',
+  rateLimit({ key: 'client-otp-verify', limit: 15, windowSec: 300 }),
+  h(async (req, res) => {
+    const scope = req.clientScope!;
+    const { code } = z.object({ code: z.string().regex(/^\d{6}$/) }).parse(req.body);
+    const sid = (req.cookies as Record<string, string>)[CLIENT_COOKIE];
+    if (!sid) throw AppError.validation('Request a code first.');
+    const result = await verifyPortalOtp(clientOtpKey(scope.inviteId, sid), code);
+    if (result !== 'ok') throw new AppError(ErrorCodes.E_CHALLENGE_FAILED, result === 'locked' ? 'Too many attempts — request a new code.' : result === 'expired' ? 'Code expired — request a new one.' : 'Incorrect code.', 403);
+    res.json({ verified: true });
+  }),
+);
 
 /** Landing: payer confirmation, engagement scope, plain-language instructions. */
 clientPortalRouter.get(
@@ -36,11 +96,19 @@ clientPortalRouter.get(
     ]);
     if (!payer || !invite) throw AppError.notFound('Engagement');
     await touchActivity(scope.inviteId);
+    // OTP gate status for the client (so the portal shows the code step first)
+    const contact = await clientContact(scope.payerId);
+    const otpRequired = (await portalOtpRequired()) && !!contact;
+    const sid = (req.cookies as Record<string, string>)[CLIENT_COOKIE];
+    const otpVerified = otpRequired && !!sid && (await isPortalOtpVerified(clientOtpKey(scope.inviteId, sid)));
     res.json({
       firmName: firm?.name ?? '',
       payerName: payer.legalName,
       taxYear: scope.taxYear,
       formTypes: scope.formTypes,
+      otpRequired,
+      otpVerified,
+      otpContact: contact ? maskContact(contact.channel, contact.to) : null,
       submitted: !!invite.submittedAt,
       draftState: invite.draftState ?? null,
       registry: scope.formTypes.map((ft) => {
@@ -56,6 +124,9 @@ clientPortalRouter.get(
     });
   }),
 );
+
+// Everything below requires a verified OTP (when enabled + a contact exists).
+clientPortalRouter.use(requireClientOtp());
 
 /** Prior-year recipients pre-listed for the contractor grid. */
 clientPortalRouter.get(

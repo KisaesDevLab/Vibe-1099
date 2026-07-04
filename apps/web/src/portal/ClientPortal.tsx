@@ -11,6 +11,9 @@ interface Session {
   payerName: string;
   taxYear: number;
   formTypes: string[];
+  otpRequired: boolean;
+  otpVerified: boolean;
+  otpContact: string | null;
   submitted: boolean;
   draftState: { entries?: Entry[] } | null;
   registry: Array<{ formType: string; title: string; boxes: Array<{ id: string; boxNumber: string; label: string; kind: string }> }>;
@@ -43,6 +46,10 @@ export function ClientPortal() {
   const [lookup, setLookup] = useState<{ recipientId: string; maskedName: string; maskedAddress: string } | null>(null);
   const [step, setStep] = useState<'landing' | 'grid' | 'confirm'>('landing');
   const [detail, setDetail] = useState<Contractor | null>(null);
+  const [otpVerified, setOtpVerified] = useState(false);
+  const [code, setCode] = useState('');
+  const [codeSent, setCodeSent] = useState(false);
+  const otpOk = !session?.otpRequired || session.otpVerified || otpVerified;
 
   useEffect(() => {
     if (!token) { setError('Missing invite token — use the link from your accountant.'); return; }
@@ -56,12 +63,28 @@ export function ClientPortal() {
 
   // Always load contractors + entries — even after submit — so the review/thank-you
   // screen can show the full picture of who was reported and how much.
+  const sendCode = async () => {
+    setError('');
+    try {
+      const r = await api.post<{ throttled: boolean; sentTo: string }>('/api/client-portal/request-otp', {}, opts);
+      setCodeSent(true);
+      if (r.throttled) setError('A code was just sent — check your messages (resend in a moment).');
+    } catch (err) { setError(err instanceof ApiError ? err.message : 'Could not send a code'); }
+  };
+  const verifyCode = async () => {
+    setError('');
+    try {
+      await api.post('/api/client-portal/verify-otp', { code }, opts);
+      setOtpVerified(true);
+    } catch (err) { setError(err instanceof ApiError ? err.message : 'Incorrect code'); }
+  };
+
   useEffect(() => {
-    if (!session) return;
+    if (!session || !otpOk) return;
     api.get<{ contractors: Contractor[]; entries: ServerEntry[] }>('/api/client-portal/contractors', opts)
       .then((r) => { setContractors(r.contractors); setEntries(r.entries); })
       .catch(() => {});
-  }, [session, opts]);
+  }, [session, opts, otpOk]);
 
   const primaryBoxId = formType === 'DIV' ? 'box1a' : 'box1';
   const currentReg = session?.registry.find((r) => r.formType === formType);
@@ -176,6 +199,30 @@ export function ClientPortal() {
     return <div className="portal-shell"><div className="portal-card"><div className="error-box">{error}</div></div></div>;
   }
   if (!session) return <div className="portal-shell"><div className="portal-card">Loading…</div></div>;
+
+  // OTP gate: a code sent to the client's contact must be verified before viewing.
+  if (session.otpRequired && !otpOk) {
+    return (
+      <div className="portal-shell">
+        <div className="portal-card">
+          <div className="portal-brand">{session.firmName}</div>
+          <p>Before you can enter {session.payerName}'s {session.taxYear} information, verify it's you.</p>
+          <p className="muted">We'll send a one-time code to {session.otpContact ?? 'your contact on file'}.</p>
+          {error && <div className="error-box">{error}</div>}
+          <button className="secondary" style={{ width: '100%', marginBottom: 8 }} onClick={sendCode}>{codeSent ? 'Resend code' : 'Send code'}</button>
+          {codeSent && (
+            <>
+              <div className="field">
+                <label>6-digit code</label>
+                <input value={code} onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))} inputMode="numeric" maxLength={6} autoFocus />
+              </div>
+              <button style={{ width: '100%' }} disabled={code.length !== 6} onClick={verifyCode}>Verify</button>
+            </>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   if (session.submitted || done) {
     const reported = contractors.filter((c) => (amounts[c.recipientId] ?? '').trim());

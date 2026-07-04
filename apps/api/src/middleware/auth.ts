@@ -14,6 +14,7 @@ import type { StaffSession } from '../types.js';
 export const SESSION_COOKIE = 'v1099_sid';
 export const CSRF_COOKIE = 'v1099_csrf';
 export const RECIPIENT_COOKIE = 'v1099_recip';
+export const CLIENT_COOKIE = 'v1099_client';
 
 /** Redis key binding a passed last-4 challenge to a specific browser session. */
 export function recipientChallengeKey(deliveryId: string, recipSid: string): string {
