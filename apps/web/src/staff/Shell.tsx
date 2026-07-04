@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { api, ApiError } from '../api';
+import { MO_FILING_ENABLED } from '../config';
 import { NotificationBell } from '../components/NotificationBell';
 import { CommandPalette } from '../components/CommandPalette';
 
@@ -52,7 +53,7 @@ export function StaffShell() {
         <NavLink to="/w9">W-9 requests</NavLink>
         <div className="section">Filing & delivery</div>
         <NavLink to="/transmissions">IRS transmissions</NavLink>
-        <NavLink to="/missouri">Missouri</NavLink>
+        {MO_FILING_ENABLED && <NavLink to="/missouri">Missouri</NavLink>}
         <NavLink to="/batches">Paper batches</NavLink>
         <NavLink to="/deliveries">Deliveries</NavLink>
         <div className="section">Admin</div>

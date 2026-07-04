@@ -20,6 +20,7 @@ import { Deliveries } from './staff/Deliveries';
 import { Transmissions } from './staff/Transmissions';
 import { MoFiles } from './staff/MoFiles';
 import { Corrections } from './staff/Corrections';
+import { MO_FILING_ENABLED } from './config';
 import { Settings } from './staff/Settings';
 import { ClientPortal } from './portal/ClientPortal';
 import { RecipientPortal } from './portal/RecipientPortal';
@@ -49,7 +50,7 @@ const router = createBrowserRouter([
       { path: 'batches', element: <Batches /> },
       { path: 'deliveries', element: <Deliveries /> },
       { path: 'transmissions', element: <Transmissions /> },
-      { path: 'missouri', element: <MoFiles /> },
+      ...(MO_FILING_ENABLED ? [{ path: 'missouri', element: <MoFiles /> }] : []),
       { path: 'corrections', element: <Corrections /> },
       { path: 'settings', element: <Settings /> },
     ],

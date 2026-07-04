@@ -7,6 +7,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { api, ApiError, formatCents, parseCentsInput } from '../api';
+import { MO_FILING_ENABLED } from '../config';
 import { Combobox } from '../components/Combobox';
 import { Paginator } from '../components/Paginator';
 import { RecipientPicker } from '../components/RecipientPicker';
@@ -115,7 +116,7 @@ export function Corrections() {
     try {
       const r = await api.post<{ classification: string; createdIds: string[]; moImpact: string | null }>('/api/corrections', buildRequest());
       dialogs.toast(`Correction created (${r.classification}, ${r.createdIds.length} record(s)) — review, queue, transmit.`, 'success');
-      if (r.moImpact) await dialogs.alert(r.moImpact, 'Missouri impact');
+      if (MO_FILING_ENABLED && r.moImpact) await dialogs.alert(r.moImpact, 'Missouri impact');
       setTarget(null); loadList(offset); loadOutstanding(outOffset);
     } catch (err) { setError(err instanceof ApiError ? err.message : String(err)); }
   };

@@ -6,6 +6,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../api';
+import { MO_FILING_ENABLED } from '../config';
 import { useDialogs } from '../components/Dialogs';
 import { useTaxYears } from '../components/useTaxYears';
 
@@ -128,7 +129,7 @@ export function Dashboard() {
         <div className="panel" style={{ padding: '8px 14px', marginTop: 6 }}>
           <div className="row" style={{ gap: 20, alignItems: 'center' }}>
             <span className="group-label">Deadlines</span>
-            {Object.entries(deadlines.deadlines).map(([key, d]) => {
+            {Object.entries(deadlines.deadlines).filter(([key]) => MO_FILING_ENABLED || key === 'recipientFurnish' || key === 'irsEfile').map(([key, d]) => {
               const dd = daysUntil(d.date);
               const label = key === 'recipientFurnish' ? 'Recipient copies' : key === 'irsEfile' ? 'IRS e-file' : 'Missouri';
               return (
