@@ -27,7 +27,27 @@ stay LAN/Tailscale-only; recipient/W-9/client portal routes are exposed via Clou
 Money is **integer cents** everywhere (ADR-001). TINs are AES-256-GCM envelope-encrypted with a
 keyed `tin_hash` lookup index (ADR-002); plaintext TINs are never logged and never appear in URLs.
 
-## Install (appliance stub)
+## Install
+
+One installer, two modes — `scripts/install.sh` generates `.env` (random `MASTER_KEY`
+and DB password), provisions everything, and starts the stack.
+
+```bash
+# Docker (default) — nothing on the host but Docker itself:
+scripts/install.sh
+
+# Fully native (no Docker) — installs Node 24, PostgreSQL, Redis, and the
+# Python/WeasyPrint render service on the host, then writes systemd units:
+sudo scripts/install.sh --mode native
+
+# add --with-demo for demo data, --app-url https://1099.yourfirm.com for a real host
+```
+
+Native without systemd (`--no-systemd`) sets everything up and you run it with
+`scripts/native-run.sh` (foreground; the render sidecar, api, worker, and a
+zero-dependency static-file + `/api` proxy server on :8211).
+
+<details><summary>Manual Docker install (equivalent to the default mode)</summary>
 
 ```bash
 cp .env.example .env
@@ -35,6 +55,7 @@ cp .env.example .env
 docker compose up -d
 docker compose exec api pnpm seed   # optional demo data
 ```
+</details>
 
 Web UI: `http://<host>:8211` · demo login (after seed): `admin@demo.firm` / `vibe1099-demo-password`.
 
