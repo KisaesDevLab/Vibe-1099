@@ -2,7 +2,7 @@
 
 **Product:** Vibe 1099 — self-hosted 1099 preparation, recipient delivery, and IRS IRIS A2A e-filing appliance for CPA firms
 **Owner:** KisaesDevLab / Kisaes LLC
-**License:** PolyForm Internal Use 1.0.0; commercial license required for client-portal access (MyBooks model, three tiers)
+**License:** PolyForm Small Business 1.0.0; commercial license required for client-portal access (MyBooks model, three tiers)
 **Stack:** React 18, TypeScript, Node.js 24, Express, Drizzle ORM, PostgreSQL 16, Redis 7, BullMQ, pnpm workspaces
 **PDF render:** WeasyPrint sidecar container (Jinja2 templates + external CSS — reuse Vibe T&B invoice template pattern)
 **Deployment:** Docker Compose appliance; Vibe Appliance manifest integration (Addendum A)
@@ -26,7 +26,7 @@
 | 10 | TIN verification: internal vault lookup + IRIS real-time validation only (no e-Services TIN Matching) |
 | 11 | State: Missouri direct file (Pub 1220 .txt) only; CF/SF election flagged in IRIS submission for participating states (AR benefits automatically); state config table stubbed for expansion |
 | 12 | Full corrections lifecycle in v1 (one-transaction and two-transaction) |
-| 13 | Node 24 / PostgreSQL 16; PolyForm Internal Use + commercial tiers |
+| 13 | Node 24 / PostgreSQL 16; PolyForm Small Business + commercial tiers |
 
 ---
 
@@ -85,7 +85,7 @@ TIN storage: AES-256-GCM at rest (per-install master key, envelope pattern from 
 - [ ] Seed script: demo firm, 2 payers, 12 recipients, sample NEC/MISC/INT/DIV records
 - [ ] CI: typecheck, lint, unit tests, docker build
 - [ ] `CLAUDE.md`, `PHASES.md`, `STATE.md`, `QUESTIONS.md` (autonomous-build kit pattern)
-- [ ] License headers: PolyForm Internal Use 1.0.0; commercial-feature gate flag scaffold
+- [ ] License headers: PolyForm Small Business 1.0.0; commercial-feature gate flag scaffold
 - [ ] Port assignment: API 8210, web 8211, render 8212 (register in suite port table)
 - [ ] Version/about endpoint
 - [ ] Error taxonomy (app error codes) shared package
