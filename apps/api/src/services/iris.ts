@@ -207,6 +207,8 @@ export async function composeTransmission(
   // Build the provider payload + run its pre-checks, then stash it in a blob the
   // worker will send. IRIS → XML (Pub 5718); Tax1099/TaxBandits → JSON form model.
   let xmlBlobId: string;
+  // TaxBandits files one form type per submission (per-form endpoints); pinned here.
+  let providerFormType: 'NEC' | 'MISC' | 'INT' | 'DIV' | null = null;
   if (provider === 'iris') {
     const problems = preTransmitCheck(input);
     if (problems.length) throw AppError.validation('Pre-transmit checks failed', problems);
@@ -220,18 +222,24 @@ export async function composeTransmission(
       encrypt: true,
     });
   } else if (provider === 'taxbandits') {
-    const payload = buildTaxBanditsPayload(input, taxbanditsConfig!.environment, {
+    // Throws a clear validation error if the batch mixes form types (TaxBandits
+    // files one form type per submission).
+    const payload = buildTaxBanditsPayload(input, {
       postalMailing: taxbanditsConfig!.postalMailing,
       onlineAccess: taxbanditsConfig!.onlineAccess,
     });
     const problems = preSubmitCheckTaxBandits(payload);
     if (problems.length) throw AppError.validation('Pre-submit checks failed', problems);
+    providerFormType = payload.formType;
+    // `formType` is an internal routing hint — strip it from the serialized request.
+    const { formType: _ft, ...wire } = payload;
+    void _ft;
     xmlBlobId = await putBlob(db, {
       firmId,
       kind: 'tax1099_payload', // shared JSON-payload blob kind (encrypted at rest)
       contentType: 'application/json',
       filename: `${utid}.json`,
-      bytes: Buffer.from(JSON.stringify(payload), 'utf8'),
+      bytes: Buffer.from(JSON.stringify(wire), 'utf8'),
       encrypt: true,
     });
   } else {
@@ -270,6 +278,7 @@ export async function composeTransmission(
         firmId,
         taxYear,
         provider,
+        providerFormType,
         environment,
         utid,
         status: 'building',

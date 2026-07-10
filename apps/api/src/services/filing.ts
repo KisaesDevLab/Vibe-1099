@@ -15,6 +15,7 @@ import {
   TaxBanditsClient,
   taxbanditsEndpoints,
   type FilingProviderKind,
+  type TaxBanditsFormType,
 } from '@vibe1099/core';
 import { appSettings, firms, formRecords, payers, transmissions, getDb, type Db } from '@vibe1099/db';
 import { eq as eqCol } from 'drizzle-orm';
@@ -164,8 +165,16 @@ export async function loadTaxBanditsConfig(db: Db, firmId: string): Promise<TaxB
   };
 }
 
-/** Build a TaxBandits REST client (TIN match, credits, corrections). */
-export async function buildTaxBanditsClient(db: Db, firmId: string): Promise<TaxBanditsClient> {
+/**
+ * Build a TaxBandits REST client. `formType` selects the per-form e-file endpoints
+ * (Form1099<TYPE>/Create|Status|Correction); it defaults to NEC for the
+ * form-agnostic callers (TIN match, credits) that never hit the e-file URLs.
+ */
+export async function buildTaxBanditsClient(
+  db: Db,
+  firmId: string,
+  formType: TaxBanditsFormType = 'NEC',
+): Promise<TaxBanditsClient> {
   const cfg = await loadTaxBanditsConfig(db, firmId);
   const env = loadEnv();
   const mock = env.TAXBANDITS_MOCK_BASE_URL;
@@ -175,7 +184,7 @@ export async function buildTaxBanditsClient(db: Db, firmId: string): Promise<Tax
     : cfg.environment === 'production'
       ? env.TAXBANDITS_PROD_OAUTH_URL
       : env.TAXBANDITS_SANDBOX_OAUTH_URL;
-  return new TaxBanditsClient(taxbanditsEndpoints(base, oauthUrl), {
+  return new TaxBanditsClient(taxbanditsEndpoints(base, oauthUrl, formType), {
     clientId: cfg.clientId,
     clientSecret: cfg.clientSecret,
     userToken: cfg.userToken,

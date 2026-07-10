@@ -3,7 +3,7 @@
  * polling (exponential backoff, terminal-state handling, partial acceptance).
  * Alerting: transmission failures → staff email.
  */
-import { and, desc, eq, isNotNull, notInArray } from 'drizzle-orm';
+import { and, eq, notInArray } from 'drizzle-orm';
 import { Job } from 'bullmq';
 import {
   createLogger,
@@ -20,22 +20,31 @@ import {
   tax1099Endpoints,
   TaxBanditsClient,
   taxbanditsEndpoints,
+  checkLowBalance,
+  latestBalanceCents,
+  recordCost,
   type DeliveryJob,
   type FilingProvider,
   type FilingProviderKind,
   type IrisPollJob,
   type IrisTransmitJob,
+  type TaxBanditsFormType,
 } from '@vibe1099/core';
 import { applyAckToRecords, audit, notify } from '@vibe1099/core';
-import { appSettings, deliveries, firms, formRecords, getDb, taxbanditsCostLedger, transmissions, users } from '@vibe1099/db';
+import { appSettings, deliveries, firms, formRecords, getDb, transmissions, users } from '@vibe1099/db';
 
 const log = createLogger('worker:iris');
 
 const POLL_DELAYS_MS = [60_000, 120_000, 300_000, 600_000, 1_800_000, 3_600_000]; // exp backoff → hourly
 const MAX_POLLS = 96; // ~4 days at terminal cadence
 
-/** Build the FilingProvider a transmission targets (IRIS A2A / Tax1099 / TaxBandits). */
-export async function providerFor(firmId: string, kind: FilingProviderKind): Promise<FilingProvider> {
+/** Build the FilingProvider a transmission targets (IRIS A2A / Tax1099 / TaxBandits).
+ *  `formType` selects the TaxBandits per-form e-file/status endpoints. */
+export async function providerFor(
+  firmId: string,
+  kind: FilingProviderKind,
+  formType?: TaxBanditsFormType,
+): Promise<FilingProvider> {
   const env = loadEnv();
   const db = getDb();
   const firm = await db.query.firms.findFirst({ where: eq(firms.id, firmId) });
@@ -69,7 +78,7 @@ export async function providerFor(firmId: string, kind: FilingProviderKind): Pro
       : firm.taxbanditsEnvironment === 'production'
         ? env.TAXBANDITS_PROD_OAUTH_URL
         : env.TAXBANDITS_SANDBOX_OAUTH_URL;
-    return new TaxBanditsClient(taxbanditsEndpoints(base, oauthUrl), {
+    return new TaxBanditsClient(taxbanditsEndpoints(base, oauthUrl, formType ?? 'NEC'), {
       clientId: crypto.decrypt(firm.taxbanditsClientIdEncrypted),
       clientSecret: crypto.decrypt(firm.taxbanditsClientSecretEncrypted),
       userToken: crypto.decrypt(firm.taxbanditsUserTokenEncrypted),
@@ -118,7 +127,7 @@ export async function handleIrisTransmit(job: Job): Promise<void> {
 
   await db.update(transmissions).set({ status: 'transmitting' }).where(eq(transmissions.id, tx.id));
   try {
-    const provider = await providerFor(data.firmId, tx.provider);
+    const provider = await providerFor(data.firmId, tx.provider, tx.providerFormType ?? undefined);
     // TaxBandits corrections/voids go through a distinct endpoint (same ref shape).
     const result =
       provider instanceof TaxBanditsClient && tx.isCorrection
@@ -182,7 +191,7 @@ export async function handleIrisPoll(job: Job): Promise<void> {
   if (!tx?.receiptId) throw new Error('transmission missing or has no receipt');
   if (tx.status === 'accepted' || tx.status === 'accepted_with_errors' || tx.status === 'rejected') return;
 
-  const provider = await providerFor(data.firmId, tx.provider);
+  const provider = await providerFor(data.firmId, tx.provider, tx.providerFormType ?? undefined);
   const result = await provider.status(tx.receiptId);
 
   if (result.status === 'Processing' || result.status === 'NotFound') {
@@ -238,40 +247,33 @@ export async function handleIrisPoll(job: Job): Promise<void> {
   log.info({ tx: tx.id, status: overall, errors: result.errors.length }, 'ack applied');
 
   // TaxBandits prepaid-credit ledger: on an accepted submission, poll the credit
-  // balance and record a cost-ledger row (amount inferred from the balance delta
-  // where the API reports it), then alert if the balance is low. Best-effort.
+  // balance and record ONE audited cost-ledger row via the shared ledger service.
+  // The prepaid-balance delta is the authoritative total charged for the whole
+  // submission (e-file + any elected postal/online-access/state add-ons), so a
+  // single row per submission is the accurate representation. Best-effort — a
+  // ledger failure must not undo the accepted ack.
   if (tx.provider === 'taxbandits' && overall !== 'rejected') {
     try {
-      const provider = await providerFor(data.firmId, 'taxbandits');
-      const balance = provider instanceof TaxBanditsClient ? await provider.credits() : null;
-      const [prev] = await db
-        .select({ balance: taxbanditsCostLedger.balanceAfterCents })
-        .from(taxbanditsCostLedger)
-        .where(and(eq(taxbanditsCostLedger.firmId, data.firmId), isNotNull(taxbanditsCostLedger.balanceAfterCents)))
-        .orderBy(desc(taxbanditsCostLedger.createdAt))
-        .limit(1);
-      const amountCents = balance && prev?.balance != null ? Math.max(0, prev.balance - balance.balanceCents) : 0;
-      await db.insert(taxbanditsCostLedger).values({
+      const cprovider = await providerFor(data.firmId, 'taxbandits', tx.providerFormType ?? undefined);
+      const balance = cprovider instanceof TaxBanditsClient ? await cprovider.credits() : null;
+      const prevBalance = await latestBalanceCents(db, data.firmId);
+      const amountCents = balance && prevBalance != null ? Math.max(0, prevBalance - balance.balanceCents) : 0;
+      const firm = await db.query.firms.findFirst({ where: eq(firms.id, data.firmId) });
+      await recordCost(db, {
         firmId: data.firmId,
         transmissionId: tx.id,
         eventType: tx.isCorrection ? 'correction' : 'efile',
         amountCents,
         balanceAfterCents: balance?.balanceCents ?? null,
-        detail: { utid: tx.utid, recordCount: tx.recordCount },
+        detail: {
+          utid: tx.utid,
+          recordCount: tx.recordCount,
+          formType: tx.providerFormType,
+          postal: firm?.taxbanditsPostalMailing ?? false,
+          onlineAccess: firm?.taxbanditsOnlineAccess ?? false,
+        },
       });
-      const firm = await db.query.firms.findFirst({ where: eq(firms.id, data.firmId) });
-      if (balance && firm && balance.balanceCents <= firm.taxbanditsLowCreditCents) {
-        await notify(db, {
-          firmId: data.firmId,
-          kind: 'system',
-          severity: 'warning',
-          title: 'TaxBandits credit balance low',
-          body: `Prepaid credit balance is $${(balance.balanceCents / 100).toFixed(2)} — top up to avoid failed filings.`,
-          link: '/settings',
-          entityType: 'firm',
-          entityId: data.firmId,
-        }).catch(() => undefined);
-      }
+      if (balance) await checkLowBalance(db, data.firmId, balance.balanceCents);
     } catch (e) {
       log.warn({ err: (e as Error).message, tx: tx.id }, 'taxbandits credit ledger update failed (non-fatal)');
     }

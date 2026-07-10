@@ -77,27 +77,32 @@ taxbanditsWebhookRouter.post(
     }
 
     try {
-      if (/efile|status/i.test(eventType) && submissionId) {
-        // reconcile via the authoritative status endpoint
+      // Classify TIN-match events FIRST — their event names often contain "Status",
+      // which would otherwise be swallowed by a broad e-file/status matcher.
+      if (/tin/i.test(eventType)) {
+        // Update the pending TIN-match row for this submission/record with the
+        // verdict, scoped as tightly as the webhook allows (record ref > submission
+        // > recipient). The authoritative housekeeping poll also reconciles these.
+        const verdict = normalizeTinMatchStatus(status ?? '');
+        if (verdict !== 'pending') {
+          const conds = [eq(tinMatchResults.provider, 'taxbandits'), eq(tinMatchResults.status, 'pending')];
+          if (recordId) conds.push(eq(tinMatchResults.recordRef, recordId));
+          else if (submissionId) conds.push(eq(tinMatchResults.submissionRef, submissionId));
+          else if (body.payeeRef) conds.push(eq(tinMatchResults.recipientId, body.payeeRef));
+          await db
+            .update(tinMatchResults)
+            .set({ status: verdict, code: status ?? '', message: `IRS TIN matching: ${status ?? ''}`, checkedAt: new Date() })
+            .where(and(...conds));
+        }
+      } else if (submissionId) {
+        // Any e-file status change → reconcile via the authoritative status endpoint
+        // (we don't trust the webhook body as the source of truth).
         const tx = await db.query.transmissions.findFirst({
           where: and(eq(transmissions.receiptId, submissionId), eq(transmissions.provider, 'taxbandits')),
         });
         if (tx && tx.status !== 'accepted' && tx.status !== 'accepted_with_errors' && tx.status !== 'rejected') {
           const poll: IrisPollJob = { kind: 'poll', transmissionId: tx.id, firmId: tx.firmId, attempt: 0 };
           await getQueue(QUEUE_NAMES.iris).add('poll', poll);
-        }
-      } else if (/tin/i.test(eventType)) {
-        // Update the pending TIN-match row for this submission/recipient with the
-        // verdict. The authoritative housekeeping poll also reconciles these.
-        const verdict = normalizeTinMatchStatus(status ?? '');
-        if (verdict !== 'pending') {
-          const conds = [eq(tinMatchResults.provider, 'taxbandits'), eq(tinMatchResults.status, 'pending')];
-          if (submissionId) conds.push(eq(tinMatchResults.submissionRef, submissionId));
-          else if (body.payeeRef) conds.push(eq(tinMatchResults.recipientId, body.payeeRef));
-          await db
-            .update(tinMatchResults)
-            .set({ status: verdict, code: status ?? '', message: `IRS TIN matching: ${status ?? ''}`, checkedAt: new Date() })
-            .where(and(...conds));
         }
       }
       await db.update(taxbanditsWebhookEvents).set({ processedAt: new Date() }).where(eq(taxbanditsWebhookEvents.dedupeKey, dedupeKey));

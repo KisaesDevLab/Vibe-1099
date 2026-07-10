@@ -46,38 +46,60 @@ function baseInput(overrides: Partial<IrisTransmissionInput> = {}): IrisTransmis
 }
 
 describe('TaxBandits payload builder', () => {
-  it('maps issuer→business and records with cents as decimal strings', () => {
-    const p = buildTaxBanditsPayload(baseInput(), 'sandbox');
-    expect(p.submissionRef).toBe('TB-abc');
-    expect(p.isTestMode).toBe(true);
-    expect(p.business.tin).toBe('431111111');
-    expect(p.combinedFederalState).toEqual(['AR']);
-    expect(p.records).toHaveLength(1);
-    const r = p.records[0]!;
-    expect(r.payeeRef).toBe('rec-1');
-    expect(r.amounts['box1']).toBe('12500.00');
-    expect(r.flags['directSales']).toBe(true);
-    expect(r.stateAmounts['stateTaxWithheld']).toBe('250.00');
-    expect(r.text['stateCode']).toBe('MO');
-    expect(r.secondTinNotice).toBe(true);
+  it('emits the real Form1099 envelope: manifest, business, per-form FormData', () => {
+    const p = buildTaxBanditsPayload(baseInput());
+    expect(p.formType).toBe('NEC');
+    expect(p.SubmissionManifest.TaxYear).toBe('2026');
+    expect(p.SubmissionManifest.IsFederalFiling).toBe(true);
+    expect(p.SubmissionManifest.IsStateFiling).toBe(true); // has a state withholding block
+    expect(p.SubmissionManifest.IsPostal).toBe(false); // pressure-seal remains primary
+    expect(p.ReturnHeader.Business.EINorSSN).toBe('431111111');
+    expect(p.ReturnHeader.Business.IsEIN).toBe(true);
+    expect(p.ReturnHeader.Business.USAddress.City).toBe('Kansas City');
+    expect(p.ReturnData).toHaveLength(1);
+    const r = p.ReturnData[0]!;
+    expect(r.SequenceId).toBe('rec-1');
+    expect(r.Recipient.TIN).toBe('400111222');
+    const data = r.NECFormData!;
+    expect(data['B1NEC']).toBe(12500); // integer cents → JSON number
+    expect(data['B2DirectSalesInd']).toBe(true);
+    expect(data['AccountNum']).toBe('NEC2026-001');
+    expect(data['IsSecondTINnot']).toBe(true);
+    expect(data['States']).toEqual([{ StateCd: 'MO', StateWHAmt: 250 }]);
   });
 
-  it('threads delivery add-ons (default off — pressure-seal remains primary)', () => {
-    expect(buildTaxBanditsPayload(baseInput(), 'sandbox').records[0]!.postalMailing).toBe(false);
-    const withMail = buildTaxBanditsPayload(baseInput(), 'sandbox', { postalMailing: true, onlineAccess: true });
-    expect(withMail.records[0]!.postalMailing).toBe(true);
-    expect(withMail.records[0]!.onlineAccess).toBe(true);
+  it('maps MISC boxes to their form-specific FormData fields', () => {
+    const input = baseInput();
+    input.records[0]!.formType = 'MISC';
+    input.records[0]!.boxValues = { box1: 100000, box6: 50000, directSales: true };
+    const r = buildTaxBanditsPayload(input).ReturnData[0]!;
+    expect(r.MISCFormData!['B1Rents']).toBe(1000);
+    expect(r.MISCFormData!['B6MedHealthCarePymt']).toBe(500);
+    expect(r.MISCFormData!['B7DirectSalesInd']).toBe(true);
+    expect(r.NECFormData).toBeUndefined();
   });
 
-  it('production env is not a test file', () => {
-    expect(buildTaxBanditsPayload(baseInput(), 'production').isTestMode).toBe(false);
+  it('threads delivery add-ons into the submission manifest (default off)', () => {
+    expect(buildTaxBanditsPayload(baseInput()).SubmissionManifest.IsPostal).toBe(false);
+    const withMail = buildTaxBanditsPayload(baseInput(), { postalMailing: true, onlineAccess: true });
+    expect(withMail.SubmissionManifest.IsPostal).toBe(true);
+    expect(withMail.SubmissionManifest.IsOnlineAccess).toBe(true);
+  });
+
+  it('rejects a batch that mixes form types (one form type per submission)', () => {
+    const input = baseInput();
+    input.records = [
+      { ...input.records[0]!, recordId: 'a', formType: 'NEC' },
+      { ...input.records[0]!, recordId: 'b', formType: 'MISC' },
+    ];
+    expect(() => buildTaxBanditsPayload(input)).toThrow(/one form type per submission/i);
   });
 
   it('preSubmitCheck flags a bad recipient TIN but passes a clean payload', () => {
-    expect(preSubmitCheckTaxBandits(buildTaxBanditsPayload(baseInput(), 'sandbox'))).toHaveLength(0);
+    expect(preSubmitCheckTaxBandits(buildTaxBanditsPayload(baseInput()))).toHaveLength(0);
     const bad = baseInput();
     bad.records[0]!.recipient.tin = '12';
-    expect(preSubmitCheckTaxBandits(buildTaxBanditsPayload(bad, 'sandbox')).some((m) => /recipient TIN/.test(m))).toBe(true);
+    expect(preSubmitCheckTaxBandits(buildTaxBanditsPayload(bad)).some((m) => /recipient TIN/.test(m))).toBe(true);
   });
 });
 

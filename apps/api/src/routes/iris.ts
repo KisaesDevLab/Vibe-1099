@@ -7,7 +7,7 @@ import { Router } from 'express';
 import { and, desc, eq, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { AppError, deadlinesFor, zTaxYear } from '@vibe1099/shared';
-import { generateJwkPair, getBlob, getCrypto, getQueue, loadEnv, QUEUE_NAMES, type IrisTransmitJob } from '@vibe1099/core';
+import { generateJwkPair, getBlob, getCrypto, getQueue, loadEnv, QUEUE_NAMES, recordCost, type IrisTransmitJob } from '@vibe1099/core';
 import { errorTranslations, firms, formRecords, getDb, recipients, taxbanditsWebhookEvents, tinMatchResults, transmissions } from '@vibe1099/db';
 import { h } from '../middleware/error.js';
 import { requireStaff } from '../middleware/auth.js';
@@ -244,6 +244,15 @@ irisRouter.post(
         submissionRef: sub.submissionId,
         recordRef: sub.recordId,
       });
+      // Billable event — record it on the audited cost ledger (rate is
+      // contract-negotiated; the prepaid balance reflects the actual charge).
+      await recordCost(db, {
+        firmId: req.staff!.firmId,
+        formRecordId: recip.id,
+        eventType: 'tin_match',
+        amountCents: 0,
+        detail: { submissionId: sub.submissionId, recipientId: recip.id },
+      }).catch(() => undefined);
       res.locals['audit'] = { action: 'taxbandits.tin-match', entityType: 'recipient', entityId: recip.id, detail: { submissionId: sub.submissionId } };
       return void res.json({ async: true, status: sub.status, submissionId: sub.submissionId });
     }
