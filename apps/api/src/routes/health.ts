@@ -7,6 +7,7 @@ import { sql } from 'drizzle-orm';
 import { getQueue, getRedis, getRenderClient, loadEnv, QUEUE_NAMES, type QueueName } from '@vibe1099/core';
 import { getDb } from '@vibe1099/db';
 import { h } from '../middleware/error.js';
+import { computeApplianceHealth, type StatusCheck } from './appliance-health.js';
 
 export const APP_VERSION = '0.1.0';
 
@@ -36,7 +37,7 @@ healthRouter.get(
   '/status',
   h(async (_req, res) => {
     const env = loadEnv();
-    const checks: Record<string, unknown> = {};
+    const checks: Record<string, StatusCheck> = {};
 
     try {
       await getDb().execute(sql`SELECT 1`);
@@ -62,16 +63,21 @@ healthRouter.get(
       checks['queues'] = { ok: false, error: (err as Error).message };
     }
 
-    // IRIS reachability: DNS/TCP-level probe of the configured environment base
+    // IRIS reachability — INFORMATIONAL ONLY (see computeApplianceHealth). A
+    // DNS/TCP-level probe of the configured IRIS environment, reported for
+    // operators but never gating appliance health: the IRS endpoint is
+    // unreachable by default (pre-enrollment) and on restricted-egress
+    // appliances, and its outages are not this app's health. Short timeout so a
+    // slow/unreachable IRS never stalls the console's health poll.
     const irisBase = env.IRIS_MOCK_BASE_URL || env.IRIS_ATS_BASE_URL;
     try {
-      const probe = await fetch(irisBase, { method: 'HEAD', signal: AbortSignal.timeout(4000) });
-      checks['iris'] = { ok: probe.status < 600, status: probe.status };
+      const probe = await fetch(irisBase, { method: 'HEAD', signal: AbortSignal.timeout(2500) });
+      checks['iris'] = { ok: probe.status < 600, status: probe.status, informational: true };
     } catch (err) {
-      checks['iris'] = { ok: false, error: (err as Error).message };
+      checks['iris'] = { ok: false, error: (err as Error).message, informational: true };
     }
 
-    const allOk = Object.values(checks).every((c) => (c as { ok: boolean }).ok);
+    const allOk = computeApplianceHealth(checks);
     res.status(allOk ? 200 : 503).json({ ok: allOk, version: APP_VERSION, checks });
   }),
 );

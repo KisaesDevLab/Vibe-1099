@@ -64,11 +64,34 @@ encrypted TIN, JWK, and W-9 PDF — it must be in the appliance's sealed backup.
 
 SMTP/SMS config inherits from appliance-level env where present (same variable names).
 
+## Health & readiness contract
+
+Two probes, deliberately different in scope:
+
+- **`/api/health`** — cheap liveness (`{ok:true}`). This is the Compose container
+  healthcheck; it drives restarts. Never touches a dependency.
+- **`/api/status`** — the appliance console verdict (manifest `health:`). `200 {ok:true}`
+  when the app's **own bundled dependencies** are up (postgres, redis, render, queues);
+  `503` when one is down, with per-dependency detail in `checks`.
+
+  **IRIS reachability is informational only** (`checks.iris.informational: true`) and never
+  flips the verdict. The IRS IRIS A2A endpoint is unreachable by default — a firm enrolls for
+  its TCC months after install — and is often unreachable from a LAN/Tailscale-only appliance
+  with restricted egress, on top of the IRS's own maintenance windows. If it gated health the
+  console would show a healthy app as permanently down and block upgrades. Live IRIS/transmit
+  problems surface through the IRIS transmission log and stall alerting, not this probe.
+
+Neither probe is authenticated or IP-allowlisted, so the console can poll them over the
+internal network before any staff session exists.
+
 ## Console actions
 
 - **install:** `docker compose up -d` (migrations auto-run)
-- **upgrade:** pull images → `docker compose up -d` → hit `/api/status` until green
-  (migration-on-upgrade smoke: `scripts/upgrade-smoke.sh`)
+- **upgrade:** pull images → `docker compose up -d` → poll `/api/status` until green
+  (migration-on-upgrade smoke: `scripts/upgrade-smoke.sh`). The smoke test probes **inside the
+  api container** (`docker compose exec api node -e "fetch('http://localhost:8210/…')"`), matching
+  the Compose healthcheck: the api service is `expose`-only — only `web:8211` is host-published —
+  so the check must not assume `8210` is reachable from the host.
 - **backup:** docs/backup-restore.md (pg_dump into `vibe1099-backups`, Duplicati-compatible)
 - **uninstall / data export:** `docker compose down`; export first via Settings → vault export
   (encrypted) + `pg_dump`; volumes `vibe1099-*` then removable.

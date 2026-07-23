@@ -114,8 +114,12 @@ in this environment.
 - ✅ Manifest fragment (appliance/manifest.yaml), compose, ports registered
 - ✅ Caddy route + split-exposure doc · ✅ compatibility addendum · ✅ secrets via env/secret store
 - ✅ SMTP/SMS inherited via env · ✅ uninstall/export procedure · ✅ licensing gate (flag off)
+- ✅ Health contract: `/api/status` verdict = bundled deps only (postgres/redis/render/queues);
+  IRIS reachability is informational and never flips it (was gating → permanent 503 pre-enrollment
+  / restricted egress). Regression test `tests/appliance-status.test.ts`.
+- ✅ Migration-on-upgrade smoke test (`scripts/upgrade-smoke.sh`) — probes in-container via
+  `docker compose exec` (api is `expose`-only; the old `curl localhost:8210` never connected).
 - ⬜ Wire into the actual appliance console repo (lives outside this repo)
-- ⬜ Migration-on-upgrade smoke test in the appliance pipeline (script provided)
 
 ## Addendum B — deferred (unchanged)
 MOFTP, combined statements, more form types, more states, §4.6 e-consent, bulk TIN matching,
