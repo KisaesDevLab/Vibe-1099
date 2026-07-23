@@ -27,7 +27,7 @@ healthRouter.get(
     res.json({
       name: 'Vibe 1099',
       version: APP_VERSION,
-      license: 'PolyForm Internal Use 1.0.0 (commercial license required for client-portal access)',
+      license: 'MIT',
       vendor: 'Kisaes LLC / KisaesDevLab',
     });
   }),

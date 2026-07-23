@@ -2,7 +2,7 @@
   "name": "@vibe1099/worker",
   "version": "0.1.0",
   "private": true,
-  "license": "PolyForm-Small-Business-1.0.0",
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "dev": "tsx watch --env-file-if-exists=../../.env src/index.ts",

@@ -8,8 +8,7 @@ CPA firms. Standalone Docker appliance in the Vibe suite (Kisaes LLC).
 CF/SF election · **Paper:** Z-fold pressure-seal Copy B with printed backer ·
 **Portals:** client entry (magic link), recipient download (last-4 challenge), W-9 collection.
 
-**License:** PolyForm Small Business 1.0.0 — see [LICENSE](LICENSE). A commercial license is
-required for client-portal access (MyBooks model, three tiers).
+**License:** MIT — see [LICENSE](LICENSE).
 
 ## Architecture
 
