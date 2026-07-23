@@ -15,7 +15,7 @@ Source plan: `VIBE_1099_BUILD_PLAN.md`. ✅ done · 🟡 partial (see note) · �
 - ✅ Seed: demo firm, 2 payers, 12 recipients, NEC/MISC/INT/DIV records
 - ✅ CI (typecheck, tests, web build, docker builds) — lint wired via eslint config
 - ✅ CLAUDE.md, PHASES.md, STATE.md, QUESTIONS.md
-- ✅ License headers via package.json license field; commercial gate flag (LICENSE_REQUIRED)
+- ✅ License: MIT via package.json license field (no runtime license gating)
 - ✅ Ports 8210/8211/8212 · ✅ /api/about version endpoint · ✅ error taxonomy (shared/errors.ts)
 - ✅ README with appliance install stub
 
@@ -113,7 +113,7 @@ in this environment.
 ## Addendum A — Appliance integration
 - ✅ Manifest fragment (appliance/manifest.yaml), compose, ports registered
 - ✅ Caddy route + split-exposure doc · ✅ compatibility addendum · ✅ secrets via env/secret store
-- ✅ SMTP/SMS inherited via env · ✅ uninstall/export procedure · ✅ licensing gate (flag off)
+- ✅ SMTP/SMS inherited via env · ✅ uninstall/export procedure · ✅ MIT license (no runtime gating)
 - ✅ Health contract: `/api/status` verdict = bundled deps only (postgres/redis/render/queues);
   IRIS reachability is informational and never flips it (was gating → permanent 503 pre-enrollment
   / restricted egress). Regression test `tests/appliance-status.test.ts`.

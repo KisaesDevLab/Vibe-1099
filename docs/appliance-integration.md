@@ -98,5 +98,5 @@ internal network before any staff session exists.
 
 ## Licensing
 
-`LICENSE_REQUIRED=0` ships default (licensing.kisaes.com is later-phase). Usage metering
-(payer count, client-portal seats) is live at Settings → License for tier enforcement later.
+The project is MIT-licensed (see `LICENSE`); there is no runtime license gating or activation
+server. The appliance manifest's `license:` field reports `MIT`.

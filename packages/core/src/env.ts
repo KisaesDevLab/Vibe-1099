@@ -23,9 +23,6 @@ const zEnv = z.object({
   PORTAL_BASE_URL: z.string().url().default('http://localhost:8211'),
   RENDER_URL: z.string().url().default('http://localhost:8212'),
 
-  LICENSE_REQUIRED: z.coerce.number().int().default(0),
-  LICENSE_SERVER_URL: z.string().default('https://licensing.kisaes.com'),
-
   // appliance-level email default (firms can override in Settings). 'env' resolves
   // to SMTP if SMTP_HOST is set, else EmailIt if EMAILIT_API_KEY is set, else null.
   EMAIL_PROVIDER: z.enum(['auto', 'smtp', 'emailit', 'none']).default('auto'),

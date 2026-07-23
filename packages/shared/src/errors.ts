@@ -34,9 +34,6 @@ export const ErrorCodes = {
   E_RENDER: 'E_RENDER',
   E_DELIVERY: 'E_DELIVERY',
   E_MO_FILE: 'E_MO_FILE',
-
-  // Licensing
-  E_LICENSE: 'E_LICENSE',
 } as const;
 
 export type ErrorCode = (typeof ErrorCodes)[keyof typeof ErrorCodes];

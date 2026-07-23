@@ -293,7 +293,7 @@ TIN storage: AES-256-GCM at rest (per-install master key, envelope pattern from 
 - [ ] SMTP + SMS config inherited from appliance-level settings where present
 - [ ] Migration-on-upgrade smoke test in appliance pipeline
 - [ ] Uninstall/data-export procedure
-- [ ] Licensing check integration (licensing.kisaes.com)
+- [x] Licensing: MIT, no runtime license gating (LICENSE_REQUIRED activation feature removed)
 - [ ] Add to appliance seven-addenda compatibility review
 
 ## ADDENDUM B — Deferred / v1.5 Candidates

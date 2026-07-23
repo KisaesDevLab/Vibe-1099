@@ -9,7 +9,7 @@ import type { Me } from './Shell';
 interface Firm {
   id: string; name: string; ein: string; address: Record<string, string>; phone: string;
   irisEnvironment: string; moWithholdingId: string;
-  impositionOffsetX16: number; impositionOffsetY16: number; licenseTier: string;
+  impositionOffsetX16: number; impositionOffsetY16: number;
 }
 interface IrisSettings {
   tcc: string; apiClientId: string; hasJwk: boolean; publicJwk: Record<string, unknown> | null; environment: 'ATS' | 'PROD';
@@ -63,7 +63,6 @@ export function Settings() {
   const [users, setUsers] = useState<User[]>([]);
   const [audit, setAudit] = useState<AuditEntry[]>([]);
   const [queues, setQueues] = useState<Record<string, Record<string, number>>>({});
-  const [license, setLicense] = useState<Record<string, unknown> | null>(null);
   const [status, setStatus] = useState<Record<string, unknown> | null>(null);
   const [settings, setSettings] = useState<Record<string, unknown>>({});
   const [error, setError] = useState('');
@@ -95,7 +94,6 @@ export function Settings() {
     if (isAdmin) {
       api.get<IrisSettings>('/api/iris/settings').then(setIris).catch(() => {});
       api.get<{ users: User[] }>('/api/auth/users').then((r) => setUsers(r.users)).catch(() => {});
-      api.get<Record<string, unknown>>('/api/admin/license').then(setLicense).catch(() => {});
     }
     api.get<{ queues: Record<string, Record<string, number>> }>('/api/admin/queues').then((r) => setQueues(r.queues)).catch(() => {});
     // /api/status returns 503 when a bundled dependency (postgres/redis/render/
@@ -803,15 +801,6 @@ export function Settings() {
               ))}
             </tbody>
           </table>
-        </div>
-      )}
-
-      {tab === 'advanced' && isAdmin && license && (
-        <div className="panel">
-          <h2 style={{ marginTop: 0 }}>License</h2>
-          <p><strong>Tier:</strong> {String(license['tier'])} &nbsp; <strong>Enforcement:</strong> {license['licenseRequired'] ? 'ON' : 'off (license_required=0)'}</p>
-          <p><strong>Usage metering:</strong> {JSON.stringify(license['usage'])}</p>
-          {typeof license['note'] === 'string' && <p className="muted">{license['note'] as string}</p>}
         </div>
       )}
 

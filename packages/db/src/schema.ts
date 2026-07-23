@@ -72,9 +72,6 @@ export const firms = pgTable('firms', {
   // pressure-seal calibration (points, ±1/16" steps stored as 1/16" units)
   impositionOffsetX16: integer('imposition_offset_x16').notNull().default(0),
   impositionOffsetY16: integer('imposition_offset_y16').notNull().default(0),
-  // licensing
-  licenseKey: text('license_key').notNull().default(''),
-  licenseTier: text('license_tier').notNull().default('internal'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
