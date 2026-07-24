@@ -1,0 +1,88 @@
+name: Release
+
+# Cut a versioned release by pushing a tag, e.g.:  git tag v0.0.4 && git push origin v0.0.4
+# Verifies the tagged commit, builds + pushes the three appliance images to GHCR
+# (tagged with the version and `latest`), then creates the GitHub Release.
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write # create the GitHub Release
+  packages: write # push images to GHCR
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm lint
+      - run: pnpm test
+      - run: pnpm --filter @vibe1099/web build
+
+  images:
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Derive version + image prefix
+        id: meta
+        run: |
+          # tag v0.0.4 -> version 0.0.4; GHCR requires a lowercase owner
+          echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          echo "prefix=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build & push app image (api + worker share it)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.node
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.prefix }}/vibe1099-app:${{ steps.meta.outputs.version }}
+            ${{ steps.meta.outputs.prefix }}/vibe1099-app:latest
+      - name: Build & push render image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./render
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.prefix }}/vibe1099-render:${{ steps.meta.outputs.version }}
+            ${{ steps.meta.outputs.prefix }}/vibe1099-render:latest
+      - name: Build & push web image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./apps/web
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.prefix }}/vibe1099-web:${{ steps.meta.outputs.version }}
+            ${{ steps.meta.outputs.prefix }}/vibe1099-web:latest
+
+  release:
+    needs: images
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes

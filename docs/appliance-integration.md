@@ -84,10 +84,31 @@ Two probes, deliberately different in scope:
 Neither probe is authenticated or IP-allowlisted, so the console can poll them over the
 internal network before any staff session exists.
 
+## Versioning & publishing
+
+The app version (`0.0.4`) is single-sourced across `package.json`, `appliance/manifest.yaml`
+(`version:`), and `APP_VERSION` (surfaced at `/api/about` and `/api/status`).
+
+Pushing a `v*` tag runs `.github/workflows/release.yml`, which verifies the commit, builds the
+three images, pushes them to GHCR — `ghcr.io/kisaesdevlab/vibe1099-{app,web,render}:<version>`
+(plus `latest`) — and creates the GitHub Release:
+
+```bash
+git tag v0.0.4 && git push origin v0.0.4
+```
+
+The appliance can either **build locally** (default) or **pull the published images**. Compose
+image refs are `${VIBE1099_REGISTRY:-}vibe1099-<svc>:${VIBE1099_VERSION:-0.0.4}`, so:
+
+- `VIBE1099_REGISTRY=` (empty, default) → builds `vibe1099-app:0.0.4` from source.
+- `VIBE1099_REGISTRY=ghcr.io/kisaesdevlab/` + `VIBE1099_VERSION=0.0.4` → `docker compose pull &&
+  docker compose up -d` deploys the exact published version (and the same vars pin a rollback).
+
 ## Console actions
 
 - **install:** `docker compose up -d` (migrations auto-run)
-- **upgrade:** pull images → `docker compose up -d` → poll `/api/status` until green
+- **upgrade:** set `VIBE1099_VERSION` (and `VIBE1099_REGISTRY` if pulling), pull images →
+  `docker compose up -d` → poll `/api/status` until green
   (migration-on-upgrade smoke: `scripts/upgrade-smoke.sh`). The smoke test probes **inside the
   api container** (`docker compose exec api node -e "fetch('http://localhost:8210/…')"`), matching
   the Compose healthcheck: the api service is `expose`-only — only `web:8211` is host-published —
