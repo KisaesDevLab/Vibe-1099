@@ -1,11 +1,11 @@
 /**
  * Admin: firm settings, audit log viewer + export, queue dashboard (staff-only),
- * imposition calibration, licensing (gated by LICENSE_REQUIRED flag), retention.
+ * imposition calibration, retention.
  */
 import { Router } from 'express';
 import { and, desc, eq, gte, lte, sql } from 'drizzle-orm';
 import { z } from 'zod';
-import { AppError, ErrorCodes } from '@vibe1099/shared';
+import { AppError } from '@vibe1099/shared';
 import { getCrypto, getQueue, loadEnv, QUEUE_NAMES, type QueueName } from '@vibe1099/core';
 import { auditLog, firms, getDb } from '@vibe1099/db';
 import { h } from '../middleware/error.js';
@@ -90,7 +90,6 @@ adminRouter.get(
         moWithholdingId: firm.moWithholdingId,
         impositionOffsetX16: firm.impositionOffsetX16,
         impositionOffsetY16: firm.impositionOffsetY16,
-        licenseTier: firm.licenseTier,
       },
     });
   }),
@@ -435,46 +434,5 @@ adminRouter.post(
     for (const j of mine) await j.retry();
     res.locals['audit'] = { action: 'queue.retry-failed', entityType: 'queue', entityId: name, detail: { count: mine.length } };
     res.json({ retried: mine.length });
-  }),
-);
-
-// --- licensing (usage metering hooks; enforcement gated by LICENSE_REQUIRED) ------------
-
-adminRouter.get(
-  '/license',
-  requireStaff('admin'),
-  h(async (req, res) => {
-    const env = loadEnv();
-    const db = getDb();
-    const firm = await db.query.firms.findFirst({ where: eq(firms.id, req.staff!.firmId) });
-    // usage metering for commercial tiers: payer count + client-portal seats
-    const [meter] = await db.execute(sql`SELECT
-      (SELECT count(*)::int FROM payers WHERE firm_id = ${req.staff!.firmId} AND active) AS payer_count,
-      (SELECT count(DISTINCT payer_id)::int FROM client_invites WHERE firm_id = ${req.staff!.firmId} AND revoked_at IS NULL) AS portal_seats
-    `).then((r) => (r as unknown as { rows: Array<{ payer_count: number; portal_seats: number }> }).rows);
-    res.json({
-      licenseRequired: env.LICENSE_REQUIRED === 1,
-      licenseServer: env.LICENSE_SERVER_URL,
-      tier: firm?.licenseTier ?? 'internal',
-      keyPresent: !!firm?.licenseKey,
-      usage: meter ?? { payer_count: 0, portal_seats: 0 },
-      note: env.LICENSE_REQUIRED === 0 ? 'License enforcement disabled (license_required=0); licensing.kisaes.com integration is later-phase.' : undefined,
-    });
-  }),
-);
-
-adminRouter.put(
-  '/license',
-  requireStaff('admin'),
-  h(async (req, res) => {
-    const { licenseKey } = z.object({ licenseKey: z.string().max(500) }).parse(req.body);
-    const env = loadEnv();
-    if (env.LICENSE_REQUIRED === 1) {
-      // later-phase: validate against licensing.kisaes.com; hard-fail for now
-      throw new AppError(ErrorCodes.E_LICENSE, 'License validation service is not yet available', 503);
-    }
-    await getDb().update(firms).set({ licenseKey, updatedAt: new Date() }).where(eq(firms.id, req.staff!.firmId));
-    res.locals['audit'] = { action: 'license.update', entityType: 'firm', entityId: req.staff!.firmId };
-    res.json({ ok: true });
   }),
 );

@@ -58,7 +58,7 @@ These deviate from intuition or from the wider Vibe suite; getting them wrong co
 - **Form definitions are registry-driven and tax-year-keyed:** `packages/shared` holds a form-type registry keyed by `(form_type, tax_year)` mapping each box to its IRIS XML element, MO Pub 1220 amount-field position, and Copy B template slot. Add forms/years by extending the registry, not by branching logic.
 - **Corrections come from an immutable as-filed snapshot** taken on transmit; corrected records diff against that snapshot. Only `accepted` records are correctable. Type 1 = one-transaction; Type 2 = two-transaction (zeroing record + new original, transmitted as a linked pair).
 - **`audit_log` is append-only**; all mutations go through audit middleware.
-- **Licensing:** PolyForm Small Business 1.0.0; commercial features (client-portal access) are gated behind a license flag. Per project memory, the licensing server (`licensing.kisaes.com`) is a later phase and activation is gated by a `license_required=0` flag for now.
+- **Licensing:** MIT (see LICENSE). There is no runtime license gating or activation server — the software is unrestricted. (The former `LICENSE_REQUIRED` flag and per-firm license columns were removed.)
 
 ## Compliance frame
 

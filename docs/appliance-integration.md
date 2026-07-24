@@ -64,16 +64,61 @@ encrypted TIN, JWK, and W-9 PDF — it must be in the appliance's sealed backup.
 
 SMTP/SMS config inherits from appliance-level env where present (same variable names).
 
+## Health & readiness contract
+
+Two probes, deliberately different in scope:
+
+- **`/api/health`** — cheap liveness (`{ok:true}`). This is the Compose container
+  healthcheck; it drives restarts. Never touches a dependency.
+- **`/api/status`** — the appliance console verdict (manifest `health:`). `200 {ok:true}`
+  when the app's **own bundled dependencies** are up (postgres, redis, render, queues);
+  `503` when one is down, with per-dependency detail in `checks`.
+
+  **IRIS reachability is informational only** (`checks.iris.informational: true`) and never
+  flips the verdict. The IRS IRIS A2A endpoint is unreachable by default — a firm enrolls for
+  its TCC months after install — and is often unreachable from a LAN/Tailscale-only appliance
+  with restricted egress, on top of the IRS's own maintenance windows. If it gated health the
+  console would show a healthy app as permanently down and block upgrades. Live IRIS/transmit
+  problems surface through the IRIS transmission log and stall alerting, not this probe.
+
+Neither probe is authenticated or IP-allowlisted, so the console can poll them over the
+internal network before any staff session exists.
+
+## Versioning & publishing
+
+The app version (`0.0.4`) is single-sourced across `package.json`, `appliance/manifest.yaml`
+(`version:`), and `APP_VERSION` (surfaced at `/api/about` and `/api/status`).
+
+`.github/workflows/release.yml` verifies the commit, builds the three images, pushes them to
+GHCR — `ghcr.io/kisaesdevlab/vibe1099-{app,web,render}:<version>` (plus `latest`) — and creates
+the GitHub Release. Trigger it either by pushing a tag or from the Actions tab:
+
+```bash
+git tag v0.0.4 && git push origin v0.0.4      # tag push
+# — or — Actions → Release → Run workflow → version = 0.0.4   (also creates the vX.Y.Z tag)
+```
+
+The appliance can either **build locally** (default) or **pull the published images**. Compose
+image refs are `${VIBE1099_REGISTRY:-}vibe1099-<svc>:${VIBE1099_VERSION:-0.0.4}`, so:
+
+- `VIBE1099_REGISTRY=` (empty, default) → builds `vibe1099-app:0.0.4` from source.
+- `VIBE1099_REGISTRY=ghcr.io/kisaesdevlab/` + `VIBE1099_VERSION=0.0.4` → `docker compose pull &&
+  docker compose up -d` deploys the exact published version (and the same vars pin a rollback).
+
 ## Console actions
 
 - **install:** `docker compose up -d` (migrations auto-run)
-- **upgrade:** pull images → `docker compose up -d` → hit `/api/status` until green
-  (migration-on-upgrade smoke: `scripts/upgrade-smoke.sh`)
+- **upgrade:** set `VIBE1099_VERSION` (and `VIBE1099_REGISTRY` if pulling), pull images →
+  `docker compose up -d` → poll `/api/status` until green
+  (migration-on-upgrade smoke: `scripts/upgrade-smoke.sh`). The smoke test probes **inside the
+  api container** (`docker compose exec api node -e "fetch('http://localhost:8210/…')"`), matching
+  the Compose healthcheck: the api service is `expose`-only — only `web:8211` is host-published —
+  so the check must not assume `8210` is reachable from the host.
 - **backup:** docs/backup-restore.md (pg_dump into `vibe1099-backups`, Duplicati-compatible)
 - **uninstall / data export:** `docker compose down`; export first via Settings → vault export
   (encrypted) + `pg_dump`; volumes `vibe1099-*` then removable.
 
 ## Licensing
 
-`LICENSE_REQUIRED=0` ships default (licensing.kisaes.com is later-phase). Usage metering
-(payer count, client-portal seats) is live at Settings → License for tier enforcement later.
+The project is MIT-licensed (see `LICENSE`); there is no runtime license gating or activation
+server. The appliance manifest's `license:` field reports `MIT`.
