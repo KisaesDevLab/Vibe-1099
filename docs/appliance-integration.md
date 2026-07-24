@@ -89,12 +89,13 @@ internal network before any staff session exists.
 The app version (`0.0.4`) is single-sourced across `package.json`, `appliance/manifest.yaml`
 (`version:`), and `APP_VERSION` (surfaced at `/api/about` and `/api/status`).
 
-Pushing a `v*` tag runs `.github/workflows/release.yml`, which verifies the commit, builds the
-three images, pushes them to GHCR — `ghcr.io/kisaesdevlab/vibe1099-{app,web,render}:<version>`
-(plus `latest`) — and creates the GitHub Release:
+`.github/workflows/release.yml` verifies the commit, builds the three images, pushes them to
+GHCR — `ghcr.io/kisaesdevlab/vibe1099-{app,web,render}:<version>` (plus `latest`) — and creates
+the GitHub Release. Trigger it either by pushing a tag or from the Actions tab:
 
 ```bash
-git tag v0.0.4 && git push origin v0.0.4
+git tag v0.0.4 && git push origin v0.0.4      # tag push
+# — or — Actions → Release → Run workflow → version = 0.0.4   (also creates the vX.Y.Z tag)
 ```
 
 The appliance can either **build locally** (default) or **pull the published images**. Compose

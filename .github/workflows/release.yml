@@ -1,19 +1,48 @@
 name: Release
 
-# Cut a versioned release by pushing a tag, e.g.:  git tag v0.0.4 && git push origin v0.0.4
-# Verifies the tagged commit, builds + pushes the three appliance images to GHCR
-# (tagged with the version and `latest`), then creates the GitHub Release.
+# Cut a versioned release two ways:
+#   - push a tag:        git tag v0.0.4 && git push origin v0.0.4
+#   - or run manually:   Actions → Release → Run workflow → version = 0.0.4
+# Either way it verifies the commit, builds + pushes the three appliance images to
+# GHCR (tagged with the version and `latest`), then creates the GitHub Release
+# (workflow_dispatch also creates the vX.Y.Z tag at the run's commit).
 on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release, e.g. 0.0.4 (creates tag vX.Y.Z)'
+        required: true
+        type: string
 
 permissions:
-  contents: write # create the GitHub Release
+  contents: write # create the GitHub Release (and tag, on manual runs)
   packages: write # push images to GHCR
 
 jobs:
+  meta:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.m.outputs.version }}
+      tag: ${{ steps.m.outputs.tag }}
+      prefix: ${{ steps.m.outputs.prefix }}
+    steps:
+      - id: m
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            VERSION="${GITHUB_REF_NAME#v}"   # tag v0.0.4 -> 0.0.4
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+          # GHCR requires a lowercase owner
+          echo "prefix=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+
   verify:
+    needs: meta
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -31,16 +60,10 @@ jobs:
       - run: pnpm --filter @vibe1099/web build
 
   images:
-    needs: verify
+    needs: [meta, verify]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Derive version + image prefix
-        id: meta
-        run: |
-          # tag v0.0.4 -> version 0.0.4; GHCR requires a lowercase owner
-          echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-          echo "prefix=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -53,27 +76,27 @@ jobs:
           file: Dockerfile.node
           push: true
           tags: |
-            ${{ steps.meta.outputs.prefix }}/vibe1099-app:${{ steps.meta.outputs.version }}
-            ${{ steps.meta.outputs.prefix }}/vibe1099-app:latest
+            ${{ needs.meta.outputs.prefix }}/vibe1099-app:${{ needs.meta.outputs.version }}
+            ${{ needs.meta.outputs.prefix }}/vibe1099-app:latest
       - name: Build & push render image
         uses: docker/build-push-action@v6
         with:
           context: ./render
           push: true
           tags: |
-            ${{ steps.meta.outputs.prefix }}/vibe1099-render:${{ steps.meta.outputs.version }}
-            ${{ steps.meta.outputs.prefix }}/vibe1099-render:latest
+            ${{ needs.meta.outputs.prefix }}/vibe1099-render:${{ needs.meta.outputs.version }}
+            ${{ needs.meta.outputs.prefix }}/vibe1099-render:latest
       - name: Build & push web image
         uses: docker/build-push-action@v6
         with:
           context: ./apps/web
           push: true
           tags: |
-            ${{ steps.meta.outputs.prefix }}/vibe1099-web:${{ steps.meta.outputs.version }}
-            ${{ steps.meta.outputs.prefix }}/vibe1099-web:latest
+            ${{ needs.meta.outputs.prefix }}/vibe1099-web:${{ needs.meta.outputs.version }}
+            ${{ needs.meta.outputs.prefix }}/vibe1099-web:latest
 
   release:
-    needs: images
+    needs: [meta, images]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -83,6 +106,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" \
-            --title "$GITHUB_REF_NAME" \
+          gh release create "${{ needs.meta.outputs.tag }}" \
+            --title "${{ needs.meta.outputs.tag }}" \
+            --target "$GITHUB_SHA" \
             --generate-notes
