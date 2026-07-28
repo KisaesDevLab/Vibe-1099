@@ -21,6 +21,13 @@ const zEnv = z.object({
 
   APP_BASE_URL: z.string().url().default('http://localhost:8211'),
   PORTAL_BASE_URL: z.string().url().default('http://localhost:8211'),
+  // Opt-out of the production https-only interlock for APP_BASE_URL /
+  // PORTAL_BASE_URL ONLY — never for IRS/provider endpoints. For deployments
+  // whose own base URLs are legitimately plain HTTP: the Vibe Appliance's LAN
+  // mode (http://<lan-ip>:<port>, never leaves the office network) and its
+  // Tailscale mode (plain HTTP inside the WireGuard tunnel). Anything
+  // internet-facing must leave this unset and use https.
+  ALLOW_HTTP_BASE_URLS: z.enum(['0', '1']).default('0'),
   RENDER_URL: z.string().url().default('http://localhost:8212'),
 
   // appliance-level email default (firms can override in Settings). 'env' resolves
@@ -105,17 +112,32 @@ const zEnv = z.object({
           'IRIS_MOCK_BASE_URL / TAX1099_MOCK_BASE_URL / TAXBANDITS_MOCK_BASE_URL must be empty in production — a mock base URL would mark returns "accepted" without ever filing them with the IRS.',
       });
     }
-    const httpsOnly: Array<[keyof typeof env, string]> = [
+    // IRS/provider endpoints: https-only in production, UNCONDITIONALLY.
+    // These carry TINs to third parties over the public internet; there is no
+    // deployment shape where plain HTTP to the IRS is legitimate.
+    const httpsAlways: Array<[keyof typeof env, string]> = [
       ['IRIS_PROD_BASE_URL', env.IRIS_PROD_BASE_URL],
       ['IRIS_ATS_BASE_URL', env.IRIS_ATS_BASE_URL],
       ['TAX1099_PROD_BASE_URL', env.TAX1099_PROD_BASE_URL],
       ['TAX1099_SANDBOX_BASE_URL', env.TAX1099_SANDBOX_BASE_URL],
       ['TAXBANDITS_PROD_BASE_URL', env.TAXBANDITS_PROD_BASE_URL],
       ['TAXBANDITS_SANDBOX_BASE_URL', env.TAXBANDITS_SANDBOX_BASE_URL],
-      ['APP_BASE_URL', env.APP_BASE_URL],
-      ['PORTAL_BASE_URL', env.PORTAL_BASE_URL],
     ];
-    for (const [key, val] of httpsOnly) {
+    // The app's OWN base URLs: same rule by default, but a deployment whose
+    // traffic never crosses the public internet may opt out with
+    // ALLOW_HTTP_BASE_URLS=1. Concretely: the Vibe Appliance's LAN mode
+    // serves http://<lan-ip>:<port> on the office network, and its Tailscale
+    // mode serves plain HTTP inside the WireGuard tunnel — in both, an https
+    // requirement here doesn't add transport security (there is no public
+    // hop), it just makes the app refuse to boot.
+    const httpsUnlessOptedOut: Array<[keyof typeof env, string]> =
+      env.ALLOW_HTTP_BASE_URLS === '1'
+        ? []
+        : [
+            ['APP_BASE_URL', env.APP_BASE_URL],
+            ['PORTAL_BASE_URL', env.PORTAL_BASE_URL],
+          ];
+    for (const [key, val] of [...httpsAlways, ...httpsUnlessOptedOut]) {
       if (val && !val.startsWith('https://')) {
         ctx.addIssue({ code: z.ZodIssueCode.custom, message: `${String(key)} must be https:// in production (got ${val}).` });
       }
