@@ -79,6 +79,25 @@ export class RenderClient {
     return Buffer.from(body.zip, 'base64');
   }
 
+  /** Per-page text layer of an uploaded PDF (sidecar endpoint; no OCR). */
+  async extractText(pdf: Buffer, timeoutMs = 30_000): Promise<string[]> {
+    const res = await fetch(`${this.baseUrl}/extract-text`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ pdf: pdf.toString('base64') }),
+      signal: AbortSignal.timeout(timeoutMs),
+    }).catch((err: Error) => {
+      throw new AppError(ErrorCodes.E_RENDER, `Render sidecar unreachable: ${err.message}`, 502);
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      // 422s carry an operator-actionable reason (encrypted, image-only, corrupt)
+      throw new AppError(ErrorCodes.E_RENDER, `Text extraction failed (${res.status}): ${text.slice(0, 500)}`, res.status === 422 ? 422 : 502);
+    }
+    const body = (await res.json()) as { pages: string[] };
+    return body.pages;
+  }
+
   async health(): Promise<boolean> {
     try {
       const res = await fetch(`${this.baseUrl}/health`, { signal: AbortSignal.timeout(3_000) });

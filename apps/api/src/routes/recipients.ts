@@ -6,8 +6,8 @@ import { Router } from 'express';
 import { and, desc, eq, ilike, isNull, or, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { AppError, zRecipientInput, zTinType, normalizeTin } from '@vibe1099/shared';
-import { audit, getCrypto } from '@vibe1099/core';
-import { formRecords, getDb, recipientAddressHistory, recipients, w9Requests } from '@vibe1099/db';
+import { audit, getCrypto, getRenderClient, parse1099Print } from '@vibe1099/core';
+import { formRecords, getDb, payers, recipientAddressHistory, recipients, w9Requests } from '@vibe1099/db';
 import { h } from '../middleware/error.js';
 import { requireStaff } from '../middleware/auth.js';
 import {
@@ -202,6 +202,70 @@ recipientsRouter.post(
 );
 
 // --- CSV import with column mapper + dedupe-by-TIN preview ---------------------
+
+// --- Prior-year print-PDF import: upload -> extract -> parse -> review proposal ---
+// Stateless: nothing is written here. The client reviews/edits the proposal, then
+// imports through the existing POST /api/payers and POST /api/recipients/import.
+recipientsRouter.post(
+  '/import/pdf',
+  h(async (req, res) => {
+    const { pdf } = z.object({ pdf: z.string().min(100).max(15_000_000) }).parse(req.body);
+    const buf = Buffer.from(pdf, 'base64');
+    if (!buf.subarray(0, 5).toString('latin1').startsWith('%PDF')) {
+      throw AppError.validation('Not a PDF file.');
+    }
+    const pages = await getRenderClient().extractText(buf);
+    const parsed = parse1099Print(pages);
+
+    const db = getDb();
+    const firmId = req.staff!.firmId;
+
+    // Vault matches per recipient (tin_hash lookup — no decryption).
+    const recipientsOut = [];
+    for (const r of parsed.recipients) {
+      let match = null;
+      if (r.tin && r.tinType) {
+        const m = await lookupByTin(db, firmId, r.tin, r.tinType);
+        if (m) match = { recipientId: m.recipientId, name1: m.name1, tinMasked: m.tinMasked };
+      }
+      recipientsOut.push({ ...r, match });
+    }
+
+    // Payer match: last4+type narrows, decrypt confirms (payers carry no tin_hash).
+    let payerMatch: { payerId: string; legalName: string } | null = null;
+    if (parsed.payer?.tin && parsed.payer.tinType) {
+      const tin = normalizeTin(parsed.payer.tin);
+      const candidates = await db
+        .select({ id: payers.id, legalName: payers.legalName, tinEncrypted: payers.tinEncrypted })
+        .from(payers)
+        .where(and(eq(payers.firmId, firmId), eq(payers.tinLast4, tin.slice(-4)), eq(payers.tinType, parsed.payer.tinType)));
+      const crypto = getCrypto();
+      const hit = candidates.find((c) => normalizeTin(crypto.decrypt(c.tinEncrypted)) === tin);
+      if (hit) payerMatch = { payerId: hit.id, legalName: hit.legalName };
+    }
+
+    // Parse is read-only, but it handles a TIN-bearing upload — leave a trace (counts only).
+    res.locals['audit'] = {
+      action: 'recipient.import.pdf.parse',
+      entityType: 'recipient',
+      detail: {
+        pageCount: pages.length,
+        formType: parsed.formType,
+        taxYear: parsed.taxYear,
+        recipients: recipientsOut.length,
+        payerMatched: Boolean(payerMatch),
+        warnings: parsed.warnings.length,
+      },
+    };
+    res.json({
+      taxYear: parsed.taxYear,
+      formType: parsed.formType,
+      payer: parsed.payer ? { ...parsed.payer, match: payerMatch } : null,
+      recipients: recipientsOut,
+      warnings: parsed.warnings,
+    });
+  }),
+);
 
 const zImportRow = z.object({
   tin: z.string(),

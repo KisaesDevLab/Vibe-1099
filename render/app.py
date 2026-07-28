@@ -113,6 +113,31 @@ def merge_pdfs():
     return jsonify(pdf=base64.b64encode(out.getvalue()).decode(), pageCount=page_count)
 
 
+@app.post("/extract-text")
+def extract_text():
+    """Per-page text layer of an uploaded PDF. {pdf: base64} -> {pages: [str], pageCount}.
+
+    Used by the prior-year 1099 PDF import (staff upload -> parse -> review).
+    Extraction only — no OCR: a scanned/image-only PDF yields empty page strings
+    and the caller reports that to the operator. Internal-network only, like
+    every sidecar endpoint.
+    """
+    body = request.get_json(force=True)
+    b64 = body.get("pdf", "")
+    if not b64:
+        return jsonify(error="no pdf provided"), 400
+    try:
+        reader = PdfReader(io.BytesIO(base64.b64decode(b64)))
+        if reader.is_encrypted:
+            return jsonify(error="pdf is password-protected"), 422
+        if len(reader.pages) > 200:
+            return jsonify(error="pdf too large (max 200 pages)"), 422
+        pages = [(page.extract_text() or "") for page in reader.pages]
+    except Exception as exc:  # noqa: BLE001
+        return jsonify(error=f"extract failed: {exc}"), 422
+    return jsonify(pages=pages, pageCount=len(pages))
+
+
 @app.post("/zip")
 def zip_files():
     """Bundle named files into a single zip. {files: [{name, pdf(base64)}]} -> {zip: base64}."""

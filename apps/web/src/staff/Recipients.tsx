@@ -2,6 +2,7 @@ import { FormEvent, useEffect, useState } from 'react';
 import { api, ApiError } from '../api';
 import { Paginator } from '../components/Paginator';
 import { Modal } from '../components/Modal';
+import { PdfImportWizard } from '../components/PdfImportWizard';
 import { RecipientPicker } from '../components/RecipientPicker';
 import { useDialogs } from '../components/Dialogs';
 
@@ -46,6 +47,7 @@ export function Recipients() {
   const [importText, setImportText] = useState('');
   const [importPreview, setImportPreview] = useState<Array<{ row: number; status: string; name?: string; reason?: string; matchName?: string }> | null>(null);
   const [showImport, setShowImport] = useState(false);
+  const [showPdfImport, setShowPdfImport] = useState(false);
   const [mergeDup, setMergeDup] = useState<{ id: string; name: string } | null>(null);
   const [history, setHistory] = useState<Array<{ name1: string; address: Record<string, string>; source: string; createdAt: string }> | null>(null);
   const dialogs = useDialogs();
@@ -197,6 +199,7 @@ export function Recipients() {
       <div className="row" style={{ justifyContent: 'space-between' }}>
         <h1>Recipient vault</h1>
         <div>
+          <button className="secondary" style={{ marginRight: 8 }} onClick={() => setShowPdfImport(true)}>Import from PDF</button>
           <button className="secondary" style={{ marginRight: 8 }} onClick={() => { setShowImport(true); setImportPreview(null); }}>CSV import</button>
           <button onClick={openAdd}>+ Add recipient</button>
         </div>
@@ -293,6 +296,10 @@ export function Recipients() {
       )}
 
       {/* --- CSV import modal --- */}
+      {showPdfImport && (
+        <PdfImportWizard onClose={() => setShowPdfImport(false)} onImported={() => void load()} />
+      )}
+
       {showImport && (
         <Modal title="CSV import — recipients" width={760} onClose={() => { setShowImport(false); setImportPreview(null); }}>
           <p className="muted">Header row: tin,tinType,name1,name2,line1,line2,city,state,zip,email,mobile</p>
