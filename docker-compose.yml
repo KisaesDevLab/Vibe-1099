@@ -38,7 +38,7 @@ services:
 
   render:
     build: ./render
-    image: ${VIBE1099_REGISTRY:-}vibe1099-render:${VIBE1099_VERSION:-0.1.1}
+    image: ${VIBE1099_REGISTRY:-}vibe1099-render:${VIBE1099_VERSION:-0.1.2}
     # No host port publish: the render sidecar is reached only over the internal
     # Docker network by api/worker (RENDER_URL=http://render:8212). Exposing it
     # publicly would open the /render + /validate-xml endpoints to untrusted input.
@@ -50,7 +50,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.node
-    image: ${VIBE1099_REGISTRY:-}vibe1099-app:${VIBE1099_VERSION:-0.1.1}
+    image: ${VIBE1099_REGISTRY:-}vibe1099-app:${VIBE1099_VERSION:-0.1.2}
     command: ["pnpm", "--filter", "@vibe1099/api", "start"]
     environment: &appenv
       NODE_ENV: production
@@ -64,6 +64,15 @@ services:
       # (appliance LAN / Tailscale modes, no public hop). Never relaxes the
       # IRS/provider endpoint checks — see packages/core/src/env.ts.
       ALLOW_HTTP_BASE_URLS: ${ALLOW_HTTP_BASE_URLS:-0}
+      # First-run bootstrap inputs (pnpm bootstrap:firm — real firm + one
+      # admin, NO demo data). Compose enumerates the container environment
+      # explicitly, so without these entries the .env values would never
+      # reach `docker compose exec api pnpm bootstrap:firm` — the same trap
+      # ALLOW_HTTP_BASE_URLS hit in 0.1.1. Empty is fine at serve time; the
+      # bootstrap itself refuses to run without them.
+      VIBE1099_ADMIN_EMAIL: ${VIBE1099_ADMIN_EMAIL:-}
+      VIBE1099_ADMIN_PASSWORD: ${VIBE1099_ADMIN_PASSWORD:-}
+      FIRM_NAME: ${FIRM_NAME:-}
       RENDER_URL: http://render:8212
       SMTP_HOST: ${SMTP_HOST:-}
       SMTP_PORT: ${SMTP_PORT:-587}
@@ -121,7 +130,7 @@ services:
     restart: unless-stopped
 
   worker:
-    image: ${VIBE1099_REGISTRY:-}vibe1099-app:${VIBE1099_VERSION:-0.1.1}
+    image: ${VIBE1099_REGISTRY:-}vibe1099-app:${VIBE1099_VERSION:-0.1.2}
     build:
       context: .
       dockerfile: Dockerfile.node
@@ -138,7 +147,7 @@ services:
 
   web:
     build: ./apps/web
-    image: ${VIBE1099_REGISTRY:-}vibe1099-web:${VIBE1099_VERSION:-0.1.1}
+    image: ${VIBE1099_REGISTRY:-}vibe1099-web:${VIBE1099_VERSION:-0.1.2}
     ports:
       - "8211:8211"
     depends_on:

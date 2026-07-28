@@ -2,7 +2,7 @@
 id: vibe-1099
 name: Vibe 1099
 description: 1099 preparation, recipient delivery, and IRS IRIS A2A e-filing
-version: 0.1.1
+version: 0.1.2
 license: MIT
 compose: ../docker-compose.yml
 images:
