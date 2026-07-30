@@ -268,6 +268,9 @@ export const transmissions = pgTable('transmissions', {
   environment: text('environment').notNull().$type<'ATS' | 'PROD'>(),
   // filing backend that owns this transmission (worker dispatches accordingly)
   provider: text('provider').notNull().default('iris').$type<'iris' | 'tax1099' | 'taxbandits'>(),
+  // TaxBandits files one form type per submission (per-form Create/Status endpoints);
+  // this pins the form type so the ack poller hits the right Form1099<TYPE>/Status.
+  providerFormType: text('provider_form_type').$type<'NEC' | 'MISC' | 'INT' | 'DIV'>(),
   utid: text('utid').notNull(), // unique transmission id / submission ref (idempotency guard)
   receiptId: text('receipt_id'), // IRIS Receipt ID or Tax1099 submission id
   status: text('status')

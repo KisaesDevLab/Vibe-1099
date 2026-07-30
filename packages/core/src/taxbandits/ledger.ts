@@ -1,14 +1,18 @@
 /**
  * TaxBandits prepaid-credit cost ledger (addendum §2.6 / Phase TB-H).
  *
- * Every billable TaxBandits event records an integer-cents ledger row attributed
- * to firm → payer → transmission → form so firms can rebill clients. Rates are
- * contract-negotiated (not the retail sheet), so per-event amounts are supplied by
- * config/estimate, not hard-coded.
+ * Single source of truth for billable TaxBandits events, shared by the API
+ * (TIN-match submit) and the worker (e-file/correction ack). Every write goes
+ * through `recordCost`, which persists an integer-cents ledger row AND an
+ * append-only audit entry, attributed firm → payer → transmission → form so firms
+ * can rebill clients. Rates are contract-negotiated (not the retail sheet), so the
+ * authoritative charge is the prepaid-balance delta the API reports on each event;
+ * per-event amounts are otherwise supplied by the caller.
  */
 import { and, desc, eq, sql } from 'drizzle-orm';
-import { audit, notify } from '@vibe1099/core';
 import { firms, taxbanditsCostLedger, type Db } from '@vibe1099/db';
+import { audit } from '../audit.js';
+import { notify } from '../notify.js';
 
 export type TbCostEvent = 'efile' | 'correction' | 'void' | 'state_filing' | 'tin_match' | 'postal' | 'online_access';
 
@@ -23,6 +27,7 @@ export interface LedgerEntry {
   detail?: Record<string, unknown>;
 }
 
+/** Persist a billable event (ledger row + audit entry). */
 export async function recordCost(db: Db, entry: LedgerEntry): Promise<void> {
   await db.insert(taxbanditsCostLedger).values({
     firmId: entry.firmId,
@@ -44,16 +49,7 @@ export async function recordCost(db: Db, entry: LedgerEntry): Promise<void> {
   });
 }
 
-/** Sum of all ledger charges for a firm (integer cents). */
-export async function firmSpendCents(db: Db, firmId: string): Promise<number> {
-  const [row] = await db
-    .select({ total: sql<number>`COALESCE(SUM(${taxbanditsCostLedger.amountCents}), 0)` })
-    .from(taxbanditsCostLedger)
-    .where(eq(taxbanditsCostLedger.firmId, firmId));
-  return Number(row?.total ?? 0);
-}
-
-/** Latest known post-event balance for a firm, if the API reported one. */
+/** Latest known post-event prepaid balance for a firm, if the API ever reported one. */
 export async function latestBalanceCents(db: Db, firmId: string): Promise<number | null> {
   const [row] = await db
     .select({ balance: taxbanditsCostLedger.balanceAfterCents })
@@ -64,7 +60,16 @@ export async function latestBalanceCents(db: Db, firmId: string): Promise<number
   return row?.balance ?? null;
 }
 
-/** Emit a low-balance notification (email only — TCPA-safe default) if below threshold. */
+/** Sum of all ledger charges for a firm (integer cents). */
+export async function firmSpendCents(db: Db, firmId: string): Promise<number> {
+  const [row] = await db
+    .select({ total: sql<number>`COALESCE(SUM(${taxbanditsCostLedger.amountCents}), 0)` })
+    .from(taxbanditsCostLedger)
+    .where(eq(taxbanditsCostLedger.firmId, firmId));
+  return Number(row?.total ?? 0);
+}
+
+/** Emit a low-balance notification (email/in-app — TCPA-safe) if below threshold. */
 export async function checkLowBalance(db: Db, firmId: string, balanceCents: number): Promise<void> {
   const firm = await db.query.firms.findFirst({ where: eq(firms.id, firmId) });
   if (!firm) return;

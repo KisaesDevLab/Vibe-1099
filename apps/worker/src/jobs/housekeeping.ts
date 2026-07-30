@@ -2,7 +2,7 @@
  * Housekeeping worker (Phases 7/8/12): W-9 request expiry + scheduled
  * reminders, stale-W-9 detection, data-retention sweep for expired blobs.
  */
-import { and, eq, inArray, isNull, lt, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, isNull, lt, sql } from 'drizzle-orm';
 import { Job } from 'bullmq';
 import {
   audit,
@@ -14,7 +14,7 @@ import {
   TaxBanditsClient,
   type DeliveryJob,
 } from '@vibe1099/core';
-import { appSettings, blobs, firms, getDb, recipients, tinMatchResults, w9Requests } from '@vibe1099/db';
+import { appSettings, blobs, firms, getDb, recipients, taxbanditsWebhookEvents, tinMatchResults, w9Requests } from '@vibe1099/db';
 import { providerFor } from './iris.js';
 
 const log = createLogger('worker:housekeeping');
@@ -178,10 +178,26 @@ async function pollPendingTinMatches(): Promise<void> {
   }
 }
 
+/**
+ * Purge processed TaxBandits webhook events older than 90 days. They are an
+ * operational at-least-once dedupe/replay log (raw provider bodies), not filing
+ * records, so they don't need the multi-year retention floor.
+ */
+async function sweepWebhookEvents(): Promise<void> {
+  const db = getDb();
+  const cutoff = new Date(Date.now() - 90 * 86_400_000);
+  const deleted = await db
+    .delete(taxbanditsWebhookEvents)
+    .where(and(lt(taxbanditsWebhookEvents.receivedAt, cutoff), isNotNull(taxbanditsWebhookEvents.processedAt)))
+    .returning({ id: taxbanditsWebhookEvents.id });
+  if (deleted.length) log.info({ count: deleted.length }, 'taxbandits webhook events swept');
+}
+
 export async function handleHousekeepingJob(_job: Job): Promise<void> {
   await expireW9Requests();
   await sendW9Reminders();
   await markStaleW9s();
   await pollPendingTinMatches();
+  await sweepWebhookEvents();
   await retentionSweep();
 }

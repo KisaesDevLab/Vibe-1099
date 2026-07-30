@@ -1,68 +1,174 @@
 /**
- * TaxBandits (SPAN Enterprises) submission payload builder.
+ * TaxBandits (SPAN Enterprises) Form1099 submission payload builder.
  *
- * Maps the provider-neutral transmission input (the same object IRIS/Tax1099
- * consume) into TaxBandits' Form1099 request model. TaxBandits is the transmitter
- * under their TCC, so the payload carries the Business (payer/issuer) + recipients
- * + box amounts; the firm is the account holder implied by the auth token.
+ * Emits the REAL TaxBandits Form1099<TYPE>/Create request envelope
+ * (SubmissionManifest / ReturnHeader.Business / ReturnData[].{Recipient,<TYPE>FormData}),
+ * mapping the provider-neutral transmission input (the same object IRIS/Tax1099
+ * consume) into TaxBandits' PascalCase model. TaxBandits is the transmitter under
+ * their TCC, so the payload carries the Business (payer) + recipients + box amounts;
+ * the firm is the account holder implied by the auth token.
  *
- * Field names follow the TaxBandits Form1099 request contract; the mapping is
- * centralized here so a live schema confirmation is a one-file change. Box ids come
- * from the shared form registry (box1, box2, box1a, …) so NEC/MISC/INT/DIV map
- * generically. PayerRef/PayeeRef carry our ULIDs for idempotency + linkage.
+ * IMPORTANT — one form type per submission. Each 1099 form has its OWN
+ * Create/Status/Correction endpoint and a form-specific FormData object, so a
+ * TaxBandits submission MUST be homogeneous. `buildTaxBanditsPayload` derives the
+ * single form type from the records and throws if they are mixed; the compose flow
+ * enforces the same invariant before it ever gets here.
+ *
+ * The per-form box→field maps below (BOX_FIELD_MAP) are the one place a live-schema
+ * confirmation lands: TaxBandits' FormData property names (B1NEC, B1Rents, …) are
+ * centralized here so reconciling against the sandbox is a table edit, not a code
+ * change. Box ids come from the shared form registry.
  */
-import { centsToDecimalString } from '@vibe1099/shared';
-import type { IrisTransmissionInput, IrisFormRecord } from '../iris/xml.js';
+import { AppError, ErrorCodes } from '@vibe1099/shared';
+import type { FormType } from '@vibe1099/shared';
+import type { IrisTransmissionInput, IrisFormRecord, IrisParty } from '../iris/xml.js';
 
-export interface TaxBanditsRecord {
-  payeeRef: string; // our form_record id — echoed on status for per-record results
-  formType: string; // NEC | MISC | INT | DIV
-  taxYear: number;
-  corrected: boolean;
-  accountNumber?: string;
-  secondTinNotice?: boolean;
-  recipient: {
-    tin: string;
-    tinType: 'SSN' | 'EIN';
-    name: string;
-    name2?: string;
-    address1: string;
-    address2?: string;
-    city: string;
-    state: string;
-    zip: string;
-  };
-  amounts: Record<string, string>; // box id -> decimal string (cents fields)
-  flags: Record<string, boolean>; // box id -> true (checkbox fields)
-  text: Record<string, string>; // box id -> string (code/text fields)
-  stateAmounts: Record<string, string>; // state box id -> decimal string
-  /** Delivery add-ons (opt-in, billed) — pressure-seal paper remains primary. */
-  postalMailing: boolean;
-  onlineAccess: boolean;
+export type TaxBanditsFormType = 'NEC' | 'MISC' | 'INT' | 'DIV';
+
+const SUPPORTED: readonly TaxBanditsFormType[] = ['NEC', 'MISC', 'INT', 'DIV'];
+
+export function isTaxBanditsFormType(t: string): t is TaxBanditsFormType {
+  return (SUPPORTED as readonly string[]).includes(t);
 }
 
-export interface TaxBanditsPayload {
-  submissionRef: string; // idempotency id (stored as transmissions.utid)
-  taxYear: number;
-  environment: 'sandbox' | 'production';
-  isTestMode: boolean;
-  isCorrection: boolean;
-  business: {
-    payerRef: string;
-    tin: string;
-    tinType: 'SSN' | 'EIN';
-    name: string;
-    dbaName?: string;
-    address1: string;
-    address2?: string;
-    city: string;
-    state: string;
-    zip: string;
-    phone?: string;
-  };
-  // states TaxBandits should file via CF/SF where elected
-  combinedFederalState: string[];
-  records: TaxBanditsRecord[];
+/**
+ * Registry box id → TaxBandits FormData property name, per form type. Amount boxes
+ * become numbers; checkbox boxes become booleans; string boxes pass through.
+ * State withholding is handled separately (the `States` array), so state box ids
+ * are intentionally absent here.
+ *
+ * VERIFY against the live TaxBandits sandbox before production wire-up: the field
+ * names follow the published Form1099 request reference, but SPAN occasionally
+ * revises property spellings between API versions.
+ */
+const BOX_FIELD_MAP: Record<TaxBanditsFormType, Record<string, string>> = {
+  NEC: {
+    box1: 'B1NEC',
+    directSales: 'B2DirectSalesInd',
+    fedTaxWithheld: 'B4FedTaxWH',
+  },
+  MISC: {
+    box1: 'B1Rents',
+    box2: 'B2Royalties',
+    box3: 'B3OtherIncome',
+    fedTaxWithheld: 'B4FedTaxWH',
+    box5: 'B5FishingBoatProceeds',
+    box6: 'B6MedHealthCarePymt',
+    directSales: 'B7DirectSalesInd',
+    box8: 'B8SubstitutePymtsInLieuOfDividends',
+    box9: 'B9CropInsuranceProceeds',
+    box10: 'B10GrossProceedsPaidToAttorney',
+    box11: 'B11FishPurchasedForResale',
+    box12: 'B12Sec409ADeferrals',
+    fatca: 'FatcaFilingRequirementInd',
+    box14: 'B14ExcessGoldenParachutePymt',
+    box15: 'B15NonqualifiedDeferredCompensation',
+  },
+  INT: {
+    box1: 'B1IntIncome',
+    box2: 'B2EarlyWithdrawalPenalty',
+    box3: 'B3IntOnUSSavingsBondsAndTreasuryOblig',
+    fedTaxWithheld: 'B4FedTaxWH',
+    box5: 'B5InvestmentExpenses',
+    box6: 'B6ForeignTaxPaid',
+    box7: 'B7ForeignCountry',
+    box8: 'B8TaxExemptInterest',
+    box9: 'B9SpecifiedPrivateActivityBondInterest',
+    box10: 'B10MarketDiscount',
+    box11: 'B11BondPremium',
+    box12: 'B12BondPremiumOnTreasuryOblig',
+    box13: 'B13BondPremiumOnTaxExemptBond',
+    fatca: 'FatcaFilingRequirementInd',
+    box14: 'B14TaxExemptBondCUSIPNo',
+  },
+  DIV: {
+    box1a: 'B1aTotalOrdinaryDividends',
+    box1b: 'B1bQualifiedDividends',
+    box2a: 'B2aTotalCapitalGainDistr',
+    box2b: 'B2bUnrecapSec1250Gain',
+    box2c: 'B2cSection1202Gain',
+    box2d: 'B2dCollectibles28PercentGain',
+    box2e: 'B2eSection897OrdinaryDividends',
+    box2f: 'B2fSection897CapitalGain',
+    box3: 'B3NondividendDistributions',
+    fedTaxWithheld: 'B4FedTaxWH',
+    box5: 'B5Section199ADividends',
+    box6: 'B6InvestmentExpenses',
+    box7: 'B7ForeignTaxPaid',
+    box8: 'B8ForeignCountry',
+    box9: 'B9CashLiquidationDistr',
+    box10: 'B10NoncashLiquidationDistr',
+    fatca: 'FatcaFilingRequirementInd',
+    box12: 'B12ExemptInterestDividends',
+    box13: 'B13SpecifiedPrivateActivityBondInterestDividends',
+  },
+};
+
+// --- Real TaxBandits request envelope types ---------------------------------
+
+export interface TbUSAddress {
+  Address1: string;
+  Address2?: string;
+  City: string;
+  State: string;
+  ZipCd: string;
+}
+
+export interface TbBusiness {
+  BusinessNm: string;
+  TradeNm?: string;
+  IsEIN: boolean;
+  EINorSSN: string;
+  Phone?: string;
+  IsForeign: boolean;
+  USAddress: TbUSAddress;
+}
+
+export interface TbRecipient {
+  RecipientId: string | null;
+  TINType: 'SSN' | 'EIN';
+  TIN: string;
+  FirstPayeeNm: string;
+  SecondPayeeNm?: string;
+  IsForeign: boolean;
+  USAddress: TbUSAddress;
+}
+
+export interface TbStateInfo {
+  StateCd: string;
+  StateIdNum?: string;
+  StateWHAmt?: number;
+  StateIncomeAmt?: number;
+}
+
+/** ReturnData row: recipient + the form-specific FormData object (NECFormData, …). */
+export interface TbReturnDataItem {
+  SequenceId: string; // our form_record id — echoed on status for per-record results
+  RecordId: string | null;
+  Recipient: TbRecipient;
+  // exactly one of these is present, keyed by form type
+  NECFormData?: Record<string, unknown>;
+  MISCFormData?: Record<string, unknown>;
+  INTFormData?: Record<string, unknown>;
+  DIVFormData?: Record<string, unknown>;
+}
+
+export interface TbSubmissionManifest {
+  SubmissionId: string | null;
+  TaxYear: string;
+  IsFederalFiling: boolean;
+  IsStateFiling: boolean;
+  IsPostal: boolean;
+  IsOnlineAccess: boolean;
+  IsScheduleFiling: boolean;
+}
+
+export interface TaxBanditsCreateRequest {
+  /** form type this submission targets — drives endpoint selection, NOT serialized. */
+  formType: TaxBanditsFormType;
+  SubmissionManifest: TbSubmissionManifest;
+  ReturnHeader: { Business: TbBusiness };
+  ReturnData: TbReturnDataItem[];
 }
 
 export interface TaxBanditsDeliveryOptions {
@@ -70,87 +176,155 @@ export interface TaxBanditsDeliveryOptions {
   onlineAccess?: boolean;
 }
 
-function recordToTaxBandits(rec: IrisFormRecord, delivery: TaxBanditsDeliveryOptions): TaxBanditsRecord {
-  const amounts: Record<string, string> = {};
-  const flags: Record<string, boolean> = {};
-  const text: Record<string, string> = {};
-  const stateAmounts: Record<string, string> = {};
+// --- Builders ----------------------------------------------------------------
+
+/** integer cents → JSON number with 2-dp precision (e.g. 123456 → 1234.56). */
+function centsToNumber(cents: number): number {
+  return Math.round(cents) / 100;
+}
+
+function usAddress(p: IrisParty): TbUSAddress {
+  return {
+    Address1: p.address.line1,
+    Address2: p.address.line2 || undefined,
+    City: p.address.city,
+    State: p.address.state,
+    ZipCd: p.address.zip,
+  };
+}
+
+/** Build the `<TYPE>FormData` object for a record from its box values + registry map. */
+function formDataFor(rec: IrisFormRecord, formType: TaxBanditsFormType): Record<string, unknown> {
+  const map = BOX_FIELD_MAP[formType];
+  const data: Record<string, unknown> = {};
+  const states: TbStateInfo[] = [];
+  let state: TbStateInfo | null = null;
+
   for (const [boxId, v] of Object.entries(rec.boxValues)) {
-    if (typeof v === 'number' && (v > 0 || rec.corrected)) {
-      if (/^state/i.test(boxId)) stateAmounts[boxId] = centsToDecimalString(v);
-      else amounts[boxId] = centsToDecimalString(v);
-    } else if (v === true) {
-      flags[boxId] = true;
+    if (v == null) continue;
+    // state withholding block → States[]
+    if (boxId === 'stateCode' && typeof v === 'string' && v !== '') {
+      state = { ...(state ?? { StateCd: '' }), StateCd: v };
+      continue;
+    }
+    if (boxId === 'stateTaxWithheld' && typeof v === 'number' && (v > 0 || rec.corrected)) {
+      state = { ...(state ?? { StateCd: '' }), StateWHAmt: centsToNumber(v) };
+      continue;
+    }
+    if (boxId === 'stateIncome' && typeof v === 'number' && (v > 0 || rec.corrected)) {
+      state = { ...(state ?? { StateCd: '' }), StateIncomeAmt: centsToNumber(v) };
+      continue;
+    }
+    if (boxId === 'statePayerStateNo' && typeof v === 'string' && v !== '') {
+      state = { ...(state ?? { StateCd: '' }), StateIdNum: v };
+      continue;
+    }
+    const field = map[boxId];
+    if (!field) continue; // unmapped box (e.g. a box this form doesn't file via TaxBandits)
+    if (typeof v === 'number') {
+      if (v > 0 || rec.corrected) data[field] = centsToNumber(v);
+    } else if (typeof v === 'boolean') {
+      if (v) data[field] = true;
     } else if (typeof v === 'string' && v !== '') {
-      text[boxId] = v;
+      data[field] = v;
     }
   }
-  return {
-    payeeRef: rec.recordId,
-    formType: rec.formType,
-    taxYear: rec.taxYear,
-    corrected: !!rec.corrected,
-    accountNumber: rec.accountNumber,
-    secondTinNotice: rec.secondTinNotice,
-    recipient: {
-      tin: rec.recipient.tin,
-      tinType: rec.recipient.tinType,
-      name: rec.recipient.name1,
-      name2: rec.recipient.name2,
-      address1: rec.recipient.address.line1,
-      address2: rec.recipient.address.line2,
-      city: rec.recipient.address.city,
-      state: rec.recipient.address.state,
-      zip: rec.recipient.address.zip,
+
+  if (state && state.StateCd) states.push(state);
+  data['AccountNum'] = rec.accountNumber ?? '';
+  if (rec.secondTinNotice) data['IsSecondTINnot'] = true;
+  if (states.length) data['States'] = states;
+  return data;
+}
+
+function returnDataItem(rec: IrisFormRecord, formType: TaxBanditsFormType): TbReturnDataItem {
+  const item: TbReturnDataItem = {
+    SequenceId: rec.recordId,
+    RecordId: null,
+    Recipient: {
+      RecipientId: null,
+      TINType: rec.recipient.tinType,
+      TIN: rec.recipient.tin,
+      FirstPayeeNm: rec.recipient.name1,
+      SecondPayeeNm: rec.recipient.name2 || undefined,
+      IsForeign: false,
+      USAddress: usAddress(rec.recipient),
     },
-    amounts,
-    flags,
-    text,
-    stateAmounts,
-    // Pressure-seal paper remains primary (core plan Phase 9); these are opt-in.
-    postalMailing: !!delivery.postalMailing,
-    onlineAccess: !!delivery.onlineAccess,
   };
+  const data = formDataFor(rec, formType);
+  item[`${formType}FormData` as `${TaxBanditsFormType}FormData`] = data;
+  return item;
+}
+
+/** The single form type of a set of records, or throw if mixed/empty/unsupported. */
+export function taxbanditsFormTypeOf(records: { formType: FormType }[]): TaxBanditsFormType {
+  const types = new Set(records.map((r) => r.formType));
+  if (types.size === 0) throw new AppError(ErrorCodes.E_VALIDATION, 'No records to file', 400);
+  if (types.size > 1) {
+    throw new AppError(
+      ErrorCodes.E_VALIDATION,
+      `TaxBandits files one form type per submission — this batch mixes ${[...types].join(', ')}. File each form type as its own batch.`,
+      400,
+    );
+  }
+  const t = [...types][0]!;
+  if (!isTaxBanditsFormType(t)) {
+    throw new AppError(ErrorCodes.E_VALIDATION, `TaxBandits does not support 1099-${t} in this appliance`, 400);
+  }
+  return t;
 }
 
 export function buildTaxBanditsPayload(
   input: IrisTransmissionInput,
-  environment: 'sandbox' | 'production',
   delivery: TaxBanditsDeliveryOptions = {},
-): TaxBanditsPayload {
+): TaxBanditsCreateRequest {
+  const formType = taxbanditsFormTypeOf(input.records);
+  const isState = input.cfsfStates.length > 0 || input.records.some((r) => hasStateData(r));
   return {
-    submissionRef: input.utid,
-    taxYear: input.taxYear,
-    environment,
-    isTestMode: environment === 'sandbox',
-    isCorrection: input.isCorrection,
-    business: {
-      payerRef: input.issuer.tin, // stable per-payer ref; the sync layer maps to BusinessId
-      tin: input.issuer.tin,
-      tinType: input.issuer.tinType,
-      name: input.issuer.name1,
-      dbaName: input.issuer.name2,
-      address1: input.issuer.address.line1,
-      address2: input.issuer.address.line2,
-      city: input.issuer.address.city,
-      state: input.issuer.address.state,
-      zip: input.issuer.address.zip,
-      phone: input.issuer.phone,
+    formType,
+    SubmissionManifest: {
+      SubmissionId: null,
+      TaxYear: String(input.taxYear),
+      IsFederalFiling: true,
+      IsStateFiling: isState,
+      IsPostal: !!delivery.postalMailing,
+      IsOnlineAccess: !!delivery.onlineAccess,
+      IsScheduleFiling: false,
     },
-    combinedFederalState: input.cfsfStates,
-    records: input.records.map((r) => recordToTaxBandits(r, delivery)),
+    ReturnHeader: {
+      Business: {
+        BusinessNm: input.issuer.name1,
+        TradeNm: input.issuer.name2 || undefined,
+        IsEIN: input.issuer.tinType === 'EIN',
+        EINorSSN: input.issuer.tin,
+        Phone: input.issuer.phone || undefined,
+        IsForeign: false,
+        USAddress: usAddress(input.issuer),
+      },
+    },
+    ReturnData: input.records.map((r) => returnDataItem(r, formType)),
   };
 }
 
-/** Provider-neutral pre-submit checks (no TCC required — TaxBandits holds it). */
-export function preSubmitCheckTaxBandits(payload: TaxBanditsPayload): string[] {
+function hasStateData(rec: IrisFormRecord): boolean {
+  const c = rec.boxValues['stateCode'];
+  return typeof c === 'string' && c !== '';
+}
+
+/**
+ * Provider-neutral pre-submit checks (no TCC required — TaxBandits holds it).
+ * Runs against the built request so it also validates the homogeneous-form-type
+ * invariant implicitly (a mixed batch already threw during the build).
+ */
+export function preSubmitCheckTaxBandits(payload: TaxBanditsCreateRequest): string[] {
   const problems: string[] = [];
-  if (!payload.records.length) problems.push('No records in submission');
-  if (!/^\d{9}$/.test(payload.business.tin)) problems.push('Payer TIN is not 9 digits');
-  for (const r of payload.records) {
-    if (!/^\d{9}$/.test(r.recipient.tin)) problems.push(`Record ${r.payeeRef}: recipient TIN is not 9 digits`);
-    if (!r.recipient.name) problems.push(`Record ${r.payeeRef}: recipient name missing`);
-    if (!r.recipient.zip) problems.push(`Record ${r.payeeRef}: recipient ZIP missing`);
+  if (!payload.ReturnData.length) problems.push('No records in submission');
+  if (!/^\d{9}$/.test(payload.ReturnHeader.Business.EINorSSN)) problems.push('Payer TIN is not 9 digits');
+  for (const r of payload.ReturnData) {
+    const ref = r.SequenceId;
+    if (!/^\d{9}$/.test(r.Recipient.TIN)) problems.push(`Record ${ref}: recipient TIN is not 9 digits`);
+    if (!r.Recipient.FirstPayeeNm) problems.push(`Record ${ref}: recipient name missing`);
+    if (!r.Recipient.USAddress.ZipCd) problems.push(`Record ${ref}: recipient ZIP missing`);
   }
   return problems;
 }

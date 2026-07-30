@@ -12,6 +12,7 @@ import { AppError, ErrorCodes } from '@vibe1099/shared';
 import type { RecordError, IrisAckStatus } from '../iris/client.js';
 import type { FilingProvider, FilingStatusResult, FilingTransmitResult } from '../filing/provider.js';
 import { TaxBanditsAuth, type TaxBanditsCredentials } from './auth.js';
+import type { TaxBanditsFormType } from './payload.js';
 
 export interface TaxBanditsEndpoints {
   base: string;
@@ -24,17 +25,24 @@ export interface TaxBanditsEndpoints {
   creditsUrl: string;
 }
 
-export function taxbanditsEndpoints(base: string, oauthUrl: string): TaxBanditsEndpoints {
+/**
+ * Build the endpoint set for one submission. Each 1099 form has its OWN
+ * Create/Status/Correction endpoint (`Form1099NEC`, `Form1099MISC`, …), so the
+ * e-file/status/correction URLs are form-type-specific. TIN matching and credits
+ * are form-agnostic account endpoints. `formType` defaults to NEC for the
+ * form-agnostic callers (TIN match, credits) that never touch the e-file URLs.
+ */
+export function taxbanditsEndpoints(base: string, oauthUrl: string, formType: TaxBanditsFormType = 'NEC'): TaxBanditsEndpoints {
   const b = base.replace(/\/$/, '');
+  const form = `Form1099${formType}`;
   return {
     base: b,
     // OAuth token server is a separate host (expressauth.net), passed in.
     tokenUrl: oauthUrl,
-    // Verified against the TaxBandits API reference (v1.7.3, lowercase). NEC create
-    // is the concrete 1099 create endpoint; the correction/status forms mirror it.
-    efileUrl: `${b}/v1.7.3/Form1099NEC/Create`,
-    statusUrl: `${b}/v1.7.3/Form1099NEC/Status`,
-    correctionUrl: `${b}/v1.7.3/Form1099NEC/Correction`,
+    // Per-form endpoints, per the TaxBandits API reference (v1.7.3).
+    efileUrl: `${b}/v1.7.3/${form}/Create`,
+    statusUrl: `${b}/v1.7.3/${form}/Status`,
+    correctionUrl: `${b}/v1.7.3/${form}/Correction`,
     tinMatchUrl: `${b}/v1.7.3/TINMatchingRecipients/Request`,
     tinMatchStatusUrl: `${b}/v1.7.3/TINMatchingRecipients/Status`,
     creditsUrl: `${b}/v1.7.3/Account/GetCredits`,
@@ -83,10 +91,13 @@ export interface CreditBalance {
 
 function normalizeStatus(s: string): IrisAckStatus {
   const t = s.trim().toLowerCase();
-  if (t === 'accepted' || t === 'transmitted') return 'Accepted';
+  // Only IRS acceptance is terminal-accepted. "Transmitted"/"Sent to Agency" mean
+  // the return reached the IRS but has NOT been accepted yet — keep polling.
+  if (t === 'accepted') return 'Accepted';
   if (/accepted.*error/.test(t) || t === 'acceptedwitherrors') return 'AcceptedWithErrors';
   if (t === 'rejected') return 'Rejected';
   if (t === 'notfound' || t === 'not found') return 'NotFound';
+  // created | transmitted | sent to agency | in progress | under process | processing …
   return 'Processing';
 }
 
