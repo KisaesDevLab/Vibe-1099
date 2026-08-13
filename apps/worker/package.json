@@ -16,7 +16,7 @@
     "@vibe1099/db": "workspace:*",
     "@vibe1099/shared": "workspace:*",
     "bullmq": "^5.56.0",
-    "drizzle-orm": "^0.44.0",
+    "drizzle-orm": "^0.45.2",
     "express": "^4.21.0"
   },
   "devDependencies": {

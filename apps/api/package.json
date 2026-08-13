@@ -15,7 +15,7 @@
     "@vibe1099/shared": "workspace:*",
     "bullmq": "^5.56.0",
     "cookie-parser": "^1.4.7",
-    "drizzle-orm": "^0.44.0",
+    "drizzle-orm": "^0.45.2",
     "express": "^4.21.0",
     "helmet": "^8.1.0",
     "pino-http": "^10.4.0",
