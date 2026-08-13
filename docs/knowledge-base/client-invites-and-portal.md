@@ -27,7 +27,8 @@ A simple, **mobile-friendly** three-step flow:
 **1. Landing** — confirms the firm, the entity name, the tax year, and plain-language instructions. If more than one form type is enabled, they pick what they're reporting.
 
 **2. Contractors & amounts** — a grid that:
-- **Pre-lists last year's contractors** for that payer so they just fill in amounts.
+- **Pre-lists last year's contractors** for that payer so they just fill in amounts. The list is kept **per form type**: last year's 1099-NEC subcontractors appear on the NEC grid and 1099-MISC recipients (landlords etc.) on the MISC grid — switching form types switches lists without losing anything already entered.
+- On forms with more than one payment category (1099-MISC, INT, DIV), each row has a **"Type of payment"** choice — e.g. rents, royalties, or other income — which lands in the matching box on the filed form.
 - Lets them **add a new contractor** (name, address, contact). Typing a tax ID does a masked vault lookup — "We have JOHN D— on file, is this them?" — so duplicates are avoided without exposing anyone's data.
 - Offers **"no W-9 — request one"** if they don't have a contractor's tax ID; the app emails the contractor a W-9 link.
 - Lets them **click any name** to view that contractor's full name and mailing address (tax ID stays truncated).

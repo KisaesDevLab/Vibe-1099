@@ -134,8 +134,10 @@ clientPortalRouter.get(
   h(async (req, res) => {
     const scope = req.clientScope!;
     const db = getDb();
+    // Prior-year pre-list keeps the (recipient, form type) pairing: a landlord
+    // on last year's 1099-MISC must not appear on this year's NEC grid.
     const prior = await db
-      .selectDistinct({ recipientId: formRecords.recipientId })
+      .selectDistinct({ recipientId: formRecords.recipientId, formType: formRecords.formType })
       .from(formRecords)
       .where(and(eq(formRecords.payerId, scope.payerId), eq(formRecords.taxYear, scope.taxYear - 1)));
     // ALL current-year records for this payer (not just this invite) so the client
@@ -147,9 +149,15 @@ clientPortalRouter.get(
       .where(and(eq(formRecords.payerId, scope.payerId), eq(formRecords.taxYear, scope.taxYear)));
     const ids = [...new Set([...prior.map((p) => p.recipientId), ...current.map((c) => c.recipientId)])];
     const recips = ids.length ? await db.select().from(recipients).where(inArray(recipients.id, ids)) : [];
+    const typesByRecipient = new Map<string, Set<string>>();
+    for (const p of [...prior, ...current.map((c) => ({ recipientId: c.recipientId, formType: c.formType }))]) {
+      if (!typesByRecipient.has(p.recipientId)) typesByRecipient.set(p.recipientId, new Set());
+      typesByRecipient.get(p.recipientId)!.add(p.formType);
+    }
     res.json({
       contractors: recips.map((r) => ({
         recipientId: r.id,
+        formTypes: [...(typesByRecipient.get(r.id) ?? [])],
         name1: r.name1,
         name2: r.name2 ?? '',
         maskedAddress: `${(r.address['line1'] ?? '').slice(0, 12)}… ${r.address['city'] ?? ''}`,

@@ -20,6 +20,8 @@ interface Session {
 }
 interface Contractor {
   recipientId: string; name1: string; maskedAddress: string; tinLast4: string; w9Status: string;
+  /** Form types this contractor is associated with (prior-year + current records). */
+  formTypes?: string[];
   name2?: string;
   address?: { line1: string; line2: string; city: string; state: string; zip: string };
   email?: string; mobile?: string; tinType?: 'SSN' | 'EIN';
@@ -37,7 +39,10 @@ export function ClientPortal() {
   const [contractors, setContractors] = useState<Contractor[]>([]);
   const [entries, setEntries] = useState<ServerEntry[]>([]);
   const [formType, setFormType] = useState('');
-  const [amounts, setAmounts] = useState<Record<string, string>>({}); // recipientId -> raw amount (primary box)
+  // Amounts + payment-type box are keyed "formType:recipientId": an engagement can
+  // cover several form types, and the same vendor may appear on more than one.
+  const [amounts, setAmounts] = useState<Record<string, string>>({});
+  const [boxSel, setBoxSel] = useState<Record<string, string>>({});
   const [error, setError] = useState('');
   const [done, setDone] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -86,32 +91,51 @@ export function ClientPortal() {
       .catch(() => {});
   }, [session, opts, otpOk]);
 
-  const primaryBoxId = formType === 'DIV' ? 'box1a' : 'box1';
+  const kf = (ft: string, recipientId: string) => `${ft}:${recipientId}`;
+  const primaryFor = (ft: string) => (ft === 'DIV' ? 'box1a' : 'box1');
+  const primaryBoxId = primaryFor(formType);
   const currentReg = session?.registry.find((r) => r.formType === formType);
+  // Payment-type choices for the current form (e.g. MISC: rents / royalties /
+  // other income / …). Withholding is not a payment type a client reports.
+  const payBoxes = (currentReg?.boxes ?? []).filter((b) => b.kind === 'cents' && b.id !== 'fedTaxWithheld');
 
+  const filedFor = (ft: string) => new Set(entries.filter((e) => e.formType === ft && e.filed).map((e) => e.recipientId));
   // Recipients whose form for the current type is already filed → amount is locked.
   const filedSet = useMemo(
     () => new Set(entries.filter((e) => e.formType === formType && e.filed).map((e) => e.recipientId)),
     [entries, formType],
   );
 
-  // Seed amounts from server records (filed + previously-entered), then overlay the
-  // unsaved draft for still-editable rows. Never clobber the client's active typing.
+  // The grid lists only contractors associated with the current form type (prior-
+  // year pairing or a current record) plus any the client added this session.
+  const visibleContractors = contractors.filter((c) => !c.formTypes?.length || c.formTypes.includes(formType));
+
+  // Seed amounts + payment-type box from server records (filed + previously-
+  // entered), then overlay the unsaved draft for still-editable rows — across ALL
+  // form types. Never clobber the client's active typing.
   useEffect(() => {
-    const primaryOf = (bv: Record<string, unknown>) => bv['box1'] ?? bv['box1a'];
-    const seed: Record<string, string> = {};
+    const centsBoxOf = (bv: Record<string, unknown>): [string, number] | null => {
+      const hit = Object.entries(bv).find(([, v]) => typeof v === 'number');
+      return hit ? [hit[0], hit[1] as number] : null;
+    };
+    const seedAmounts: Record<string, string> = {};
+    const seedBoxes: Record<string, string> = {};
     for (const e of entries) {
-      if (e.formType !== formType) continue;
-      const p = primaryOf(e.boxValues);
-      if (typeof p === 'number') seed[e.recipientId] = formatCents(p);
+      const hit = centsBoxOf(e.boxValues);
+      if (!hit) continue;
+      seedAmounts[kf(e.formType, e.recipientId)] = formatCents(hit[1]);
+      seedBoxes[kf(e.formType, e.recipientId)] = hit[0];
     }
     for (const e of session?.draftState?.entries ?? []) {
-      if (filedSet.has(e.recipientId)) continue;
-      const p = primaryOf(e.boxValues);
-      if (typeof p === 'number') seed[e.recipientId] = formatCents(p);
+      if (filedFor(e.formType).has(e.recipientId)) continue;
+      const hit = centsBoxOf(e.boxValues);
+      if (!hit) continue;
+      seedAmounts[kf(e.formType, e.recipientId)] = formatCents(hit[1]);
+      seedBoxes[kf(e.formType, e.recipientId)] = hit[0];
     }
-    setAmounts((prev) => ({ ...seed, ...prev }));
-  }, [entries, formType, session, filedSet]);
+    setAmounts((prev) => ({ ...seedAmounts, ...prev }));
+    setBoxSel((prev) => ({ ...seedBoxes, ...prev }));
+  }, [entries, session]);
 
   const onAddTin = async (value: string) => {
     setAdd((a) => ({ ...a, tin: value }));
@@ -124,7 +148,10 @@ export function ClientPortal() {
   const confirmMatch = () => {
     if (!lookup) return;
     if (!contractors.some((c) => c.recipientId === lookup.recipientId)) {
-      setContractors((c) => [...c, { recipientId: lookup.recipientId, name1: lookup.maskedName, maskedAddress: lookup.maskedAddress, tinLast4: '', w9Status: 'on_file' }]);
+      setContractors((c) => [...c, { recipientId: lookup.recipientId, formTypes: [formType], name1: lookup.maskedName, maskedAddress: lookup.maskedAddress, tinLast4: '', w9Status: 'on_file' }]);
+    } else {
+      // already listed under another form type — associate with the current one too
+      setContractors((cs) => cs.map((c) => (c.recipientId === lookup.recipientId && c.formTypes?.length && !c.formTypes.includes(formType) ? { ...c, formTypes: [...c.formTypes, formType] } : c)));
     }
     setShowAdd(false);
     setLookup(null);
@@ -139,7 +166,7 @@ export function ClientPortal() {
         address: { line1: add.line1, line2: '', city: add.city, state: add.state, zip: add.zip },
         email: add.email || null, mobile: add.mobile || null,
       }, opts);
-      setContractors((c) => [...c, { recipientId: r.recipientId, name1: add.name1, maskedAddress: `${add.line1.slice(0, 12)}… ${add.city}`, tinLast4: add.tin.slice(-4), w9Status: 'none' }]);
+      setContractors((c) => [...c, { recipientId: r.recipientId, formTypes: [formType], name1: add.name1, maskedAddress: `${add.line1.slice(0, 12)}… ${add.city}`, tinLast4: add.tin.slice(-4), w9Status: 'none' }]);
       setShowAdd(false);
       setAdd({ tin: '', tinType: 'SSN', name1: '', line1: '', city: '', state: 'MO', zip: '', email: '', mobile: '' });
     } catch (err) {
@@ -154,22 +181,32 @@ export function ClientPortal() {
     dialogs.toast('W-9 request sent — your accountant will see the result.', 'success');
   };
 
-  const printSubstitute = async (recipientId: string, name: string) => {
-    const entry = entries.find((e) => e.recipientId === recipientId && e.formType === formType && e.filed);
+  const printSubstitute = async (ft: string, recipientId: string, name: string) => {
+    const entry = entries.find((e) => e.recipientId === recipientId && e.formType === ft && e.filed);
     if (!entry) return;
     try {
       const blob = await api.get<Blob>(`/api/client-portal/forms/${entry.formId}/copy-b`, opts);
-      downloadBlob(blob, `1099-${formType}-${name.replace(/[^\w.-]+/g, '_') || 'recipient'}.pdf`);
+      downloadBlob(blob, `1099-${ft}-${name.replace(/[^\w.-]+/g, '_') || 'recipient'}.pdf`);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not generate the 1099 PDF');
     }
   };
 
+  // Entries across EVERY form type in the engagement — switching the form-type
+  // tab must never drop the other type's amounts from a save or submit.
   const buildEntries = (): Entry[] =>
-    contractors
-      .filter((c) => !filedSet.has(c.recipientId)) // filed forms are locked — never re-submitted
-      .filter((c) => (amounts[c.recipientId] ?? '').trim() !== '')
-      .map((c) => ({ recipientId: c.recipientId, formType, boxValues: { [primaryBoxId]: parseCentsInput(amounts[c.recipientId]!) } }));
+    (session?.formTypes ?? []).flatMap((ft) => {
+      const filed = filedFor(ft);
+      return contractors
+        .filter((c) => !c.formTypes?.length || c.formTypes.includes(ft))
+        .filter((c) => !filed.has(c.recipientId)) // filed forms are locked — never re-submitted
+        .filter((c) => (amounts[kf(ft, c.recipientId)] ?? '').trim() !== '')
+        .map((c) => ({
+          recipientId: c.recipientId,
+          formType: ft,
+          boxValues: { [boxSel[kf(ft, c.recipientId)] ?? primaryFor(ft)]: parseCentsInput(amounts[kf(ft, c.recipientId)]!) },
+        }));
+    });
 
   const saveDraft = async () => {
     setSaving(true);
@@ -191,8 +228,20 @@ export function ClientPortal() {
     }
   };
 
-  const total = contractors.reduce((n, c) => {
-    try { return n + ((amounts[c.recipientId] ?? '').trim() ? parseCentsInput(amounts[c.recipientId]!) : 0); } catch { return n; }
+  // Every (form type, contractor) pair with an amount — feeds review + thank-you.
+  const reportedRows = (session?.formTypes ?? []).flatMap((ft) =>
+    contractors
+      .filter((c) => !c.formTypes?.length || c.formTypes.includes(ft))
+      .filter((c) => (amounts[kf(ft, c.recipientId)] ?? '').trim())
+      .map((c) => ({ ft, c })),
+  );
+  const multiType = (session?.formTypes.length ?? 0) > 1;
+  const boxLabel = (ft: string, id: string) => {
+    const b = session?.registry.find((r) => r.formType === ft)?.boxes.find((x) => x.id === id);
+    return b ? b.label : id;
+  };
+  const total = reportedRows.reduce((n, { ft, c }) => {
+    try { return n + parseCentsInput(amounts[kf(ft, c.recipientId)]!); } catch { return n; }
   }, 0);
 
   if (error && !session) {
@@ -225,29 +274,29 @@ export function ClientPortal() {
   }
 
   if (session.submitted || done) {
-    const reported = contractors.filter((c) => (amounts[c.recipientId] ?? '').trim());
     return (
       <div className="portal-shell" style={{ maxWidth: 780 }}>
         <div className="portal-card">
           <div className="portal-brand">{session.firmName}</div>
           <div className="ok-box">
             <strong>Thank you — your {session.taxYear} information for {session.payerName} has been submitted.</strong><br />
-            You reported {reported.length} contractor(s), total ${formatCents(total)}.<br />
+            You reported {reportedRows.length} payment(s), total ${formatCents(total)}.<br />
             Your accountant will review it. If anything needs to change, contact them to re-open this link.
           </div>
-          {reported.length > 0 && (
+          {reportedRows.length > 0 && (
             <>
               <h3>What you reported</h3>
               <table className="grid">
-                <thead><tr><th>Who</th><th className="num">Total paid {session.taxYear}</th><th></th></tr></thead>
+                <thead><tr><th>Who</th>{multiType && <th>Form</th>}<th className="num">Total paid {session.taxYear}</th><th></th></tr></thead>
                 <tbody>
-                  {reported.map((c) => {
-                    const filed = filedSet.has(c.recipientId);
+                  {reportedRows.map(({ ft, c }) => {
+                    const filed = filedFor(ft).has(c.recipientId);
                     return (
-                      <tr key={c.recipientId}>
+                      <tr key={kf(ft, c.recipientId)}>
                         <td>{c.name1}</td>
-                        <td className="num">${amounts[c.recipientId]}{filed && <span className="badge ok" style={{ marginLeft: 6 }}>filed</span>}</td>
-                        <td>{filed && <a style={{ cursor: 'pointer' }} onClick={() => printSubstitute(c.recipientId, c.name1)}>Print 1099</a>}</td>
+                        {multiType && <td className="muted">1099-{ft}</td>}
+                        <td className="num">${amounts[kf(ft, c.recipientId)]}{filed && <span className="badge ok" style={{ marginLeft: 6 }}>filed</span>}</td>
+                        <td>{filed && <a style={{ cursor: 'pointer' }} onClick={() => printSubstitute(ft, c.recipientId, c.name1)}>Print 1099</a>}</td>
                       </tr>
                     );
                   })}
@@ -298,11 +347,22 @@ export function ClientPortal() {
             </div>
             <h2 style={{ margin: '8px 0 0' }}>{session.payerName}</h2>
             <div className="muted" style={{ marginBottom: 10 }}>{session.taxYear} 1099-{formType} — contractors &amp; amounts paid</div>
+            {multiType && (
+              <div className="row" style={{ gap: 6, marginBottom: 4 }}>
+                {session.formTypes.map((t) => (
+                  <button key={t} className={t === formType ? 'small' : 'secondary small'} onClick={() => setFormType(t)}>
+                    1099-{t}
+                  </button>
+                ))}
+                <span className="muted" style={{ alignSelf: 'center' }}>each form keeps its own list — switch freely, nothing is lost</span>
+              </div>
+            )}
             <table className="grid" style={{ marginTop: 10 }}>
-              <thead><tr><th>Who</th><th style={{ width: 140 }} className="num">Total paid {session.taxYear}</th></tr></thead>
+              <thead><tr><th>Who</th>{payBoxes.length > 1 && <th style={{ width: 190 }}>Type of payment</th>}<th style={{ width: 140 }} className="num">Total paid {session.taxYear}</th></tr></thead>
               <tbody>
-                {contractors.map((c) => {
+                {visibleContractors.map((c) => {
                   const filed = filedSet.has(c.recipientId);
+                  const key = kf(formType, c.recipientId);
                   return (
                     <tr key={c.recipientId}>
                       <td>
@@ -311,21 +371,32 @@ export function ClientPortal() {
                           {c.w9Status === 'none' && !filed && <> · <a style={{ cursor: 'pointer' }} onClick={() => requestW9(c.name1)}>no W-9 — request one</a></>}
                         </div>
                       </td>
+                      {payBoxes.length > 1 && (
+                        <td>
+                          {filed ? (
+                            <span className="muted">{boxLabel(formType, boxSel[key] ?? primaryBoxId)}</span>
+                          ) : (
+                            <select value={boxSel[key] ?? primaryBoxId} onChange={(e) => setBoxSel((b) => ({ ...b, [key]: e.target.value }))}>
+                              {payBoxes.map((b) => (<option key={b.id} value={b.id}>{b.label}</option>))}
+                            </select>
+                          )}
+                        </td>
+                      )}
                       <td>
                         {filed ? (
                           <div className="num" style={{ whiteSpace: 'nowrap' }}>
-                            ${amounts[c.recipientId] ?? '0.00'} <span className="badge ok" title="Already filed with the IRS — locked">filed</span>
-                            <div><a style={{ cursor: 'pointer', fontSize: 12 }} onClick={() => printSubstitute(c.recipientId, c.name1)}>Print 1099</a></div>
+                            ${amounts[key] ?? '0.00'} <span className="badge ok" title="Already filed with the IRS — locked">filed</span>
+                            <div><a style={{ cursor: 'pointer', fontSize: 12 }} onClick={() => printSubstitute(formType, c.recipientId, c.name1)}>Print 1099</a></div>
                           </div>
                         ) : (
-                          <input className="num" inputMode="decimal" placeholder="0.00" value={amounts[c.recipientId] ?? ''}
-                            onChange={(e) => setAmounts((a) => ({ ...a, [c.recipientId]: e.target.value }))} />
+                          <input className="num" inputMode="decimal" placeholder="0.00" value={amounts[key] ?? ''}
+                            onChange={(e) => setAmounts((a) => ({ ...a, [key]: e.target.value }))} />
                         )}
                       </td>
                     </tr>
                   );
                 })}
-                {!contractors.length && <tr><td colSpan={2} className="muted">No contractors yet — add your first below.</td></tr>}
+                {!visibleContractors.length && <tr><td colSpan={payBoxes.length > 1 ? 3 : 2} className="muted">No contractors on this form yet — add your first below.</td></tr>}
               </tbody>
             </table>
 
@@ -381,17 +452,21 @@ export function ClientPortal() {
               <span className="muted">step 3 of 3</span>
             </div>
             <h2 style={{ margin: '8px 0 0' }}>Review — {session.payerName}</h2>
-            <div className="muted" style={{ marginBottom: 10 }}>{session.taxYear} 1099-{formType}</div>
+            <div className="muted" style={{ marginBottom: 10 }}>{session.taxYear}{multiType ? ' — all forms' : ` 1099-${formType}`}</div>
             <table className="grid" style={{ marginTop: 10 }}>
               <tbody>
-                {contractors.filter((c) => (amounts[c.recipientId] ?? '').trim()).map((c) => (
-                  <tr key={c.recipientId}><td><a style={{ cursor: 'pointer' }} onClick={() => setDetail(c)}>{c.name1}</a></td><td className="num">${amounts[c.recipientId]}</td></tr>
+                {reportedRows.map(({ ft, c }) => (
+                  <tr key={kf(ft, c.recipientId)}>
+                    <td><a style={{ cursor: 'pointer' }} onClick={() => setDetail(c)}>{c.name1}</a></td>
+                    <td className="muted">{multiType && `1099-${ft} · `}{boxLabel(ft, boxSel[kf(ft, c.recipientId)] ?? primaryFor(ft))}</td>
+                    <td className="num">${amounts[kf(ft, c.recipientId)]}</td>
+                  </tr>
                 ))}
-                <tr><td><strong>Total ({contractors.filter((c) => (amounts[c.recipientId] ?? '').trim()).length} contractors)</strong></td>
+                <tr><td colSpan={2}><strong>Total ({reportedRows.length} payment(s))</strong></td>
                   <td className="num"><strong>${formatCents(total)}</strong></td></tr>
               </tbody>
             </table>
-            <p className="muted">By submitting you confirm these totals are accurate to the best of your knowledge. {currentReg?.title}.</p>
+            <p className="muted">By submitting you confirm these totals are accurate to the best of your knowledge.</p>
             <div className="row" style={{ justifyContent: 'space-between' }}>
               <button className="secondary" onClick={() => setStep('grid')}>← Back</button>
               <button onClick={submit}>Submit to {session.firmName}</button>
