@@ -350,6 +350,52 @@ irisRouter.get(
   }),
 );
 
+/**
+ * Inline status check (diagnostic for stuck acks): asks the provider RIGHT NOW
+ * and returns the derived verdict plus the raw response so the operator can see
+ * exactly what the provider is saying. Read-only — a terminal verdict is handed
+ * to the normal worker poll path so the ack applies through one code path.
+ * Staff-zone: raw provider bodies can echo record refs/names (same exposure as
+ * the existing error-details panel). IRIS acks stay worker-side (Poll now).
+ */
+irisRouter.get(
+  '/transmissions/:id/status-check',
+  h(async (req, res) => {
+    const id = z.string().uuid().parse(req.params['id']);
+    const db = getDb();
+    const tx = await db.query.transmissions.findFirst({
+      where: and(eq(transmissions.id, id), eq(transmissions.firmId, req.staff!.firmId)),
+    });
+    if (!tx) throw AppError.notFound('Transmission');
+    if (!tx.receiptId) throw AppError.state('Transmission has no Receipt ID yet');
+    if (tx.provider === 'iris') {
+      throw AppError.validation('Inline status check covers Tax1099/TaxBandits — for IRIS use Poll now (the ack applies within a minute).');
+    }
+    let formType: string | undefined;
+    if (tx.provider === 'taxbandits') {
+      const rec = await db.query.formRecords.findFirst({ where: eq(formRecords.transmissionId, tx.id) });
+      formType = rec?.formType ?? 'NEC';
+    }
+    const client =
+      tx.provider === 'taxbandits' ? await buildTaxBanditsClient(db, req.staff!.firmId) : await buildTax1099Client(db, req.staff!.firmId);
+    const result = await client.status(tx.receiptId, formType ? { formType } : undefined);
+    const terminal = result.status === 'Accepted' || result.status === 'AcceptedWithErrors' || result.status === 'Rejected';
+    if (terminal && tx.status !== 'accepted' && tx.status !== 'accepted_with_errors' && tx.status !== 'rejected') {
+      await getQueue(QUEUE_NAMES.iris).add('poll', { kind: 'poll', transmissionId: tx.id, firmId: req.staff!.firmId, attempt: 0 });
+    }
+    res.locals['audit'] = { action: 'transmission.status_check', entityType: 'transmission', entityId: tx.id, detail: { derived: result.status } };
+    res.json({
+      provider: tx.provider,
+      txStatus: tx.status,
+      derived: result.status,
+      terminal,
+      applying: terminal,
+      errors: result.errors.slice(0, 20),
+      raw: result.raw.slice(0, 4000),
+    });
+  }),
+);
+
 /** Re-poll a stuck transmission. */
 irisRouter.post(
   '/transmissions/:id/poll',

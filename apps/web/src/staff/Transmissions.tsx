@@ -1,5 +1,15 @@
 import { useEffect, useState } from 'react';
-import { api, downloadBlob } from '../api';
+import { api, ApiError, downloadBlob } from '../api';
+
+interface StatusCheck {
+  id: string;
+  derived: string;
+  terminal: boolean;
+  applying: boolean;
+  errors: Array<{ recordId: string; code: string; message: string }>;
+  raw: string;
+  error?: string;
+}
 
 interface Tx {
   id: string;
@@ -32,6 +42,23 @@ export function Transmissions() {
     load();
   };
 
+  const [check, setCheck] = useState<StatusCheck | null>(null);
+  // Ask the provider RIGHT NOW; a terminal verdict is applied to our records
+  // immediately (via the worker's single apply path) — reload shortly after.
+  const checkStatus = async (id: string) => {
+    setCheck({ id, derived: 'checking…', terminal: false, applying: false, errors: [], raw: '' });
+    try {
+      const r = await api.get<Omit<StatusCheck, 'id'>>(`/api/iris/transmissions/${id}/status-check`);
+      setCheck({ id, ...r });
+      if (r.applying) {
+        setTimeout(load, 2500);
+        setTimeout(load, 8000);
+      }
+    } catch (err) {
+      setCheck({ id, derived: 'error', terminal: false, applying: false, errors: [], raw: '', error: err instanceof ApiError ? err.message : String(err) });
+    }
+  };
+
   const dl = async (id: string, kind: 'xml' | 'ack', utid: string) => {
     const blob = await api.get<Blob>(`/api/iris/transmissions/${id}/${kind}`);
     downloadBlob(blob, `${utid}-${kind}.xml`);
@@ -61,9 +88,10 @@ export function Transmissions() {
                 <td style={{ whiteSpace: 'nowrap' }}>
                   {/* any non-terminal transmission with a receipt can be re-polled on demand —
                       including failed ones (poll first to confirm status before re-queuing) */}
-                  {t.receiptId && !['accepted', 'accepted_with_errors', 'rejected'].includes(t.status) && (
-                    <button className="small secondary" onClick={() => poll(t.id)} title="Ask the provider for this submission's current status right now">Poll now</button>
-                  )}
+                  {t.receiptId && !['accepted', 'accepted_with_errors', 'rejected'].includes(t.status) && (<>
+                    <button className="small secondary" onClick={() => poll(t.id)} title="Queue an immediate background status poll">Poll now</button>
+                    <button className="small secondary" onClick={() => void checkStatus(t.id)} title="Call the provider's status API right now, show its answer, and apply a final verdict to our records">Check status</button>
+                  </>)}
                   <button className="small secondary" onClick={() => dl(t.id, 'xml', t.utid)}>XML</button>
                   {t.resolvedAt && <button className="small secondary" onClick={() => dl(t.id, 'ack', t.utid)}>Ack</button>}
                   {t.errorDetails?.length ? (
@@ -73,6 +101,34 @@ export function Transmissions() {
                   ) : null}
                 </td>
               </tr>
+              {check?.id === t.id && (
+                <tr>
+                  <td colSpan={7}>
+                    {check.error ? (
+                      <div className="error-box">{check.error}</div>
+                    ) : (
+                      <>
+                        <p style={{ margin: '4px 0' }}>
+                          Provider says: <span className={`badge ${check.derived === 'Accepted' ? 'accepted' : check.derived === 'Rejected' ? 'rejected' : 'queued'}`}>{check.derived}</span>
+                          {check.applying && <span className="muted" style={{ marginLeft: 8 }}>final verdict — applying to records now, this row will refresh…</span>}
+                          {!check.terminal && check.raw && <span className="muted" style={{ marginLeft: 8 }}>still in the provider/IRS pipeline — nothing to apply yet</span>}
+                        </p>
+                        {check.errors.length > 0 && (
+                          <table className="grid"><thead><tr><th>Record</th><th>Code</th><th>Message</th></tr></thead>
+                            <tbody>{check.errors.map((e, i) => (<tr key={i}><td className="mono" style={{ fontSize: 11 }}>{e.recordId.slice(0, 8)}…</td><td>{e.code}</td><td>{e.message}</td></tr>))}</tbody>
+                          </table>
+                        )}
+                        {check.raw && (
+                          <details style={{ marginTop: 4 }}>
+                            <summary className="muted" style={{ cursor: 'pointer' }}>Raw provider response</summary>
+                            <pre style={{ fontSize: 10, whiteSpace: 'pre-wrap', maxHeight: 240, overflow: 'auto' }}>{check.raw}</pre>
+                          </details>
+                        )}
+                      </>
+                    )}
+                  </td>
+                </tr>
+              )}
               {expanded === t.id && t.errorDetails && (
                 <tr>
                   <td colSpan={7}>
