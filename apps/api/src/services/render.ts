@@ -205,18 +205,29 @@ export async function renderClientCopyPdf(db: Db, firmId: string, formRecordIds:
     tax_year: number;
     form_number: string;
     forms: unknown[];
+    totalCents: number;
+    withheldCents: number;
   }
   const groups = new Map<string, ClientCopyGroup>();
   for (const row of rows) {
     const p = await buildFormPayload(db, firmId, row.id);
     let g = groups.get(row.payerId);
     if (!g) {
-      g = { payer: p.form.payer, tax_year: p.form.tax_year, form_number: p.form.form_number, forms: [] };
+      g = { payer: p.form.payer, tax_year: p.form.tax_year, form_number: p.form.form_number, forms: [], totalCents: 0, withheldCents: 0 };
       groups.set(row.payerId, g);
     }
     const boxes = [...p.form.boxes, ...p.form.state_boxes.map((s) => ({ ...s, kind: 'cents' as const }))].filter(
       (b) => (b.kind === 'checkbox' ? b.value === true : b.value !== '' && b.value != null),
     );
+    // payer totals (1096-style): payment boxes summed, withholding separate
+    const def = getFormDef(p.record.formType as FormType, p.record.taxYear);
+    for (const b of def.boxes) {
+      if (b.kind !== 'cents' || b.stateField) continue;
+      const v = p.record.boxValues[b.id];
+      if (typeof v !== 'number') continue;
+      if (b.id === 'fedTaxWithheld') g.withheldCents += v;
+      else g.totalCents += v;
+    }
     g.forms.push({
       recipient: p.form.recipient,
       account_number: p.form.account_number,
@@ -224,7 +235,17 @@ export async function renderClientCopyPdf(db: Db, firmId: string, formRecordIds:
       boxes,
     });
   }
-  return getRenderClient().render({ template: 'client_copy.html', data: { groups: [...groups.values()] } });
+  const data = {
+    groups: [...groups.values()].map((g) => ({
+      payer: g.payer,
+      tax_year: g.tax_year,
+      form_number: g.form_number,
+      forms: g.forms,
+      total: formatCents(g.totalCents),
+      withheld: g.withheldCents > 0 ? formatCents(g.withheldCents) : null,
+    })),
+  };
+  return getRenderClient().render({ template: 'client_copy.html', data });
 }
 
 export async function renderTestPattern(db: Db, firmId: string): Promise<Buffer> {

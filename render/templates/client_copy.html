@@ -26,7 +26,7 @@
       <div class="gh-right">
         <div class="gh-title">{{ g.form_number }} — {{ g.tax_year }}</div>
         <div class="gh-sub">Client copy · for your records · not for filing</div>
-        <div class="gh-sub">{{ g.forms|length }} form(s)</div>
+        <div class="gh-total">{{ g.forms|length }} form(s) · Total payments: ${{ g.total }}{% if g.withheld %} · Fed tax withheld: ${{ g.withheld }}{% endif %}</div>
       </div>
     </div>
     {% for f in g.forms %}

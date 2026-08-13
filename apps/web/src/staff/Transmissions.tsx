@@ -59,7 +59,11 @@ export function Transmissions() {
                 <td><span className={`badge ${t.status === 'accepted' ? 'accepted' : t.status === 'rejected' || t.status === 'failed' ? 'rejected' : t.status === 'accepted_with_errors' ? 'accepted_with_errors' : 'queued'}`}>{t.status}</span></td>
                 <td>{t.transmittedAt ? new Date(t.transmittedAt).toLocaleString() : '—'}</td>
                 <td style={{ whiteSpace: 'nowrap' }}>
-                  {t.status === 'polling' && <button className="small secondary" onClick={() => poll(t.id)}>Poll now</button>}
+                  {/* any non-terminal transmission with a receipt can be re-polled on demand —
+                      including failed ones (poll first to confirm status before re-queuing) */}
+                  {t.receiptId && !['accepted', 'accepted_with_errors', 'rejected'].includes(t.status) && (
+                    <button className="small secondary" onClick={() => poll(t.id)} title="Ask the provider for this submission's current status right now">Poll now</button>
+                  )}
                   <button className="small secondary" onClick={() => dl(t.id, 'xml', t.utid)}>XML</button>
                   {t.resolvedAt && <button className="small secondary" onClick={() => dl(t.id, 'ack', t.utid)}>Ack</button>}
                   {t.errorDetails?.length ? (
