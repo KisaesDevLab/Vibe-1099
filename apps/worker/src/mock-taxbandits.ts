@@ -30,6 +30,8 @@ interface StoredSubmission {
   records: StoredRecord[];
   wholeReject: boolean;
   polls: number;
+  /** Create only STAGES (CREATED); the per-form Transmit call releases to the IRS. */
+  released: boolean;
 }
 interface StoredTinMatch {
   submissionId: string;
@@ -105,8 +107,19 @@ for (const ft of FORM_TYPES) {
       return { payeeRef: r.Recipient?.PayeeRef ?? '', errors };
     });
     const submissionId = `TBSUB-${randomUUID().slice(0, 8)}${hash.slice(0, 8)}`;
-    store.set(submissionId, { submissionId, records, wholeReject: hash.endsWith('f'), polls: 0 });
+    store.set(submissionId, { submissionId, records, wholeReject: hash.endsWith('f'), polls: 0, released: false });
     res.status(200).json({ SubmissionId: submissionId, Status: 'Created' });
+  });
+
+  // Mandatory second step: releases a CREATED submission to the (mock) IRS.
+  app.post(`/v1.7.3/Form1099${ft}/Transmit`, (req, res) => {
+    if (!requireBearer(req, res)) return;
+    const { SubmissionId } = req.body as { SubmissionId?: string };
+    const s = store.get(SubmissionId ?? '');
+    if (!s) return void res.status(404).json({ error: 'not_found' });
+    s.released = true;
+    s.polls = 0;
+    res.json({ StatusCode: 200, StatusName: 'Ok', SubmissionId: s.submissionId, Errors: null });
   });
 
   app.post(`/v1.7.3/Form1099${ft}/Correction`, (req, res) => {
@@ -116,7 +129,7 @@ for (const ft of FORM_TYPES) {
     const hash = createHash('sha256').update(JSON.stringify(req.body)).digest('hex');
     const records: StoredRecord[] = body.ReturnData!.map((r) => ({ payeeRef: r.Recipient?.PayeeRef ?? '', errors: [] }));
     const submissionId = `TBCORR-${randomUUID().slice(0, 8)}${hash.slice(0, 8)}`;
-    store.set(submissionId, { submissionId, records, wholeReject: false, polls: 0 });
+    store.set(submissionId, { submissionId, records, wholeReject: false, polls: 0, released: false });
     res.status(200).json({ SubmissionId: submissionId, Status: 'Created' });
   });
 
@@ -127,8 +140,8 @@ for (const ft of FORM_TYPES) {
     const submissionId = String(req.query['SubmissionId'] ?? '');
     const s = store.get(submissionId);
     if (!s) return void res.status(404).json({ error: 'not_found' });
-    s.polls += 1;
-    if (!s.wholeReject && s.polls === 2) creditsCents = Math.max(0, creditsCents - 80);
+    if (s.released) s.polls += 1;
+    if (s.released && !s.wholeReject && s.polls === 2) creditsCents = Math.max(0, creditsCents - 80);
     res.json({
       StatusCode: 200,
       StatusName: 'Success',
@@ -138,8 +151,9 @@ for (const ft of FORM_TYPES) {
           SequenceId: String(i + 1),
           RecordId: `TBREC-${i + 1}`,
           PayeeRef: r.payeeRef,
-          FederalReturn:
-            s.polls === 1
+          FederalReturn: !s.released
+            ? { Status: 'CREATED', Errors: null } // staged only — awaiting the Transmit call
+            : s.polls === 1
               ? { Status: 'SENT TO AGENCY', Errors: null }
               : {
                   Status: s.wholeReject || r.errors.length ? 'REJECTED' : 'ACCEPTED',

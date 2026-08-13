@@ -209,6 +209,68 @@ describe('TaxBandits status/ack parsing', () => {
   });
 });
 
+// Create only STAGES a submission (CREATED) — the separate Transmit call
+// releases it to the IRS ("Transmit is mandatory"; observed live 2026-08-13).
+describe('TaxBandits release (Create → Transmit)', () => {
+  const clientCapturing = (calls: string[], statusBody?: unknown): TaxBanditsClient => {
+    const fetchImpl = (async (url: unknown, init?: { method?: string }) => {
+      const u = String(url);
+      if (u.includes('tbsauth')) return new Response(JSON.stringify({ AccessToken: 'tok', ExpiresIn: 3600 }), { status: 200 });
+      calls.push(`${init?.method ?? 'GET'} ${u.replace('https://mock.test', '').split('?')[0]}`);
+      if (u.includes('/Create')) return new Response(JSON.stringify({ SubmissionId: 'SUB-9' }), { status: 200 });
+      if (u.includes('/Transmit')) return new Response(JSON.stringify({ StatusCode: 200, SubmissionId: 'SUB-9' }), { status: 200 });
+      return new Response(JSON.stringify(statusBody ?? {}), { status: 200 });
+    }) as typeof fetch;
+    return new TaxBanditsClient(
+      taxbanditsEndpoints('https://mock.test', 'https://mock.test/v2/tbsauth'),
+      { clientId: 'c', clientSecret: 's', userToken: 'u' },
+      fetchImpl,
+    );
+  };
+
+  it('transmit() releases the created submission with a second Transmit call', async () => {
+    const calls: string[] = [];
+    const payload = JSON.stringify(buildTaxBanditsPayload(baseInput(), 'sandbox'));
+    const r = await clientCapturing(calls).transmit(payload);
+    expect(r.providerRef).toBe('SUB-9');
+    expect(calls).toEqual(['POST /v1.7.3/Form1099NEC/Create', 'POST /v1.7.3/Form1099NEC/Transmit']);
+  });
+
+  it('status() auto-releases a submission stuck in CREATED and stays Processing', async () => {
+    const calls: string[] = [];
+    const stuck = {
+      SubmissionId: 'SUB-9',
+      Form1099Records: {
+        SuccessRecords: [
+          { PayeeRef: 'rec-1', FederalReturn: { Status: 'CREATED', Errors: null } },
+          { PayeeRef: 'rec-2', FederalReturn: { Status: 'CREATED', Errors: null } },
+        ],
+        ErrorRecords: null,
+      },
+    };
+    const r = await clientCapturing(calls, stuck).status('SUB-9', { formType: 'NEC' });
+    expect(r.status).toBe('Processing');
+    expect(calls).toEqual(['GET /v1.7.3/Form1099NEC/Status', 'POST /v1.7.3/Form1099NEC/Transmit']);
+  });
+
+  it('status() does NOT release when any record has advanced past CREATED', async () => {
+    const calls: string[] = [];
+    const advancing = {
+      SubmissionId: 'SUB-9',
+      Form1099Records: {
+        SuccessRecords: [
+          { PayeeRef: 'rec-1', FederalReturn: { Status: 'CREATED', Errors: null } },
+          { PayeeRef: 'rec-2', FederalReturn: { Status: 'TRANSMITTED', Errors: null } },
+        ],
+        ErrorRecords: null,
+      },
+    };
+    const r = await clientCapturing(calls, advancing).status('SUB-9', { formType: 'NEC' });
+    expect(r.status).toBe('Processing');
+    expect(calls).toEqual(['GET /v1.7.3/Form1099NEC/Status']);
+  });
+});
+
 describe('TaxBandits auth assertion', () => {
   it('builds a three-segment HS256 JWS with the TaxBandits claim set (iss/sub/aud/iat, no exp)', () => {
     const jws = buildAssertion({ clientId: 'cid', clientSecret: 'secret', userToken: 'utok' }, 1_700_000_000_000);

@@ -20,8 +20,8 @@ export interface TaxBanditsEndpoints {
   tinMatchUrl: string;
   tinMatchStatusUrl: string;
   creditsUrl: string;
-  /** Create/Status/Correction are PER FORM TYPE (Form1099NEC, Form1099MISC, …). */
-  formUrl(formType: string, action: 'Create' | 'Status' | 'Correction'): string;
+  /** Create/Transmit/Status/Correction are PER FORM TYPE (Form1099NEC, Form1099MISC, …). */
+  formUrl(formType: string, action: 'Create' | 'Transmit' | 'Status' | 'Correction'): string;
 }
 
 export function taxbanditsEndpoints(base: string, oauthUrl: string): TaxBanditsEndpoints {
@@ -171,6 +171,22 @@ export class TaxBanditsClient implements FilingProvider {
     return { formType, body: JSON.stringify(toTaxBanditsWire(neutral)) };
   }
 
+  /**
+   * TaxBandits' Create only STAGES a submission (records sit in CREATED) — a
+   * separate per-form Transmit call releases it to the IRS. "Transmit is
+   * mandatory" per their docs; without it a submission waits in CREATED forever
+   * (observed live 2026-08-13).
+   */
+  private async release(formType: string, submissionId: string): Promise<void> {
+    const res = await this.call(this.endpoints.formUrl(formType, 'Transmit'), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ SubmissionId: submissionId }),
+    });
+    const raw = await res.text();
+    if (!res.ok) throw new AppError(ErrorCodes.E_IRIS, `TaxBandits transmit (release) rejected (${res.status})`, 502, { raw });
+  }
+
   async transmit(payloadJson: string): Promise<FilingTransmitResult> {
     const { formType, body } = this.toWire(payloadJson);
     const res = await this.call(this.endpoints.formUrl(formType, 'Create'), {
@@ -180,7 +196,16 @@ export class TaxBanditsClient implements FilingProvider {
     });
     const raw = await res.text();
     if (!res.ok) throw new AppError(ErrorCodes.E_IRIS, `TaxBandits create rejected (${res.status})`, 502, { raw });
-    return this.parseSubmission(raw);
+    const created = this.parseSubmission(raw);
+    try {
+      await this.release(formType, created.providerRef);
+    } catch {
+      // The submission EXISTS at the provider — failing the app transmission here
+      // would unlink the records and a recompose would create a duplicate
+      // submission. Return the ref instead: the status path auto-releases any
+      // submission still sitting in CREATED on the next poll.
+    }
+    return created;
   }
 
   /** Corrections/voids go through the correction endpoint but return the same ref shape. */
@@ -193,11 +218,18 @@ export class TaxBanditsClient implements FilingProvider {
     });
     const raw = await res.text();
     if (!res.ok) throw new AppError(ErrorCodes.E_IRIS, `TaxBandits correction rejected (${res.status})`, 502, { raw });
-    return this.parseSubmission(raw);
+    const created = this.parseSubmission(raw);
+    try {
+      await this.release(formType, created.providerRef);
+    } catch {
+      // same reasoning as transmit(): poll-side auto-release retries
+    }
+    return created;
   }
 
   async status(submissionId: string, opts?: { formType?: string }): Promise<FilingStatusResult> {
-    const res = await this.call(`${this.endpoints.formUrl(opts?.formType ?? 'NEC', 'Status')}?SubmissionId=${encodeURIComponent(submissionId)}`, {
+    const formType = opts?.formType ?? 'NEC';
+    const res = await this.call(`${this.endpoints.formUrl(formType, 'Status')}?SubmissionId=${encodeURIComponent(submissionId)}`, {
       method: 'GET',
       headers: { accept: 'application/json' },
     });
@@ -215,6 +247,21 @@ export class TaxBanditsClient implements FilingProvider {
     const success = body.Form1099Records?.SuccessRecords ?? [];
     const failed = body.Form1099Records?.ErrorRecords ?? [];
     if (!success.length && !failed.length) return { status: 'Processing', errors: [], raw };
+
+    // Self-heal: a submission whose records are ALL still CREATED was staged but
+    // never released to the IRS (a missed/failed Transmit step). Our app only
+    // creates submissions it intends to file, so release it now; the next poll
+    // sees TRANSMITTED/SENT TO AGENCY and proceeds normally.
+    const allCreated =
+      !failed.length && success.every((r) => (r.FederalReturn?.Status ?? '').trim().toUpperCase() === 'CREATED');
+    if (allCreated) {
+      try {
+        await this.release(formType, submissionId);
+      } catch {
+        // next poll retries the release
+      }
+      return { status: 'Processing', errors: [], raw };
+    }
 
     const errors: RecordError[] = [];
     const buckets = { accepted: 0, awe: 0, rejected: 0, processing: 0 };
