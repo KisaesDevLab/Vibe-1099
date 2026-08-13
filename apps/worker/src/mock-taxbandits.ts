@@ -120,20 +120,35 @@ for (const ft of FORM_TYPES) {
     res.status(200).json({ SubmissionId: submissionId, Status: 'Created' });
   });
 
+  // Real Status contract: no top-level status — per-record verdicts under
+  // Form1099Records.SuccessRecords[].FederalReturn (first poll: SENT TO AGENCY).
   app.get(`/v1.7.3/Form1099${ft}/Status`, (req, res) => {
     if (!requireBearer(req, res)) return;
     const submissionId = String(req.query['SubmissionId'] ?? '');
     const s = store.get(submissionId);
     if (!s) return void res.status(404).json({ error: 'not_found' });
     s.polls += 1;
-    if (s.polls === 1) return void res.json({ SubmissionId: submissionId, Status: 'Processing', Records: [] });
-    const hasErrors = s.records.some((r) => r.errors.length);
-    const Status = s.wholeReject ? 'Rejected' : hasErrors ? 'AcceptedWithErrors' : 'Accepted';
-    if (Status !== 'Rejected' && s.polls === 2) creditsCents = Math.max(0, creditsCents - 80);
+    if (!s.wholeReject && s.polls === 2) creditsCents = Math.max(0, creditsCents - 80);
     res.json({
+      StatusCode: 200,
+      StatusName: 'Success',
       SubmissionId: submissionId,
-      Status,
-      Records: s.records.map((r) => ({ PayeeRef: r.payeeRef, Status: r.errors.length ? 'Rejected' : 'Accepted', Errors: r.errors })),
+      Form1099Records: {
+        SuccessRecords: s.records.map((r, i) => ({
+          SequenceId: String(i + 1),
+          RecordId: `TBREC-${i + 1}`,
+          PayeeRef: r.payeeRef,
+          FederalReturn:
+            s.polls === 1
+              ? { Status: 'SENT TO AGENCY', Errors: null }
+              : {
+                  Status: s.wholeReject || r.errors.length ? 'REJECTED' : 'ACCEPTED',
+                  Errors: r.errors.length ? r.errors.map((e) => ({ Id: e.Code, Name: 'Recipient', Message: e.Message })) : null,
+                },
+        })),
+        ErrorRecords: null,
+      },
+      Errors: null,
     });
   });
 }

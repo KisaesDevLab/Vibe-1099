@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { buildTaxBanditsPayload, preSubmitCheckTaxBandits, toTaxBanditsWire } from '@vibe1099/core/taxbandits/payload';
+import { TaxBanditsClient, taxbanditsEndpoints } from '@vibe1099/core/taxbandits/client';
 import { buildAssertion } from '@vibe1099/core/taxbandits/auth';
 import type { IrisTransmissionInput } from '@vibe1099/core/iris/xml';
 
@@ -136,6 +137,75 @@ describe('TaxBandits wire format', () => {
     const input = baseInput();
     input.records.push({ ...input.records[0]!, recordId: 'rec-2', formType: 'MISC' });
     expect(() => toTaxBanditsWire(buildTaxBanditsPayload(input, 'sandbox'))).toThrow(/single supported form type/);
+  });
+});
+
+// Ack derivation from the REAL Status response: no top-level status; per-record
+// FederalReturn.Status, where TRANSMITTED/SENT TO AGENCY are NON-terminal.
+describe('TaxBandits status/ack parsing', () => {
+  const clientWith = (statusBody: unknown): TaxBanditsClient => {
+    const fetchImpl = (async (url: unknown) => {
+      if (String(url).includes('tbsauth')) {
+        return new Response(JSON.stringify({ AccessToken: 'tok', TokenType: 'Bearer', ExpiresIn: 3600 }), { status: 200 });
+      }
+      return new Response(JSON.stringify(statusBody), { status: 200 });
+    }) as typeof fetch;
+    return new TaxBanditsClient(
+      taxbanditsEndpoints('https://mock.test', 'https://mock.test/v2/tbsauth'),
+      { clientId: 'c', clientSecret: 's', userToken: 'u' },
+      fetchImpl,
+    );
+  };
+  const record = (payeeRef: string, status: string, errors: Array<{ Id: string; Message: string }> | null = null) => ({
+    PayeeRef: payeeRef,
+    RecordId: `TB-${payeeRef}`,
+    FederalReturn: { Status: status, Errors: errors },
+  });
+  const wrap = (success: unknown[], errorRecords: unknown[] | null = null) => ({
+    StatusCode: 200,
+    SubmissionId: 'SUB1',
+    Form1099Records: { SuccessRecords: success, ErrorRecords: errorRecords },
+  });
+
+  it('TRANSMITTED / SENT TO AGENCY are still Processing — never accepted', async () => {
+    for (const s of ['CREATED', 'TRANSMITTED', 'SENT TO AGENCY', 'UNDER PROCESS', 'YET_TO_RETRANSMIT']) {
+      const r = await clientWith(wrap([record('rec-1', s)])).status('SUB1', { formType: 'NEC' });
+      expect(r.status, s).toBe('Processing');
+    }
+  });
+
+  it('all accepted → Accepted with no errors', async () => {
+    const r = await clientWith(wrap([record('rec-1', 'ACCEPTED'), record('rec-2', 'Accepted')])).status('SUB1');
+    expect(r.status).toBe('Accepted');
+    expect(r.errors).toEqual([]);
+  });
+
+  it('partial rejection → AcceptedWithErrors with errors keyed by PayeeRef', async () => {
+    const r = await clientWith(
+      wrap([record('rec-1', 'ACCEPTED'), record('rec-2', 'REJECTED', [{ Id: 'F00-100112', Message: 'TIN/Name mismatch' }])]),
+    ).status('SUB1');
+    expect(r.status).toBe('AcceptedWithErrors');
+    expect(r.errors).toEqual([{ recordId: 'rec-2', code: 'F00-100112', message: 'TIN/Name mismatch' }]);
+  });
+
+  it('rejection without agency detail still yields a rejecting error row', async () => {
+    const r = await clientWith(wrap([record('rec-1', 'ACCEPTED'), record('rec-2', 'REJECTED')])).status('SUB1');
+    expect(r.errors.some((e) => e.recordId === 'rec-2' && e.code === 'REJECTED')).toBe(true);
+  });
+
+  it('everything rejected → Rejected; mixed processing wins over terminal', async () => {
+    const all = await clientWith(wrap([record('rec-1', 'REJECTED'), record('rec-2', 'REJECTED')])).status('SUB1');
+    expect(all.status).toBe('Rejected');
+    const mixed = await clientWith(wrap([record('rec-1', 'ACCEPTED'), record('rec-2', 'TRANSMITTED')])).status('SUB1');
+    expect(mixed.status).toBe('Processing');
+  });
+
+  it('create-time ErrorRecords surfacing at status count as rejected', async () => {
+    const r = await clientWith(
+      wrap([record('rec-1', 'ACCEPTED')], [{ PayeeRef: 'rec-2', Errors: [{ Id: 'F01-100230', Message: 'Invalid ZIP' }] }]),
+    ).status('SUB1');
+    expect(r.status).toBe('AcceptedWithErrors');
+    expect(r.errors).toEqual([{ recordId: 'rec-2', code: 'F01-100230', message: 'Invalid ZIP' }]);
   });
 });
 
