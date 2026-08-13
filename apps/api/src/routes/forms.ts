@@ -16,6 +16,7 @@ import {
   zFormRecordInput,
   zFormType,
   zTaxYear,
+  zTinType,
   type FormStatus,
   type FormType,
 } from '@vibe1099/shared';
@@ -32,7 +33,7 @@ import {
   validateFormRecord,
 } from '../services/forms.js';
 import { getSetting, thresholdOverride } from '../services/settings.js';
-import { toPublicRecipient } from '../services/vault.js';
+import { lookupByTin, toPublicRecipient } from '../services/vault.js';
 
 export const formsRouter = Router();
 formsRouter.use(requireStaff());
@@ -258,7 +259,11 @@ formsRouter.delete(
       where: and(eq(formRecords.id, id), eq(formRecords.firmId, req.staff!.firmId)),
     });
     if (!record) throw AppError.notFound('Form record');
-    assertDeletableStatus(record);
+    // Imported filed-history rows (`accepted` + externally-filed snapshot, never
+    // transmitted by this system) stay deletable so a botched import can be
+    // cleaned up; everything else follows the draft/ready-only rule.
+    const externallyFiled = record.filedSnapshot?.['filedVia'] === 'external' && !record.transmissionId;
+    if (!externallyFiled) assertDeletableStatus(record);
     // Don't strand a dependent: in a Type-2 pair the new-original record points at
     // the zeroing record via correctsId. Deleting the referenced record first would
     // orphan its dependent, so require the dependent be removed first.
@@ -482,5 +487,92 @@ formsRouter.post(
     }
     res.locals['audit'] = { action: 'form.rollforward', entityType: 'form_record', detail: { payerId, fromYear, toYear, created } };
     res.json({ created });
+  }),
+);
+
+// Prior-year PDF import, filed-history step: record forms that were filed
+// OUTSIDE Vibe 1099 (old software) so the year reads complete and next season's
+// rollforward can pre-list the recipients. Records land directly in `accepted`
+// with an externally-filed snapshot: `accepted` has no transition to `queued`,
+// so imported history can never be (re)transmitted from here, and the
+// corrections path refuses external originals (no UTID/receipt to reference).
+// Deliberately no assertYearOpen — the target is a historical year.
+formsRouter.post(
+  '/import-filed',
+  h(async (req, res) => {
+    const input = z
+      .object({
+        payerId: z.string().uuid(),
+        taxYear: zTaxYear,
+        formType: zFormType,
+        boxId: z.string().min(1),
+        rows: z
+          .array(z.object({ tin: z.string().min(9).max(11), tinType: zTinType, amountCents: z.number().int().min(0) }))
+          .min(1)
+          .max(5000),
+      })
+      .parse(req.body);
+    const db = getDb();
+    const firmId = req.staff!.firmId;
+
+    const payer = await db.query.payers.findFirst({ where: and(eq(payers.id, input.payerId), eq(payers.firmId, firmId)) });
+    if (!payer) throw AppError.notFound('Payer');
+    const def = getFormDef(input.formType, input.taxYear);
+    const box = def.boxes.find((b) => b.id === input.boxId && b.kind === 'cents' && !b.stateField);
+    if (!box) throw AppError.validation(`Box "${input.boxId}" is not an amount box on 1099-${input.formType} TY${input.taxYear}`);
+
+    let created = 0;
+    let skippedExisting = 0;
+    const unmatched: number[] = []; // 1-based row indexes with no vault match (no TINs echoed)
+    for (const [i, row] of input.rows.entries()) {
+      const match = await lookupByTin(db, firmId, row.tin, row.tinType);
+      if (!match) {
+        unmatched.push(i + 1);
+        continue;
+      }
+      const existing = await db.query.formRecords.findFirst({
+        where: and(
+          eq(formRecords.firmId, firmId),
+          eq(formRecords.payerId, input.payerId),
+          eq(formRecords.recipientId, match.recipientId),
+          eq(formRecords.taxYear, input.taxYear),
+          eq(formRecords.formType, input.formType),
+        ),
+      });
+      if (existing) {
+        skippedExisting++;
+        continue;
+      }
+      const boxValues = { [input.boxId]: row.amountCents };
+      await db.insert(formRecords).values({
+        firmId,
+        payerId: input.payerId,
+        recipientId: match.recipientId,
+        taxYear: input.taxYear,
+        formType: input.formType,
+        boxValues,
+        moSource: false,
+        status: 'accepted',
+        filedSnapshot: {
+          filedVia: 'external',
+          source: 'pdf-import',
+          importedAt: new Date().toISOString(),
+          importedBy: req.staff!.userId,
+          formType: input.formType,
+          taxYear: input.taxYear,
+          boxValues,
+        },
+        notes: 'Imported as filed (prior-year PDF import) — original was transmitted outside Vibe 1099.',
+        createdBy: req.staff!.userId,
+      });
+      created++;
+    }
+
+    res.locals['audit'] = {
+      action: 'form.import_filed',
+      entityType: 'form_record',
+      detail: { payerId: input.payerId, taxYear: input.taxYear, formType: input.formType, boxId: input.boxId, created, skippedExisting, unmatchedCount: unmatched.length },
+    };
+    res.json({ created, skippedExisting, unmatched });
   }),
 );

@@ -60,6 +60,13 @@ async function loadCorrectable(db: Db, firmId: string, originalId: string) {
   const newer = await db.query.formRecords.findFirst({ where: eq(formRecords.correctsId, originalId) });
   if (newer) throw AppError.state('This record was already corrected — correct the latest version instead');
   if (!original.filedSnapshot) throw AppError.state('Record is missing its as-filed snapshot');
+  // Imported filed-history (prior-year PDF import): the original was transmitted
+  // by another system, so there is no UTID/receipt to reference in a correction.
+  if (original.filedSnapshot['filedVia'] === 'external') {
+    throw AppError.state(
+      'This record was imported as filed outside Vibe 1099 — file the correction through the system that transmitted the original.',
+    );
+  }
   return original;
 }
 

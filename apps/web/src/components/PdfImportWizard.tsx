@@ -4,8 +4,8 @@
  * The server never persists anything at parse time; the import step reuses
  * POST /api/payers and POST /api/recipients/import.
  */
-import { useState } from 'react';
-import { api, ApiError } from '../api';
+import { useEffect, useState } from 'react';
+import { api, ApiError, parseCentsInput } from '../api';
 import { Modal } from './Modal';
 import { useDialogs } from './Dialogs';
 
@@ -57,8 +57,15 @@ export function PdfImportWizard({ onClose, onImported }: { onClose: () => void; 
   const [proposal, setProposal] = useState<Proposal | null>(null);
   // Data-only overlay prints (values only, for preprinted stock) carry no
   // "1099-XXX" text, so the parse can't tell the form type — the operator picks
-  // it here and it becomes the created payer's default form type.
+  // it here; it becomes the created payer's default form type and the type of
+  // any filed-history records created below.
   const [formType, setFormType] = useState<'' | 'NEC' | 'MISC' | 'INT' | 'DIV'>('');
+  // Filed-history step: record the parsed amounts as forms already filed (by the
+  // prior software) for the chosen year, so rollforward can work from them.
+  const [importFiled, setImportFiled] = useState(false);
+  const [taxYear, setTaxYear] = useState('');
+  const [boxId, setBoxId] = useState('box1');
+  const [boxes, setBoxes] = useState<Array<{ id: string; boxNumber: string; label: string }>>([]);
   const [rows, setRows] = useState<Row[]>([]);
   const [payer, setPayer] = useState({ create: false, legalName: '', tin: '', tinType: 'EIN' as 'SSN' | 'EIN', line1: '', line2: '', city: '', state: '', zip: '', matchName: null as string | null });
 
@@ -70,6 +77,8 @@ export function PdfImportWizard({ onClose, onImported }: { onClose: () => void; 
       const p = await api.post<Proposal>('/api/recipients/import/pdf', { pdf });
       setProposal(p);
       setFormType(p.formType ?? '');
+      setTaxYear(p.taxYear ? String(p.taxYear) : '');
+      setImportFiled(!!p.payer && p.recipients.some((r) => r.amount));
       setRows(
         p.recipients.map((r) => ({
           include: !r.match, // already-in-vault rows default to skip
@@ -109,23 +118,45 @@ export function PdfImportWizard({ onClose, onImported }: { onClose: () => void; 
 
   const set = (i: number, patch: Partial<Row>) => setRows((rs) => rs.map((r, j) => (j === i ? { ...r, ...patch } : r)));
 
+  // Amount-box options for the chosen form type + year (registry-driven).
+  useEffect(() => {
+    if (!importFiled || !formType || !/^\d{4}$/.test(taxYear)) return;
+    api
+      .get<{ forms: Array<{ formType: string; boxes: Array<{ id: string; boxNumber: string; label: string; kind: string; stateField?: boolean }> }> }>(
+        `/api/forms/registry/${taxYear}`,
+      )
+      .then((r) => {
+        const cents = (r.forms.find((f) => f.formType === formType)?.boxes ?? []).filter((b) => b.kind === 'cents' && !b.stateField);
+        setBoxes(cents);
+        setBoxId((cur) => (cents.some((b) => b.id === cur) ? cur : (cents[0]?.id ?? '')));
+      })
+      .catch(() => setBoxes([]));
+  }, [importFiled, formType, taxYear]);
+
   const selected = rows.filter((r) => r.include);
   const blockers = selected.filter((r) => !r.tin || !r.name1 || !r.line1 || !r.city || r.state.length !== 2 || !r.zip);
   const payerBlocked = payer.create && (!payer.legalName || !payer.tin || !payer.line1 || !payer.city || payer.state.length !== 2 || !payer.zip);
+  // Filed-history rows: every row with an amount + TIN, selected or not — a
+  // recipient already in the vault (default-unselected) still gets its record.
+  const filedRows = rows.filter((r) => r.amount && r.tin);
+  const payerResolvable = payer.create || !!(proposal?.payer?.match);
+  const filedBlocked = importFiled && (!formType || !/^\d{4}$/.test(taxYear) || !boxId || !payerResolvable || filedRows.length === 0);
 
   const runImport = async () => {
     setBusy(true);
     setError('');
     try {
       let payerNote = '';
+      let payerId = proposal?.payer?.match?.payerId ?? null;
       if (payer.create) {
-        await api.post('/api/payers', {
+        const createdPayer = await api.post<{ id: string }>('/api/payers', {
           legalName: payer.legalName,
           tin: payer.tin,
           tinType: payer.tinType,
           address: { line1: payer.line1, line2: payer.line2, city: payer.city, state: payer.state.toUpperCase(), zip: payer.zip },
           defaultFormTypes: formType ? [formType] : undefined,
         });
+        payerId = createdPayer.id;
         payerNote = `Payer "${payer.legalName}" created. `;
       }
       let recipNote = 'No recipients selected.';
@@ -143,9 +174,20 @@ export function PdfImportWizard({ onClose, onImported }: { onClose: () => void; 
         recipNote = `Recipients: ${r.created} created, ${r.skipped} already in vault${r.errors.length ? `, ${r.errors.length} errors` : ''}.`;
         if (r.errors.length) setError(r.errors.map((e) => `Row ${e.row}: ${e.reason}`).join(' · '));
       }
-      dialogs.toast(payerNote + recipNote, 'success');
+      let filedNote = '';
+      if (importFiled && payerId && filedRows.length > 0) {
+        const f = await api.post<{ created: number; skippedExisting: number; unmatched: number[] }>('/api/forms/import-filed', {
+          payerId,
+          taxYear: Number(taxYear),
+          formType,
+          boxId,
+          rows: filedRows.map((s) => ({ tin: s.tin, tinType: s.tinType, amountCents: parseCentsInput(s.amount ?? '') })),
+        });
+        filedNote = ` Filed TY${taxYear} records: ${f.created} created${f.skippedExisting ? `, ${f.skippedExisting} already existed` : ''}${f.unmatched.length ? `, ${f.unmatched.length} not in vault (import them first)` : ''}.`;
+      }
+      dialogs.toast(payerNote + recipNote + filedNote, 'success');
       onImported();
-      if (!payer.create && selected.length === 0) return; // nothing happened; stay open
+      if (!payer.create && selected.length === 0 && !filedNote) return; // nothing happened; stay open
       onClose();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : String(err));
@@ -183,18 +225,38 @@ export function PdfImportWizard({ onClose, onImported }: { onClose: () => void; 
             {proposal.taxYear ? ` · tax year ${proposal.taxYear}` : ''} · {proposal.recipients.length} recipient form(s).
             Amounts shown are prior-year values for eyeballing only — they are not imported.
           </p>
-          {!proposal.formType && (
-            <div className="field" style={{ maxWidth: 320, marginBottom: 8 }}>
-              <label>Form type <span className="muted">(the PDF doesn’t say — sets the new payer’s default)</span></label>
-              <select value={formType} onChange={(e) => setFormType(e.target.value as typeof formType)}>
-                <option value="">— not set —</option>
-                <option value="NEC">1099-NEC</option>
-                <option value="MISC">1099-MISC</option>
-                <option value="INT">1099-INT</option>
-                <option value="DIV">1099-DIV</option>
-              </select>
+          <div className="panel" style={{ padding: 8, marginBottom: 8 }}>
+            <label style={{ display: 'block', marginBottom: 6 }}>
+              <input type="checkbox" checked={importFiled} onChange={(e) => setImportFiled(e.target.checked)} />{' '}
+              Also record these amounts as <b>filed forms</b> for the year below
+            </label>
+            <div className="row">
+              <div className="field" style={{ width: 110 }}><label>Tax year</label>
+                <input value={taxYear} placeholder="e.g. 2025" onChange={(e) => setTaxYear(e.target.value.replace(/\D/g, '').slice(0, 4))} /></div>
+              <div className="field"><label>Form type {!proposal.formType && <span className="muted">(the PDF doesn’t say)</span>}</label>
+                <select value={formType} onChange={(e) => setFormType(e.target.value as typeof formType)}>
+                  <option value="">— not set —</option>
+                  <option value="NEC">1099-NEC</option>
+                  <option value="MISC">1099-MISC</option>
+                  <option value="INT">1099-INT</option>
+                  <option value="DIV">1099-DIV</option>
+                </select></div>
+              {importFiled && (
+                <div className="field grow"><label>Amount box</label>
+                  <select value={boxId} onChange={(e) => setBoxId(e.target.value)}>
+                    {boxes.map((b) => (<option key={b.id} value={b.id}>Box {b.boxNumber} — {b.label}</option>))}
+                    {!boxes.length && <option value="">— pick form type + year —</option>}
+                  </select></div>
+              )}
             </div>
-          )}
+            {importFiled && (
+              <p className="muted" style={{ margin: 0 }}>
+                Creates <b>accepted</b> records marked “filed outside Vibe 1099” for every row with an amount ({filedRows.length} of {rows.length}),
+                including recipients already in the vault. They can’t be re-transmitted or corrected from here, they seed next season’s
+                rollforward, and they can be deleted if the import was wrong. The form type also becomes a new payer’s default.
+              </p>
+            )}
+          </div>
           {proposal.warnings.length > 0 && (
             <div className="error-box" style={{ background: 'transparent' }}>
               {proposal.warnings.map((w, i) => (<div key={i}>⚠ {w}</div>))}
@@ -271,13 +333,14 @@ export function PdfImportWizard({ onClose, onImported }: { onClose: () => void; 
 
           <div className="row" style={{ marginTop: 10 }}>
             <button
-              disabled={busy || blockers.length > 0 || payerBlocked || (!payer.create && selected.length === 0)}
+              disabled={busy || blockers.length > 0 || payerBlocked || filedBlocked || (!payer.create && selected.length === 0 && !(importFiled && filedRows.length > 0))}
               onClick={() => void runImport()}
             >
-              {payer.create ? 'Create payer + import' : 'Import'} {selected.length} recipient(s)
+              {payer.create ? 'Create payer + import' : 'Import'} {selected.length} recipient(s){importFiled && filedRows.length > 0 ? ` + ${filedRows.length} filed TY${taxYear} form(s)` : ''}
             </button>
             <button className="secondary" disabled={busy} onClick={() => { setProposal(null); setRows([]); setError(''); }}>Start over</button>
             {blockers.length > 0 && <span className="muted">{blockers.length} selected row(s) missing TIN/name/address.</span>}
+            {filedBlocked && <span className="muted">Filed-forms import needs a tax year, form type, amount box, and a payer (created or matched).</span>}
           </div>
         </>
       )}
