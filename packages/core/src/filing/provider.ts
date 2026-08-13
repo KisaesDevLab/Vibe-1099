@@ -37,5 +37,7 @@ export interface FilingStatusResult {
 export interface FilingProvider {
   readonly kind: FilingProviderKind;
   transmit(payload: string): Promise<FilingTransmitResult>;
-  status(providerRef: string): Promise<FilingStatusResult>;
+  /** opts.formType routes providers whose status endpoints are per form type
+   *  (TaxBandits); IRIS/Tax1099 ignore it. */
+  status(providerRef: string, opts?: { formType?: string }): Promise<FilingStatusResult>;
 }

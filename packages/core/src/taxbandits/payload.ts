@@ -142,6 +142,199 @@ export function buildTaxBanditsPayload(
   };
 }
 
+// ---------------------------------------------------------------------------
+// Wire format (developer.taxbandits.com, v1.7.3): the Create endpoints require
+// { SubmissionManifest, ReturnHeader: { Business }, ReturnData: [...] } with
+// per-form <FT>FormData box names. Confirmed live 2026-08-13 — omitting
+// ReturnHeader returns F01-100064 "ReturnHeader should not be null".
+// ---------------------------------------------------------------------------
+
+type WireFormType = 'NEC' | 'MISC' | 'INT' | 'DIV';
+
+/** Our registry box id → TaxBandits FormData amount field, per form. */
+const WIRE_AMOUNTS: Record<WireFormType, Record<string, string>> = {
+  NEC: { box1: 'B1NEC', fedTaxWithheld: 'B4FedTaxWH' },
+  MISC: {
+    box1: 'B1Rents', box2: 'B2Royalties', box3: 'B3OtherIncome', fedTaxWithheld: 'B4FedIncomeTaxWH',
+    box5: 'B5FishingBoatProceeds', box6: 'B6MedHealthcarePymts', box8: 'B8SubstitutePymts',
+    box9: 'B9CropInsurance', box10: 'B10GrossProceeds', box11: 'B11FishPurForResale',
+    box12: 'B12Sec409ADeferrals', box14: 'B14EPP', box15: 'B15NonQualDefComp',
+  },
+  INT: {
+    box1: 'B1IntIncome', box2: 'B2EarlyWithdrawPenalty', box3: 'B3InterestOnUS', fedTaxWithheld: 'B4FedIncomeTaxWH',
+    box5: 'B5InvestExp', box6: 'B6ForeignTaxPaid', box8: 'B8TaxExemptInterest', box9: 'B9BondInterest',
+    box10: 'B10MarketDiscount', box11: 'B11BondPre', box12: 'B12BondPreOnTreasOblig', box13: 'B13BondPreOnTaxExempt',
+  },
+  DIV: {
+    box1a: 'B1aTotOrdiDiv', box1b: 'B1bQualiDiv', box2a: 'B2aTotCapGain', box2b: 'B2bUnRecapSecGain',
+    box2c: 'B2cSec1202Gain', box2d: 'B2dCollGain', box2e: 'B2eSec897OrdiDiv', box2f: 'B2fSec897CapGain',
+    box3: 'B3NonDivDist', fedTaxWithheld: 'B4FedIncTaxWH', box5: 'B5Sec199ADiv', box6: 'B6InvestExp',
+    box7: 'B7ForeignTaxPaid', box9: 'B9CashLiquiDist', box10: 'B10NonCashLiquiDist',
+    box12: 'B12ExemptIntDiv', box13: 'B13SpeciPrivActiBondIntDiv',
+  },
+};
+
+const WIRE_FLAGS: Record<WireFormType, Record<string, string>> = {
+  NEC: { directSales: 'B2IsDirectSales' },
+  MISC: { directSales: 'B7IsDirectSale', fatca: 'B13IsFATCA' },
+  INT: { fatca: 'IsFATCA' },
+  DIV: { fatca: 'B11IsFATCA' },
+};
+
+const WIRE_TEXT: Record<WireFormType, Record<string, string>> = {
+  NEC: {},
+  MISC: {},
+  INT: { box7: 'B7ForeignCountry', box14: 'B14CUSIPno' },
+  DIV: { box8: 'B8ForeignCountryOrUsPoss' },
+};
+
+/** Fields their validator requires even when zero. */
+const WIRE_REQUIRED_ZERO: Record<WireFormType, string[]> = {
+  NEC: ['B1NEC', 'B4FedTaxWH'],
+  MISC: [],
+  INT: [],
+  DIV: [],
+};
+
+const digits = (s: string | undefined): string => (s ?? '').replace(/\D/g, '');
+
+function formatWireTin(tin: string, tinType: 'SSN' | 'EIN'): string {
+  const d = digits(tin);
+  if (d.length !== 9) return d;
+  return tinType === 'EIN' ? `${d.slice(0, 2)}-${d.slice(2)}` : `${d.slice(0, 3)}-${d.slice(3, 5)}-${d.slice(5)}`;
+}
+
+const NAME_SUFFIXES = new Set(['JR', 'SR', 'II', 'III', 'IV', 'V']);
+
+/** "John Q Wormington JR" → FirstNm/LastNm/Suffix (their SSN-party required shape). */
+function splitPersonName(full: string): { first: string; last: string; suffix?: string } {
+  const parts = full.trim().split(/\s+/);
+  let suffix: string | undefined;
+  if (parts.length > 2 && NAME_SUFFIXES.has(parts[parts.length - 1]!.toUpperCase().replace(/\./g, ''))) {
+    suffix = parts.pop();
+  }
+  if (parts.length === 1) return { first: parts[0]!, last: parts[0]!, suffix };
+  return { first: parts.slice(0, -1).join(' '), last: parts[parts.length - 1]!, suffix };
+}
+
+function wireAddress(a: { address1: string; address2?: string; city: string; state: string; zip: string }): Record<string, unknown> {
+  return {
+    Address1: a.address1,
+    ...(a.address2 ? { Address2: a.address2 } : {}),
+    City: a.city,
+    State: a.state,
+    ZipCd: a.zip,
+  };
+}
+
+/**
+ * Convert the stored provider-neutral payload into TaxBandits' Create request
+ * body. The submission must be a single form type (their Create endpoints are
+ * per-form); composeTransmission enforces this for taxbandits transmissions.
+ */
+export function toTaxBanditsWire(payload: TaxBanditsPayload): Record<string, unknown> {
+  const types = [...new Set(payload.records.map((r) => r.formType))];
+  if (types.length !== 1 || !(types[0]! in WIRE_AMOUNTS)) {
+    throw new Error(`TaxBandits requires a single supported form type per submission (got: ${types.join(', ') || 'none'})`);
+  }
+  const ft = types[0] as WireFormType;
+
+  const returnData = payload.records.map((rec, i) => {
+    const formData: Record<string, unknown> = {};
+    for (const [boxId, val] of Object.entries(rec.amounts)) {
+      const key = WIRE_AMOUNTS[ft][boxId];
+      if (key) formData[key] = Number(val);
+    }
+    for (const boxId of Object.keys(rec.flags)) {
+      const key = WIRE_FLAGS[ft][boxId];
+      if (key) formData[key] = true;
+    }
+    for (const [boxId, val] of Object.entries(rec.text)) {
+      const key = WIRE_TEXT[ft][boxId];
+      if (key) formData[key] = val;
+    }
+    for (const req of WIRE_REQUIRED_ZERO[ft]) {
+      if (formData[req] === undefined) formData[req] = 0;
+    }
+    if (rec.accountNumber) formData['AccountNum'] = rec.accountNumber;
+    formData['Is2ndTINnot'] = !!rec.secondTinNotice;
+
+    const stateCd = rec.text['stateCode'];
+    const stateWH = rec.stateAmounts['stateTaxWithheld'];
+    const stateIncome = rec.stateAmounts['stateIncome'];
+    if (stateCd || stateWH || stateIncome) {
+      formData['States'] = [
+        {
+          ...(stateCd ? { StateCd: stateCd } : {}),
+          ...(rec.text['statePayerStateNo'] ? { StateIdNum: rec.text['statePayerStateNo'] } : {}),
+          StateWH: Number(stateWH ?? '0'),
+          ...(stateIncome ? { StateIncome: Number(stateIncome) } : {}),
+        },
+      ];
+    }
+
+    const r = rec.recipient;
+    const recipient: Record<string, unknown> = {
+      TINType: r.tinType,
+      TIN: formatWireTin(r.tin, r.tinType),
+      PayeeRef: rec.payeeRef,
+      IsForeign: false,
+      USAddress: wireAddress(r),
+    };
+    if (r.tinType === 'EIN') {
+      recipient['FirstPayeeNm'] = r.name;
+      if (r.name2) recipient['SecondPayeeNm'] = r.name2;
+    } else {
+      const n = splitPersonName(r.name);
+      recipient['FirstNm'] = n.first;
+      recipient['LastNm'] = n.last;
+      if (n.suffix) recipient['Suffix'] = n.suffix;
+      if (r.name2) recipient['SecondPayeeNm'] = r.name2;
+    }
+
+    return {
+      SequenceId: String(i + 1),
+      IsPostal: rec.postalMailing,
+      IsOnlineAccess: rec.onlineAccess,
+      Recipient: recipient,
+      [`${ft}FormData`]: formData,
+    };
+  });
+
+  const b = payload.business;
+  const business: Record<string, unknown> = {
+    BusinessNm: b.name,
+    ...(b.dbaName ? { TradeNm: b.dbaName } : {}),
+    PayerRef: b.payerRef,
+    IsEIN: b.tinType === 'EIN',
+    EINorSSN: formatWireTin(b.tin, b.tinType),
+    ...(digits(b.phone) ? { Phone: digits(b.phone).slice(0, 10) } : {}),
+    IsForeign: false,
+    USAddress: wireAddress(b),
+  };
+  if (b.tinType === 'SSN') {
+    const n = splitPersonName(b.name);
+    business['FirstNm'] = n.first;
+    business['LastNm'] = n.last;
+    if (n.suffix) business['Suffix'] = n.suffix;
+  }
+
+  const anyStates = returnData.some((rd) => (rd[`${ft}FormData`] as Record<string, unknown>)['States'] !== undefined);
+  return {
+    SubmissionManifest: {
+      TaxYear: String(payload.taxYear),
+      IRSFilingType: 'IRIS',
+      IsFederalFiling: true,
+      IsStateFiling: anyStates || payload.combinedFederalState.length > 0,
+      IsPostal: payload.records.some((r) => r.postalMailing),
+      IsOnlineAccess: payload.records.some((r) => r.onlineAccess),
+      IsScheduleFiling: false,
+    },
+    ReturnHeader: { Business: business },
+    ReturnData: returnData,
+  };
+}
+
 /** Provider-neutral pre-submit checks (no TCC required — TaxBandits holds it). */
 export function preSubmitCheckTaxBandits(payload: TaxBanditsPayload): string[] {
   const problems: string[] = [];

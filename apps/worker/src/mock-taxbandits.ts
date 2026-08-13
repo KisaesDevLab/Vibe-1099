@@ -58,51 +58,85 @@ app.get('/v2/tbsauth', (req, res) => {
   res.json({ AccessToken: `TBTOK-${randomUUID().slice(0, 12)}`, TokenType: 'Bearer', ExpiresIn: 3600 });
 });
 
-app.post('/v1.7.3/Form1099NEC/Create', (req, res) => {
-  if (!requireBearer(req, res)) return;
-  const body = req.body as { submissionRef?: string; records?: Array<{ payeeRef?: string; recipient?: { tin?: string } }> };
-  const submissionRef = body.submissionRef ?? '';
-  if (!submissionRef || !Array.isArray(body.records)) return void res.status(400).json({ error: 'invalid_payload' });
-  const hash = createHash('sha256').update(submissionRef).digest('hex');
-  for (const s of store.values()) {
-    if (s.submissionId.endsWith(hash.slice(0, 8))) return void res.status(409).json({ error: 'duplicate_submission', SubmissionId: s.submissionId });
+// Real wire contract: { SubmissionManifest, ReturnHeader: { Business }, ReturnData: [...] }.
+// The mock validates it the way production does — a payload without ReturnHeader
+// gets the exact F01-100064 error the live API returns, so a contract regression
+// can never pass locally again.
+interface WireReturnData {
+  SequenceId?: string;
+  Recipient?: { TIN?: string; PayeeRef?: string };
+}
+interface WireCreateBody {
+  SubmissionManifest?: { TaxYear?: string };
+  ReturnHeader?: { Business?: Record<string, unknown> };
+  ReturnData?: WireReturnData[];
+}
+
+function wireError(res: express.Response, id: string, name: string, message: string): void {
+  res.status(400).json({ StatusCode: 400, StatusName: 'BadRequest', StatusMessage: 'Validation error has occurred', Errors: [{ Id: id, Name: name, Message: message }] });
+}
+
+function validateWire(req: express.Request, res: express.Response): WireCreateBody | null {
+  const body = req.body as WireCreateBody;
+  if (!body.ReturnHeader?.Business) {
+    wireError(res, 'F01-100064', 'ReturnHeader', 'ReturnHeader should not be null');
+    return null;
   }
-  const records: StoredRecord[] = body.records.map((r) => {
-    const tin = (r.recipient?.tin ?? '').replace(/\D/g, '');
-    const errors = tin.endsWith('99') ? [{ Code: 'TINNAME_MISMATCH', Message: 'Recipient TIN and name do not match IRS records' }] : [];
-    return { payeeRef: r.payeeRef ?? '', errors };
-  });
-  const submissionId = `TBSUB-${randomUUID().slice(0, 8)}${hash.slice(0, 8)}`;
-  store.set(submissionId, { submissionId, records, wholeReject: hash.endsWith('f'), polls: 0 });
-  res.status(200).json({ SubmissionId: submissionId, Status: 'Created' });
-});
+  if (!Array.isArray(body.ReturnData) || !body.ReturnData.length) {
+    wireError(res, 'F01-100065', 'ReturnData', 'ReturnData should not be null');
+    return null;
+  }
+  return body;
+}
 
-app.post('/v1.7.3/Form1099NEC/Correction', (req, res) => {
-  if (!requireBearer(req, res)) return;
-  const body = req.body as { submissionRef?: string; records?: Array<{ payeeRef?: string }> };
-  const hash = createHash('sha256').update(body.submissionRef ?? '').digest('hex');
-  const records: StoredRecord[] = (body.records ?? []).map((r) => ({ payeeRef: r.payeeRef ?? '', errors: [] }));
-  const submissionId = `TBCORR-${randomUUID().slice(0, 8)}${hash.slice(0, 8)}`;
-  store.set(submissionId, { submissionId, records, wholeReject: false, polls: 0 });
-  res.status(200).json({ SubmissionId: submissionId, Status: 'Created' });
-});
-
-app.get('/v1.7.3/Form1099NEC/Status', (req, res) => {
-  if (!requireBearer(req, res)) return;
-  const submissionId = String(req.query['SubmissionId'] ?? '');
-  const s = store.get(submissionId);
-  if (!s) return void res.status(404).json({ error: 'not_found' });
-  s.polls += 1;
-  if (s.polls === 1) return void res.json({ SubmissionId: submissionId, Status: 'Processing', Records: [] });
-  const hasErrors = s.records.some((r) => r.errors.length);
-  const Status = s.wholeReject ? 'Rejected' : hasErrors ? 'AcceptedWithErrors' : 'Accepted';
-  if (Status !== 'Rejected' && s.polls === 2) creditsCents = Math.max(0, creditsCents - 80);
-  res.json({
-    SubmissionId: submissionId,
-    Status,
-    Records: s.records.map((r) => ({ PayeeRef: r.payeeRef, Status: r.errors.length ? 'Rejected' : 'Accepted', Errors: r.errors })),
+const FORM_TYPES = ['NEC', 'MISC', 'INT', 'DIV'] as const;
+for (const ft of FORM_TYPES) {
+  app.post(`/v1.7.3/Form1099${ft}/Create`, (req, res) => {
+    if (!requireBearer(req, res)) return;
+    const body = validateWire(req, res);
+    if (!body) return;
+    const hash = createHash('sha256').update(JSON.stringify(req.body)).digest('hex');
+    for (const s of store.values()) {
+      if (s.submissionId.endsWith(hash.slice(0, 8))) return void res.status(409).json({ error: 'duplicate_submission', SubmissionId: s.submissionId });
+    }
+    const records: StoredRecord[] = body.ReturnData!.map((r) => {
+      const tin = (r.Recipient?.TIN ?? '').replace(/\D/g, '');
+      const errors = tin.endsWith('99') ? [{ Code: 'TINNAME_MISMATCH', Message: 'Recipient TIN and name do not match IRS records' }] : [];
+      return { payeeRef: r.Recipient?.PayeeRef ?? '', errors };
+    });
+    const submissionId = `TBSUB-${randomUUID().slice(0, 8)}${hash.slice(0, 8)}`;
+    store.set(submissionId, { submissionId, records, wholeReject: hash.endsWith('f'), polls: 0 });
+    res.status(200).json({ SubmissionId: submissionId, Status: 'Created' });
   });
-});
+
+  app.post(`/v1.7.3/Form1099${ft}/Correction`, (req, res) => {
+    if (!requireBearer(req, res)) return;
+    const body = validateWire(req, res);
+    if (!body) return;
+    const hash = createHash('sha256').update(JSON.stringify(req.body)).digest('hex');
+    const records: StoredRecord[] = body.ReturnData!.map((r) => ({ payeeRef: r.Recipient?.PayeeRef ?? '', errors: [] }));
+    const submissionId = `TBCORR-${randomUUID().slice(0, 8)}${hash.slice(0, 8)}`;
+    store.set(submissionId, { submissionId, records, wholeReject: false, polls: 0 });
+    res.status(200).json({ SubmissionId: submissionId, Status: 'Created' });
+  });
+
+  app.get(`/v1.7.3/Form1099${ft}/Status`, (req, res) => {
+    if (!requireBearer(req, res)) return;
+    const submissionId = String(req.query['SubmissionId'] ?? '');
+    const s = store.get(submissionId);
+    if (!s) return void res.status(404).json({ error: 'not_found' });
+    s.polls += 1;
+    if (s.polls === 1) return void res.json({ SubmissionId: submissionId, Status: 'Processing', Records: [] });
+    const hasErrors = s.records.some((r) => r.errors.length);
+    const Status = s.wholeReject ? 'Rejected' : hasErrors ? 'AcceptedWithErrors' : 'Accepted';
+    if (Status !== 'Rejected' && s.polls === 2) creditsCents = Math.max(0, creditsCents - 80);
+    res.json({
+      SubmissionId: submissionId,
+      Status,
+      Records: s.records.map((r) => ({ PayeeRef: r.payeeRef, Status: r.errors.length ? 'Rejected' : 'Accepted', Errors: r.errors })),
+    });
+  });
+}
 
 // Async TIN matching -----------------------------------------------------------
 app.post('/v1.7.3/TINMatchingRecipients/Request', (req, res) => {

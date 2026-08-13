@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildTaxBanditsPayload, preSubmitCheckTaxBandits } from '@vibe1099/core/taxbandits/payload';
+import { buildTaxBanditsPayload, preSubmitCheckTaxBandits, toTaxBanditsWire } from '@vibe1099/core/taxbandits/payload';
 import { buildAssertion } from '@vibe1099/core/taxbandits/auth';
 import type { IrisTransmissionInput } from '@vibe1099/core/iris/xml';
 
@@ -78,6 +78,64 @@ describe('TaxBandits payload builder', () => {
     const bad = baseInput();
     bad.records[0]!.recipient.tin = '12';
     expect(preSubmitCheckTaxBandits(buildTaxBanditsPayload(bad, 'sandbox')).some((m) => /recipient TIN/.test(m))).toBe(true);
+  });
+});
+
+// Wire contract (developer.taxbandits.com v1.7.3): Create requires
+// { SubmissionManifest, ReturnHeader, ReturnData } — the live API rejects a
+// missing ReturnHeader with F01-100064 (hit in production 2026-08-13).
+describe('TaxBandits wire format', () => {
+  const wire = toTaxBanditsWire(buildTaxBanditsPayload(baseInput(), 'sandbox')) as any;
+
+  it('carries the three top-level blocks their validator requires', () => {
+    expect(wire.SubmissionManifest).toBeDefined();
+    expect(wire.ReturnHeader?.Business).toBeDefined();
+    expect(Array.isArray(wire.ReturnData)).toBe(true);
+    expect(wire.SubmissionManifest.TaxYear).toBe('2026');
+    expect(wire.SubmissionManifest.IRSFilingType).toBe('IRIS');
+    expect(wire.SubmissionManifest.IsFederalFiling).toBe(true);
+  });
+
+  it('maps the business with hyphenated EIN and US address', () => {
+    const b = wire.ReturnHeader.Business;
+    expect(b.BusinessNm).toBe('ACME & SONS LLC');
+    expect(b.IsEIN).toBe(true);
+    expect(b.EINorSSN).toBe('43-1111111');
+    expect(b.USAddress).toMatchObject({ Address1: '200 Commerce Way', City: 'Kansas City', State: 'MO', ZipCd: '64106' });
+  });
+
+  it('maps NEC boxes to NECFormData with required-zero defaults and state block', () => {
+    const rd = wire.ReturnData[0];
+    expect(rd.SequenceId).toBe('1');
+    expect(rd.NECFormData.B1NEC).toBe(12500);
+    expect(rd.NECFormData.B4FedTaxWH).toBe(0); // required even when absent
+    expect(rd.NECFormData.B2IsDirectSales).toBe(true);
+    expect(rd.NECFormData.Is2ndTINnot).toBe(true);
+    expect(rd.NECFormData.AccountNum).toBe('NEC2026-001');
+    expect(rd.NECFormData.States[0]).toMatchObject({ StateCd: 'MO', StateWH: 250 });
+  });
+
+  it('splits an SSN recipient into FirstNm/LastNm with formatted TIN', () => {
+    const r = wire.ReturnData[0].Recipient;
+    expect(r).toMatchObject({ TINType: 'SSN', TIN: '400-11-1222', FirstNm: 'JORDAN', LastNm: 'ABLE', PayeeRef: 'rec-1', IsForeign: false });
+  });
+
+  it('maps MISC boxes to MISCFormData names', () => {
+    const input = baseInput();
+    input.records[0] = {
+      ...input.records[0]!,
+      formType: 'MISC',
+      boxValues: { box1: 300000, box3: 12345, fatca: true, stateTaxWithheld: 25000, stateCode: 'MO' },
+    };
+    const w = toTaxBanditsWire(buildTaxBanditsPayload(input, 'sandbox')) as any;
+    expect(w.ReturnData[0].MISCFormData).toMatchObject({ B1Rents: 3000, B3OtherIncome: 123.45, B13IsFATCA: true });
+    expect(w.ReturnData[0].NECFormData).toBeUndefined();
+  });
+
+  it('refuses a mixed-form-type submission (their Create endpoints are per form)', () => {
+    const input = baseInput();
+    input.records.push({ ...input.records[0]!, recordId: 'rec-2', formType: 'MISC' });
+    expect(() => toTaxBanditsWire(buildTaxBanditsPayload(input, 'sandbox'))).toThrow(/single supported form type/);
   });
 });
 

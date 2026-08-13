@@ -11,17 +11,17 @@
 import { AppError, ErrorCodes } from '@vibe1099/shared';
 import type { RecordError, IrisAckStatus } from '../iris/client.js';
 import type { FilingProvider, FilingStatusResult, FilingTransmitResult } from '../filing/provider.js';
+import { toTaxBanditsWire, type TaxBanditsPayload } from './payload.js';
 import { TaxBanditsAuth, type TaxBanditsCredentials } from './auth.js';
 
 export interface TaxBanditsEndpoints {
   base: string;
   tokenUrl: string;
-  efileUrl: string;
-  statusUrl: string;
-  correctionUrl: string;
   tinMatchUrl: string;
   tinMatchStatusUrl: string;
   creditsUrl: string;
+  /** Create/Status/Correction are PER FORM TYPE (Form1099NEC, Form1099MISC, …). */
+  formUrl(formType: string, action: 'Create' | 'Status' | 'Correction'): string;
 }
 
 export function taxbanditsEndpoints(base: string, oauthUrl: string): TaxBanditsEndpoints {
@@ -30,14 +30,10 @@ export function taxbanditsEndpoints(base: string, oauthUrl: string): TaxBanditsE
     base: b,
     // OAuth token server is a separate host (expressauth.net), passed in.
     tokenUrl: oauthUrl,
-    // Verified against the TaxBandits API reference (v1.7.3, lowercase). NEC create
-    // is the concrete 1099 create endpoint; the correction/status forms mirror it.
-    efileUrl: `${b}/v1.7.3/Form1099NEC/Create`,
-    statusUrl: `${b}/v1.7.3/Form1099NEC/Status`,
-    correctionUrl: `${b}/v1.7.3/Form1099NEC/Correction`,
     tinMatchUrl: `${b}/v1.7.3/TINMatchingRecipients/Request`,
     tinMatchStatusUrl: `${b}/v1.7.3/TINMatchingRecipients/Status`,
     creditsUrl: `${b}/v1.7.3/Account/GetCredits`,
+    formUrl: (formType, action) => `${b}/v1.7.3/Form1099${formType.toUpperCase()}/${action}`,
   };
 }
 
@@ -130,11 +126,26 @@ export class TaxBanditsClient implements FilingProvider {
     return { providerRef: ref, raw };
   }
 
+  /** Stored payloads are our provider-neutral shape; convert to their wire
+   *  contract ({SubmissionManifest, ReturnHeader, ReturnData}) and route to the
+   *  form-typed endpoint. */
+  private toWire(payloadJson: string): { formType: string; body: string } {
+    let neutral: TaxBanditsPayload;
+    try {
+      neutral = JSON.parse(payloadJson) as TaxBanditsPayload;
+    } catch {
+      throw new AppError(ErrorCodes.E_IRIS, 'TaxBandits payload is not valid JSON', 500);
+    }
+    const formType = neutral.records[0]?.formType ?? 'NEC';
+    return { formType, body: JSON.stringify(toTaxBanditsWire(neutral)) };
+  }
+
   async transmit(payloadJson: string): Promise<FilingTransmitResult> {
-    const res = await this.call(this.endpoints.efileUrl, {
+    const { formType, body } = this.toWire(payloadJson);
+    const res = await this.call(this.endpoints.formUrl(formType, 'Create'), {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: payloadJson,
+      body,
     });
     const raw = await res.text();
     if (!res.ok) throw new AppError(ErrorCodes.E_IRIS, `TaxBandits create rejected (${res.status})`, 502, { raw });
@@ -143,18 +154,19 @@ export class TaxBanditsClient implements FilingProvider {
 
   /** Corrections/voids go through the correction endpoint but return the same ref shape. */
   async transmitCorrection(payloadJson: string): Promise<FilingTransmitResult> {
-    const res = await this.call(this.endpoints.correctionUrl, {
+    const { formType, body } = this.toWire(payloadJson);
+    const res = await this.call(this.endpoints.formUrl(formType, 'Correction'), {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: payloadJson,
+      body,
     });
     const raw = await res.text();
     if (!res.ok) throw new AppError(ErrorCodes.E_IRIS, `TaxBandits correction rejected (${res.status})`, 502, { raw });
     return this.parseSubmission(raw);
   }
 
-  async status(submissionId: string): Promise<FilingStatusResult> {
-    const res = await this.call(`${this.endpoints.statusUrl}?SubmissionId=${encodeURIComponent(submissionId)}`, {
+  async status(submissionId: string, opts?: { formType?: string }): Promise<FilingStatusResult> {
+    const res = await this.call(`${this.endpoints.formUrl(opts?.formType ?? 'NEC', 'Status')}?SubmissionId=${encodeURIComponent(submissionId)}`, {
       method: 'GET',
       headers: { accept: 'application/json' },
     });

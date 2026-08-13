@@ -180,7 +180,14 @@ export async function handleIrisPoll(job: Job): Promise<void> {
   if (tx.status === 'accepted' || tx.status === 'accepted_with_errors' || tx.status === 'rejected') return;
 
   const provider = await providerFor(data.firmId, tx.provider);
-  const result = await provider.status(tx.receiptId);
+  // TaxBandits status endpoints are per form type — derive it from the
+  // transmission's records (compose enforces a single type per submission).
+  let formType: string | undefined;
+  if (tx.provider === 'taxbandits') {
+    const rec = await db.query.formRecords.findFirst({ where: eq(formRecords.transmissionId, tx.id) });
+    formType = rec?.formType;
+  }
+  const result = await provider.status(tx.receiptId, formType ? { formType } : undefined);
 
   if (result.status === 'Processing' || result.status === 'NotFound') {
     if (data.attempt + 1 >= MAX_POLLS) {

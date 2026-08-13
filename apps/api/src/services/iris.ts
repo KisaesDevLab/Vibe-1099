@@ -109,6 +109,16 @@ export async function composeTransmission(
     throw AppError.conflict(`${inFlight.length} record(s) already belong to a transmission — resolve those first`);
   }
 
+  // TaxBandits Create/Status endpoints are per form type (Form1099NEC, …), one
+  // SubmissionId each — a mixed-type submission cannot round-trip. Enforce here
+  // so the operator gets a clear message instead of a provider 400.
+  if (provider === 'taxbandits') {
+    const types = [...new Set(records.map((r) => r.formType))];
+    if (types.length > 1) {
+      throw AppError.validation(`TaxBandits accepts one form type per submission — transmit ${types.join(' and ')} separately.`);
+    }
+  }
+
   // Type-2 corrections are a linked pair (zeroing record + new original) that IRS
   // requires be transmitted together. Refuse to compose a batch that splits a pair.
   const idSet = new Set(records.map((r) => r.id));
