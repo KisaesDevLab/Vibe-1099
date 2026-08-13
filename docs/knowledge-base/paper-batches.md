@@ -6,9 +6,9 @@
 
 ## The Z-fold sheet
 Each form prints as **one single-sided sheet** with three panels:
-- **Top panel** — the mailer face (your firm's return address and the recipient's address; becomes the outside when folded).
+- **Top panel** — the recipient instructions.
 - **Fold 1 (middle)** — the substitute 1099 form (Copy B).
-- **Fold 2 (bottom)** — the recipient instructions.
+- **Fold 2 (bottom)** — the mailer face (your firm's return address and the recipient's address; becomes the outside when folded).
 
 Feed the printed sheets through a **pressure sealer**. Only boxes with an entry are printed (blank boxes are omitted), which keeps each form to a single panel.
 

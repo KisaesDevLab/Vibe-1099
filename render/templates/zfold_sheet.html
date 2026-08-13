@@ -1,8 +1,8 @@
 <!DOCTYPE html>
 {# Z-fold pressure-seal: SINGLE-SIDED 3-panel imposition.
-   Panel top   = mailer face (return + recipient address; becomes the outside).
+   Panel top   = recipient instructions, shrunk to one panel.
    Fold 1 (mid)= substitute form (Copy B), compacted to one panel.
-   Fold 2 (bot)= recipient instructions, shrunk to one panel.
+   Fold 2 (bot)= mailer face (return + recipient address; becomes the outside).
    Data contract: { form, instructions_key, firm_return:{name,address_lines},
                     offset_x_in, offset_y_in } #}
 <html>
@@ -14,18 +14,11 @@
 </head>
 <body>
   <div class="sheet">
-    <!-- MAILER FACE (outside after folding) -->
+    <!-- TOP: recipient instructions -->
     <div class="panel panel-top">
-      <div class="return-block" style="margin-left: {{ offset_x_in }}in; margin-top: {{ offset_y_in }}in;">
-        {{ firm_return.name }}<br>
-        {% for line in firm_return.address_lines %}{{ line }}<br>{% endfor %}
+      <div class="backer">
+        {% include 'instructions/_' ~ instructions_key ~ '.html' %}
       </div>
-      <div class="address-block" style="margin-left: {{ offset_x_in }}in; margin-top: {{ offset_y_in }}in;">
-        {{ form.recipient.name1 }}<br>
-        {% if form.recipient.name2 %}{{ form.recipient.name2 }}<br>{% endif %}
-        {% for line in form.recipient.address_lines %}{{ line }}<br>{% endfor %}
-      </div>
-      <div class="tax-legend">IMPORTANT TAX RETURN DOCUMENT ENCLOSED</div>
     </div>
 
     <!-- FOLD 1: substitute form -->
@@ -36,11 +29,18 @@
       </div>
     </div>
 
-    <!-- FOLD 2: recipient instructions -->
+    <!-- FOLD 2: MAILER FACE (outside after folding) — return + recipient address -->
     <div class="panel panel-bottom">
-      <div class="backer">
-        {% include 'instructions/_' ~ instructions_key ~ '.html' %}
+      <div class="return-block" style="margin-left: {{ offset_x_in }}in; margin-top: {{ offset_y_in }}in;">
+        {{ firm_return.name }}<br>
+        {% for line in firm_return.address_lines %}{{ line }}<br>{% endfor %}
       </div>
+      <div class="address-block" style="margin-left: {{ offset_x_in }}in; margin-top: {{ offset_y_in }}in;">
+        {{ form.recipient.name1 }}<br>
+        {% if form.recipient.name2 %}{{ form.recipient.name2 }}<br>{% endif %}
+        {% for line in form.recipient.address_lines %}{{ line }}<br>{% endfor %}
+      </div>
+      <div class="tax-legend">IMPORTANT TAX RETURN DOCUMENT ENCLOSED</div>
     </div>
   </div>
 </body>
