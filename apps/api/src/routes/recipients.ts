@@ -3,11 +3,11 @@
  * history, merge, CSV import with dedupe preview, filters, encrypted export.
  */
 import { Router } from 'express';
-import { and, desc, eq, ilike, isNull, or, sql } from 'drizzle-orm';
+import { and, desc, eq, ilike, inArray, isNull, or, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { AppError, zRecipientInput, zTinType, normalizeTin } from '@vibe1099/shared';
 import { audit, getCrypto, getRenderClient, parse1099Print } from '@vibe1099/core';
-import { formRecords, getDb, payers, recipientAddressHistory, recipients, w9Requests } from '@vibe1099/db';
+import { formRecords, getDb, payers, recipientAddressHistory, recipients, tinMatchResults, w9Requests } from '@vibe1099/db';
 import { h } from '../middleware/error.js';
 import { requireStaff } from '../middleware/auth.js';
 import {
@@ -74,7 +74,34 @@ recipientsRouter.get(
         .offset(q.offset),
       db.select({ n: sql<number>`count(*)::int` }).from(recipients).where(and(...conds)),
     ]);
-    res.json({ recipients: rows.map(toPublicRecipient), total: countRow?.n ?? 0, limit: q.limit, offset: q.offset });
+    // latest open TIN-match verdict per recipient (async TaxBandits checks land
+    // here via the sweep/webhook — the grid is where staff sees the outcome)
+    const ids = rows.map((r) => r.id);
+    const tinRows = ids.length
+      ? await db
+          .select({
+            recipientId: tinMatchResults.recipientId,
+            status: tinMatchResults.status,
+            message: tinMatchResults.message,
+            checkedAt: tinMatchResults.checkedAt,
+          })
+          .from(tinMatchResults)
+          .where(and(eq(tinMatchResults.firmId, firmId), inArray(tinMatchResults.recipientId, ids), eq(tinMatchResults.stale, false)))
+      : [];
+    const latestTin = new Map<string, (typeof tinRows)[number]>();
+    for (const t of tinRows) {
+      const cur = latestTin.get(t.recipientId);
+      if (!cur || t.checkedAt > cur.checkedAt) latestTin.set(t.recipientId, t);
+    }
+    res.json({
+      recipients: rows.map((r) => {
+        const t = latestTin.get(r.id);
+        return { ...toPublicRecipient(r), tinMatch: t ? { status: t.status, message: t.message, checkedAt: t.checkedAt } : null };
+      }),
+      total: countRow?.n ?? 0,
+      limit: q.limit,
+      offset: q.offset,
+    });
   }),
 );
 
@@ -144,6 +171,25 @@ recipientsRouter.patch(
     const input = zRecipientInput.partial().parse(req.body);
     await updateRecipient(getDb(), req.staff!.firmId, id, input, 'staff', req.staff!.userId);
     res.locals['audit'] = { action: 'recipient.update', entityType: 'recipient', entityId: id };
+    res.json({ ok: true });
+  }),
+);
+
+// Manual W-9: staff holds a paper/faxed/emailed W-9 — record it as on file
+// without the electronic request flow. Audited; same fields the electronic
+// completion sets (w9.ts) so downstream stale/backup-withholding logic agrees.
+recipientsRouter.post(
+  '/:id/w9-received',
+  h(async (req, res) => {
+    const id = z.string().uuid().parse(req.params['id']);
+    const db = getDb();
+    const row = await db.query.recipients.findFirst({ where: and(eq(recipients.id, id), eq(recipients.firmId, req.staff!.firmId)) });
+    if (!row) throw AppError.notFound('Recipient');
+    await db
+      .update(recipients)
+      .set({ w9Status: 'on_file', w9CompletedAt: new Date(), updatedAt: new Date() })
+      .where(eq(recipients.id, id));
+    res.locals['audit'] = { action: 'recipient.w9.manual_received', entityType: 'recipient', entityId: id };
     res.json({ ok: true });
   }),
 );

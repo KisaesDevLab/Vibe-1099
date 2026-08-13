@@ -6,7 +6,9 @@ import { PdfImportWizard } from '../components/PdfImportWizard';
 import { RecipientPicker } from '../components/RecipientPicker';
 import { useDialogs } from '../components/Dialogs';
 
-export interface Recipient {
+export interface TinMatchInfo { status: 'pending' | 'match' | 'mismatch' | 'error'; message: string; checkedAt: string | null }
+interface Recipient {
+  tinMatch?: TinMatchInfo | null;
   id: string;
   tinMasked: string;
   tinType: 'SSN' | 'EIN';
@@ -147,6 +149,14 @@ export function Recipients() {
     await load();
   };
 
+  // Paper/faxed W-9 in hand — record it without the electronic flow.
+  const markW9Received = async (r: Recipient) => {
+    if (!(await dialogs.confirm(`Mark ${r.name1}'s W-9 as received and on file? Use this when you hold a completed paper W-9 — it is recorded in the audit log.`, { title: 'W-9 received' }))) return;
+    await api.post(`/api/recipients/${r.id}/w9-received`, {}).catch((err: ApiError) => dialogs.toast(err.message, 'error'));
+    dialogs.toast('W-9 marked on file.', 'success');
+    await load();
+  };
+
   const parseCsv = (text: string): Array<Record<string, string>> => {
     const lines = text.trim().split(/\r?\n/);
     const headers = (lines[0] ?? '').split(',').map((h) => h.trim());
@@ -231,14 +241,26 @@ export function Recipients() {
             <tr key={r.id}>
               <td>{r.name1}{r.isItin && <span className="badge warn" style={{ marginLeft: 6 }}>ITIN</span>}
                 {r.backupWithholding && <span className="badge err" style={{ marginLeft: 6 }}>BWH</span>}</td>
-              <td className="mono">{r.tinMasked} <button className="small secondary" onClick={() => revealTin(r.id)}>reveal</button></td>
+              <td className="mono">{r.tinMasked} <button className="small secondary" onClick={() => revealTin(r.id)}>reveal</button>
+                {r.tinMatch && (
+                  <span
+                    className={`badge ${r.tinMatch.status === 'match' ? 'ok' : r.tinMatch.status === 'pending' ? 'warn' : 'err'}`}
+                    style={{ marginLeft: 4 }}
+                    title={`${r.tinMatch.message}${r.tinMatch.checkedAt ? ` (${new Date(r.tinMatch.checkedAt).toLocaleDateString()})` : ''}`}
+                  >
+                    {r.tinMatch.status === 'match' ? 'IRS ✓' : r.tinMatch.status === 'pending' ? 'IRS …' : 'IRS ✗'}
+                  </span>
+                )}</td>
               <td>{r.address['city']}, {r.address['state']}</td>
               <td>{r.email ?? r.mobile ?? <span className="badge warn">paper-only</span>}</td>
               <td><span className={`badge ${r.w9Status === 'on_file' ? 'ok' : r.w9Status === 'none' ? 'err' : 'warn'}`}>{r.w9Status}</span>
-                {r.w9Status !== 'on_file' && <button className="small secondary" style={{ marginLeft: 4 }} onClick={() => requestW9(r)}>request</button>}</td>
+                {r.w9Status !== 'on_file' && <>
+                  <button className="small secondary" style={{ marginLeft: 4 }} onClick={() => requestW9(r)}>request</button>
+                  <button className="small secondary" style={{ marginLeft: 4 }} onClick={() => void markW9Received(r)} title="Record a paper/faxed W-9 you already hold as on file">received ✓</button>
+                </>}</td>
               <td style={{ whiteSpace: 'nowrap' }}>
                 <button className="small secondary" onClick={() => openEdit(r)}>Edit</button>
-                <button className="small secondary" onClick={() => tinCheck(r)} title="Real-time IRS TIN/name match via Tax1099">TIN check</button>
+                <button className="small secondary" onClick={() => tinCheck(r)} title="IRS TIN/name match via the filing provider (Tax1099: instant; TaxBandits: verdict within ~24h, shown as a badge on the TIN)">TIN check</button>
                 <button className="small secondary" onClick={() => showHistory(r.id)}>History</button>
                 <button className="small secondary" onClick={() => setMergeDup({ id: r.id, name: r.name1 })} title="Mark this as a duplicate of another recipient">Merge</button>
               </td>
