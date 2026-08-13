@@ -1,0 +1,55 @@
+# Rafter suppressions — each entry is an analyzed false positive; keep the
+# reasoning current if the flagged code changes.
+ignore:
+  # R-EFEEF "Unsafe Regular Expression": these four are anchored, unambiguous,
+  # linear-time patterns (no nested/overlapping quantifiers) — not ReDoS:
+  #   /^\d*(\.\d{0,2})?$/      digit run + optional 2-decimal fraction
+  #   /^-?\d*(\.\d{0,2})?$/    same with sign
+  #   /^\d{5}(-\d{4})?$/       ZIP
+  #   /^\$?(\d{1,3}(,\d{3})+|\d+)\.\d{2}$/  comma-grouped amount; branch
+  #     boundaries are disjoint (comma vs digit), so backtracking is O(n).
+  # The one genuinely super-linear pattern (CITY_STATE_ZIP_RE's lazy dot scan in
+  # print1099.ts) is mitigated by a 400-char per-line cap at the parse entry.
+  - rule: R-EFEEF
+    paths:
+      - apps/web/src/api.ts
+      - packages/shared/src/money.ts
+      - packages/shared/src/schemas.ts
+      - packages/core/src/import/print1099.ts
+    reason: anchored linear-time regexes; the quadratic city/state/zip scan is input-length-capped
+
+  # R-24476 "unnecessary decode()": base64.b64encode() returns *bytes*; the
+  # .decode() is required to produce a JSON-serializable str. Removing it would
+  # break the /merge and /zip responses.
+  - rule: R-24476
+    paths:
+      - render/app.py
+    reason: b64encode returns bytes; decode() is bytes->str, not str.decode()
+
+  # R-1F4D1 react-hooks/exhaustive-deps: the remaining hits are the standard
+  # "function identity omitted from deps" idiom — each load/loadList/loadForm/
+  # loadAll closure reads only state that IS in the dep array (or is a stable
+  # react-router setter / session-constant like me.role), so the closures are
+  # fresh whenever the effect fires and adding the function would refire every
+  # render. The two genuine stale-closure bugs this rule caught (mount-scoped
+  # polling intervals capturing offset/runsOffset in Batches.tsx and Fleet.tsx)
+  # were fixed by re-arming the interval on page change; EntityPicker's `sel`
+  # was moved inside its useMemo.
+  - rule: R-1F4D1
+    paths:
+      - apps/web/src/staff/Inbox.tsx
+      - apps/web/src/staff/Payers.tsx
+      - apps/web/src/staff/Recipients.tsx
+      - apps/web/src/portal/RecipientPortal.tsx
+      - apps/web/src/staff/Corrections.tsx
+      - apps/web/src/staff/FormsGrid.tsx
+      - apps/web/src/staff/Settings.tsx
+    reason: intentional mount/param-triggered effects; closures only read values already in deps
+
+  # R-BFBD0 "potential timing attack": client-side comparison of two values the
+  # same user just typed (new password vs confirm). No secret is compared and
+  # no attacker can measure it — timing side channels do not apply.
+  - rule: R-BFBD0
+    paths:
+      - apps/web/src/staff/ResetPassword.tsx
+    reason: browser-side equality of user's own inputs; no secret oracle

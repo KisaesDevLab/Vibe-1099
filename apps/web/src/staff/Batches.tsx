@@ -47,9 +47,13 @@ export function Batches() {
   useEffect(() => {
     void load(0);
     api.get<{ payers: Payer[] }>('/api/payers?limit=1000').then((r) => setPayers(r.payers));
-    const t = setInterval(() => load(offset), 5000);
-    return () => clearInterval(t);
   }, []);
+  // Poll the page currently in view. Re-arm on page change — a mount-scoped
+  // interval would capture offset=0 forever and snap pagination back to page 1.
+  useEffect(() => {
+    const t = setInterval(() => void load(offset), 5000);
+    return () => clearInterval(t);
+  }, [offset]);
   useEffect(() => { api.get<Pending>(`/api/payers/pending/${taxYear}`).then(setPending).catch(() => {}); }, [taxYear]);
 
   const toggle = (list: string[], setList: (v: string[]) => void, v: string) => setList(list.includes(v) ? list.filter((x) => x !== v) : [...list, v]);

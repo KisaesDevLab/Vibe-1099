@@ -45,9 +45,13 @@ export function Fleet() {
   useEffect(() => {
     api.get<{ payers: Payer[] }>('/api/payers?limit=1000').then((r) => setPayers(r.payers));
     void loadRuns(0);
-    const t = setInterval(() => loadRuns(runsOffset), 8000);
-    return () => clearInterval(t);
   }, []);
+  // Poll the page currently in view. Re-arm on page change — a mount-scoped
+  // interval would capture runsOffset=0 forever and snap pagination back to page 1.
+  useEffect(() => {
+    const t = setInterval(() => void loadRuns(runsOffset), 8000);
+    return () => clearInterval(t);
+  }, [runsOffset]);
   useEffect(() => { loadElig(); loadPending(); }, [loadElig, loadPending]);
 
   const scope = () => ({ payerIds, taxYear });

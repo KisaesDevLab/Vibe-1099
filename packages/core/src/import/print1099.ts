@@ -180,9 +180,13 @@ export function parse1099Print(pages: string[]): Print1099Parse {
   const formType = ([...typeCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null) as Print1099Parse['formType'];
   if (typeCounts.size > 1) warnings.push(`Multiple form types found (${[...typeCounts.keys()].join(', ')}) — parsed as 1099-${formType}.`);
 
+  // Cap line length before regex matching: CITY_STATE_ZIP_RE's lazy `(.+?),`
+  // scan is quadratic in line length, so an adversarial PDF with a megabyte
+  // single line could stall the event loop. No legitimate print line is
+  // anywhere near 400 chars.
   const lines = raw
     .split(/\r?\n/)
-    .map((l) => l.trim())
+    .map((l) => l.slice(0, 400).trim())
     .filter((l) => l && !isBoilerplate(l));
 
   const years = lines.map((l) => YEAR_RE.exec(l)?.[1]).filter(Boolean) as string[];

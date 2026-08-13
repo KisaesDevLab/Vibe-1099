@@ -27,9 +27,8 @@ export function EntityPicker({
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const byId = useMemo(() => new Map(options.map((o) => [o.value, o])), [options]);
-  const sel = new Set(selected);
-
   const matches = useMemo(() => {
+    const sel = new Set(selected);
     const q = query.trim().toLowerCase();
     return options
       .filter((o) => !sel.has(o.value) && (!q || o.label.toLowerCase().includes(q) || (o.sub ?? '').toLowerCase().includes(q)))
