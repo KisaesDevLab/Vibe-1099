@@ -1,8 +1,8 @@
 name: Release
 
 # Cut a versioned release two ways:
-#   - push a tag:        git tag v0.1.7 && git push origin v0.1.7
-#   - or run manually:   Actions → Release → Run workflow → version = 0.1.7
+#   - push a tag:        git tag v0.1.8 && git push origin v0.1.8
+#   - or run manually:   Actions → Release → Run workflow → version = 0.1.8
 # Either way it verifies the commit, builds + pushes the three appliance images to
 # GHCR (tagged with the version and `latest`), then creates the GitHub Release
 # (workflow_dispatch also creates the vX.Y.Z tag at the run's commit).
@@ -13,7 +13,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version to release, e.g. 0.1.7 (creates tag vX.Y.Z)'
+        description: 'Version to release, e.g. 0.1.8 (creates tag vX.Y.Z)'
         required: true
         type: string
 
@@ -34,7 +34,7 @@ jobs:
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             VERSION="${{ github.event.inputs.version }}"
           else
-            VERSION="${GITHUB_REF_NAME#v}"   # tag v0.1.7 -> 0.1.7
+            VERSION="${GITHUB_REF_NAME#v}"   # tag v0.1.8 -> 0.1.8
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
