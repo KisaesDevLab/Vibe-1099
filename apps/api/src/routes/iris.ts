@@ -13,6 +13,7 @@ import { h } from '../middleware/error.js';
 import { requireStaff } from '../middleware/auth.js';
 import { composeTransmission } from '../services/iris.js';
 import { buildTaxBanditsClient, buildTax1099Client } from '../services/filing.js';
+import { recentWebhookAnomalies } from './taxbandits-webhooks.js';
 
 export const irisRouter = Router();
 irisRouter.use(requireStaff());
@@ -46,7 +47,6 @@ irisRouter.get(
       taxbanditsDisclosureAckAt: firm.taxbanditsDisclosureAckAt,
       // webhook setup info (register this URL in the TaxBandits console)
       taxbanditsWebhookUrl: `${loadEnv().PORTAL_BASE_URL.replace(/\/$/, '')}/api/webhooks/taxbandits`,
-      taxbanditsWebhookSecretSet: !!loadEnv().TAXBANDITS_WEBHOOK_SECRET,
     });
   }),
 );
@@ -148,7 +148,28 @@ irisRouter.get(
       .from(taxbanditsWebhookEvents)
       .orderBy(desc(taxbanditsWebhookEvents.receivedAt))
       .limit(20);
-    res.json({ events: rows });
+    res.json({ events: rows, anomalies: recentWebhookAnomalies });
+  }),
+);
+
+/**
+ * Reachability self-test for the webhook URL: the appliance GETs its own PUBLIC
+ * webhook address (derived from PORTAL_BASE_URL, never user input), which
+ * exercises DNS → Cloudflare edge → tunnel → nginx → API end to end. This is
+ * the same round trip TaxBandits' validation ping takes.
+ */
+irisRouter.post(
+  '/taxbandits/webhook-test',
+  requireStaff('admin'),
+  h(async (_req, res) => {
+    const url = `${loadEnv().PORTAL_BASE_URL.replace(/\/$/, '')}/api/webhooks/taxbandits`;
+    try {
+      const r = await fetch(url, { signal: AbortSignal.timeout(8000) });
+      const body = (await r.json().catch(() => null)) as { ok?: boolean } | null;
+      res.json({ ok: r.ok && body?.ok === true, status: r.status, url });
+    } catch (err) {
+      res.json({ ok: false, status: 0, url, error: err instanceof Error ? err.message : String(err) });
+    }
   }),
 );
 

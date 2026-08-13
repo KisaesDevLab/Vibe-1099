@@ -28,7 +28,6 @@ interface IrisSettings {
   hasTaxbanditsCreds: boolean;
   taxbanditsDisclosureAckAt: string | null;
   taxbanditsWebhookUrl: string;
-  taxbanditsWebhookSecretSet: boolean;
   taxbanditsClientId?: string; // transient
   taxbanditsClientSecret?: string; // transient
   taxbanditsUserToken?: string; // transient
@@ -41,6 +40,7 @@ interface WebhookEvent {
   receivedAt: string;
   processedAt: string | null;
 }
+interface WebhookAnomaly { at: string; ip: string; kind: 'rejected' | 'accepted_offlist_ip'; reason: string }
 interface CloudflareInfo {
   hasToken: boolean;
   hostname: string;
@@ -68,6 +68,8 @@ export function Settings() {
   const [notice, setNotice] = useState('');
   const [newUser, setNewUser] = useState({ email: '', name: '', role: 'preparer', password: '' });
   const [webhookEvents, setWebhookEvents] = useState<WebhookEvent[]>([]);
+  const [webhookAnomalies, setWebhookAnomalies] = useState<WebhookAnomaly[]>([]);
+  const [webhookTest, setWebhookTest] = useState<{ running?: boolean; ok?: boolean; status?: number; error?: string } | null>(null);
   const [cf, setCf] = useState<CloudflareInfo | null>(null);
   const [totpSetup, setTotpSetup] = useState<{ secret: string; otpauthUrl: string } | null>(null);
   const [totpCode, setTotpCode] = useState('');
@@ -249,10 +251,21 @@ export function Settings() {
 
   const loadWebhookEvents = async () => {
     try {
-      const r = await api.get<{ events: WebhookEvent[] }>('/api/iris/taxbandits/webhook-events');
+      const r = await api.get<{ events: WebhookEvent[]; anomalies: WebhookAnomaly[] }>('/api/iris/taxbandits/webhook-events');
       setWebhookEvents(r.events);
-      if (!r.events.length) dialogs.toast('No webhook events received yet.', 'info');
+      setWebhookAnomalies(r.anomalies ?? []);
+      if (!r.events.length && !(r.anomalies ?? []).length) dialogs.toast('No webhook events received yet.', 'info');
     } catch (err) { setError(err instanceof ApiError ? err.message : String(err)); }
+  };
+
+  const testWebhookUrl = async () => {
+    setWebhookTest({ running: true });
+    try {
+      const r = await api.post<{ ok: boolean; status: number; url: string; error?: string }>('/api/iris/taxbandits/webhook-test', {});
+      setWebhookTest(r);
+    } catch (err) {
+      setWebhookTest({ ok: false, status: 0, error: err instanceof ApiError ? err.message : String(err) });
+    }
   };
 
   const resetTestData = async () => {
@@ -454,18 +467,28 @@ export function Settings() {
               {iris.taxbanditsEnvironment === 'sandbox' && <div className="warn-box">Sandbox — submissions are TEST filings, not sent to the IRS.</div>}
               <div className="panel" style={{ background: '#fff', marginTop: 10 }}>
                 <h3 style={{ marginTop: 0 }}>Status webhooks</h3>
-                <p className="muted" style={{ marginTop: 0 }}>Register this URL in the TaxBandits developer console (Settings → Webhooks) to receive e-file and TIN-match status updates. The appliance also polls as a fallback, so webhooks are optional but recommended.</p>
+                <p className="muted" style={{ marginTop: 0 }}>Register this URL in the TaxBandits developer console (Settings → Webhooks — their form asks only for the callback URL and a notification email). TaxBandits will POST a sample payload to validate the URL; it activates once the appliance answers 200. The appliance also polls as a fallback, so webhooks are optional but recommended.</p>
                 <div className="field"><label>Webhook URL</label>
                   <div className="row" style={{ gap: 8 }}>
                     <input className="mono" readOnly value={iris.taxbanditsWebhookUrl} onFocus={(e) => e.target.select()} />
                     <button type="button" className="secondary" onClick={() => { void navigator.clipboard?.writeText(iris.taxbanditsWebhookUrl); dialogs.toast('Copied', 'success'); }}>Copy</button>
+                    <button type="button" className="secondary" disabled={!!webhookTest?.running} onClick={() => void testWebhookUrl()}>{webhookTest?.running ? 'Testing…' : 'Test reachability'}</button>
                   </div>
                 </div>
-                <p className="muted" style={{ marginBottom: 6 }}>
-                  Shared secret: {iris.taxbanditsWebhookSecretSet
-                    ? <span style={{ color: '#15803d' }}>configured ✓</span>
-                    : <span style={{ color: '#b91c1c' }}>not set</span>} — set <span className="mono">TAXBANDITS_WEBHOOK_SECRET</span> in the appliance environment and enter the same value in the TaxBandits console.
-                </p>
+                {webhookTest && !webhookTest.running && (
+                  webhookTest.ok
+                    ? <div className="ok-box">Reachable ✓ — the public URL answered from the appliance (same round trip TaxBandits' validation ping takes).</div>
+                    : <div className="error-box">Not reachable{webhookTest.status ? ` (HTTP ${webhookTest.status})` : ''}{webhookTest.error ? ` — ${webhookTest.error}` : ''}. Check PORTAL_BASE_URL and the tunnel under Settings → Public access.</div>
+                )}
+                <ul className="muted" style={{ margin: '6px 0', paddingLeft: 18 }}>
+                  <li>{iris.taxbanditsWebhookUrl.startsWith('https://')
+                    ? <>URL is public https ✓</>
+                    : <span style={{ color: '#b91c1c' }}>URL is not a public https address — set <span className="mono">PORTAL_BASE_URL</span> to your public hostname and restart, or TaxBandits cannot reach it.</span>}</li>
+                  <li>{iris.hasTaxbanditsCreds
+                    ? <>Client ID/Secret saved ✓ — deliveries are verified against them (HMAC signature; nothing to configure in their console)</>
+                    : <span style={{ color: '#b91c1c' }}>Save your Client ID/Secret above <b>before</b> registering the URL — TaxBandits' validation ping is signature-checked against them.</span>}</li>
+                  <li>Their console asks only for this URL + a notification email; activation requires our 200 response to their sample POST.</li>
+                </ul>
                 <button type="button" className="secondary" onClick={loadWebhookEvents}>Show recent events</button>
                 {webhookEvents.length > 0 && (
                   <table className="grid" style={{ marginTop: 8, fontSize: 12 }}>
@@ -474,6 +497,17 @@ export function Settings() {
                       <tr key={i}><td>{e.eventType}</td><td className="mono">{e.submissionId?.slice(0, 12) ?? ''}</td><td>{e.status ?? ''}</td><td>{new Date(e.receivedAt).toLocaleString()}</td></tr>
                     ))}</tbody>
                   </table>
+                )}
+                {webhookAnomalies.length > 0 && (
+                  <>
+                    <p className="muted" style={{ margin: '10px 0 4px' }}>Recent delivery problems (since last API restart) — a <span className="mono">rejected</span> row means the signature didn’t verify:</p>
+                    <table className="grid" style={{ fontSize: 12 }}>
+                      <thead><tr><th>When</th><th>From IP</th><th>Kind</th><th>Reason</th></tr></thead>
+                      <tbody>{webhookAnomalies.map((a, i) => (
+                        <tr key={i}><td>{new Date(a.at).toLocaleString()}</td><td className="mono">{a.ip}</td><td>{a.kind === 'rejected' ? <span className="badge warn">rejected</span> : <span className="badge ok">accepted</span>}</td><td>{a.reason}</td></tr>
+                      ))}</tbody>
+                    </table>
+                  </>
                 )}
               </div>
               {iris.taxbanditsDisclosureAckAt ? (

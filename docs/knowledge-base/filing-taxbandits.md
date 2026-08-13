@@ -26,4 +26,18 @@ Pressure-seal paper remains the primary recipient-copy channel. TaxBandits **USP
 
 ## Status updates (webhooks)
 
-TaxBandits pushes e-file status and TIN-match results to the appliance webhook endpoint. The app verifies each webhook (source IP + shared secret), de-duplicates it, and reconciles the transmission against the authoritative status endpoint — so a dropped or duplicated webhook never corrupts a batch's state. A background poller catches any submission that never receives a terminal webhook.
+TaxBandits pushes e-file status and TIN-match results to the appliance webhook endpoint. Their console asks for only a **callback URL and a notification email** — authentication is automatic: TaxBandits signs every delivery with `Signature`/`TimeStamp` headers (HMAC-SHA256 of your Client ID + timestamp, keyed with your Client Secret), and the appliance verifies the signature against the credentials saved in Settings. Each event is de-duplicated and reconciled against the authoritative status endpoint — a dropped or duplicated webhook never corrupts a batch's state, and a background poller catches any submission that never receives a terminal webhook.
+
+When you register the URL, TaxBandits **POSTs a sample payload and activates the webhook only after receiving HTTP 200** — so save your Client ID/Secret in Settings **before** registering the URL, or the validation ping can't be signature-verified.
+
+### Troubleshooting "cannot connect" from the TaxBandits console
+
+Work down this list — each step isolates one layer:
+
+1. **Is the URL public?** Copy the webhook URL from **Settings → E-file → TaxBandits**. If it starts with `http://localhost` or a LAN address, `PORTAL_BASE_URL` in `.env` is not set to your public `https://` hostname — fix it and restart. TaxBandits can only reach a public HTTPS address.
+2. **Is the tunnel actually up?** Open the webhook URL in a browser **from a phone on cellular** (off your network). You should get `{"ok":true,"service":"vibe1099-taxbandits-webhook",...}`. A timeout or Cloudflare error means the tunnel/DNS is the problem — check **Settings → Public access** shows *connected ✓*, and `docker compose restart cloudflared` after any token change.
+3. **Are the credentials saved first?** The validation ping is verified against the Client ID/Secret in **Settings → E-file → TaxBandits**. Save them (for the right environment — sandbox creds sign sandbox webhooks) before registering the URL in their console.
+4. **Read the rejection reason.** Every rejected delivery logs why: `docker compose logs api | grep "rejected TaxBandits"` shows `signature_or_timestamp_header_missing` or `signature_mismatch` (credentials in Settings don't match the account that's sending).
+5. **Timing.** TaxBandits allows 5 seconds for the 200 response and retries up to 9 times in 24 hours; you'll get an email at the notification address if deliveries keep failing.
+
+A webhook from an IP outside `TAXBANDITS_WEBHOOK_IPS` is **accepted when its signature verifies** (the HMAC is the proof of origin) and logged so you can update the allowlist. And webhooks are never critical: the appliance **polls every submission to a terminal status regardless** — webhooks only make updates faster.
