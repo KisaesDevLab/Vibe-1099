@@ -17,6 +17,8 @@ pnpm lint             # eslint flat config (correctness rules only)
 pnpm test             # vitest; single file: pnpm vitest run tests/mo1220.golden.test.ts
 pnpm --filter @vibe1099/web build   # web typecheck + vite build
 pnpm seed             # migrations + demo data (needs DATABASE_URL, MASTER_KEY)
+pnpm seed:sandbox     # +10 payers/30 recipients whose TINs encode TaxBandits sandbox
+                      # simulation outcomes (accept/reject/stuck/TIN-match-fail); idempotent
 pnpm dev:api | dev:worker | dev:web
 pnpm --filter @vibe1099/worker mock-iris   # mock IRS on :8299 (IRIS_MOCK_BASE_URL)
 pnpm --filter @vibe1099/worker mock-tax1099      # mock Tax1099 on :8300 (TAX1099_MOCK_BASE_URL)

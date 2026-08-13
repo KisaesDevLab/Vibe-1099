@@ -268,6 +268,19 @@ export function Settings() {
     }
   };
 
+  const loadSandboxSeed = async () => {
+    const ok = await dialogs.confirm(
+      'Load 10 fabricated payers + 30 recipients with TY2026 draft forms for TaxBandits SANDBOX testing? They mix into your real payer list until you remove them (Remove test data deletes EVERYTHING, so on a production firm delete the 10 test payers individually instead).',
+      { title: 'Load sandbox test data' },
+    );
+    if (!ok) return;
+    try {
+      const r = await api.post<{ created: { payers: number; recipients: number; forms: number }; taxYear: number }>('/api/admin/sandbox-seed', {});
+      dialogs.toast(`Sandbox data loaded: +${r.created.payers} payers, +${r.created.recipients} recipients, +${r.created.forms} TY${r.taxYear} draft forms.`, 'success');
+      loadAll();
+    } catch (err) { setError(err instanceof ApiError ? err.message : String(err)); }
+  };
+
   const resetTestData = async () => {
     const ok = await dialogs.confirm(
       'This permanently deletes ALL payers, recipients, forms, transmissions, deliveries, batches, W-9s, and generated documents for this firm. Your firm settings, users, and audit log are kept. This cannot be undone.',
@@ -841,6 +854,20 @@ export function Settings() {
         <div className="panel">
           <h2 style={{ marginTop: 0 }}>Appliance status</h2>
           <pre className="mono" style={{ background: '#f1f5f9', padding: 10, overflow: 'auto', fontSize: 11 }}>{JSON.stringify(status, null, 2)}</pre>
+        </div>
+      )}
+
+      {tab === 'advanced' && isAdmin && (
+        <div className="panel">
+          <h2 style={{ marginTop: 0 }}>Sandbox test data</h2>
+          <p className="muted">
+            Loads 10 test payers + 30 recipients with TY2026 draft forms whose TINs script the TaxBandits <b>sandbox</b> simulation:
+            most accept, one payer rejects three ways (TIN error / huge amount / excess withholding), one has a state rejection, one stays
+            stuck TRANSMITTED, one returns accepted-with-errors, and ELLIS PARK fails TIN matching. Each form's notes state its expected
+            outcome. Idempotent — re-running never duplicates. Refuses to load while TaxBandits is set to production. Clean up afterwards
+            with “Remove test data” below.
+          </p>
+          <button className="secondary" onClick={() => void loadSandboxSeed()}>Load sandbox test data</button>
         </div>
       )}
 
