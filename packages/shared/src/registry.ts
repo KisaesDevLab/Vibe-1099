@@ -396,6 +396,36 @@ for (const ty of SUPPORTED_TAX_YEARS) {
   }
 }
 
+/**
+ * Copy B party labels for the render templates (_form_grid.html reads these with
+ * StrictUndefined — every zfold/copy-b payload MUST spread them in). 1098 swaps
+ * the roles: the filer is the lender and the statement goes to the borrower.
+ */
+export function copyBLabels(formType: FormType): {
+  payer_label: string;
+  payer_tin_label: string;
+  recipient_tin_label: string;
+  recipient_label: string;
+  copy_for: string;
+} {
+  if (formType === '1098') {
+    return {
+      payer_label: "RECIPIENT'S/LENDER'S name, street address, city or town, state or province, country, ZIP or foreign postal code, and telephone no.",
+      payer_tin_label: "RECIPIENT'S/LENDER'S TIN",
+      recipient_tin_label: "PAYER'S/BORROWER'S TIN",
+      recipient_label: "PAYER'S/BORROWER'S name and address",
+      copy_for: 'For Payer/Borrower',
+    };
+  }
+  return {
+    payer_label: "PAYER'S name, street address, city or town, state or province, country, ZIP or foreign postal code, and telephone no.",
+    payer_tin_label: "PAYER'S TIN",
+    recipient_tin_label: "RECIPIENT'S TIN",
+    recipient_label: "RECIPIENT'S name and address",
+    copy_for: 'For Recipient',
+  };
+}
+
 export function getFormDef(formType: FormType, taxYear: number): FormDef {
   const key = `${formType}:${taxYear}`;
   let def = REGISTRY.get(key);

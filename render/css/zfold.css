@@ -1,4 +1,4 @@
-/* Z-fold pressure-seal imposition — 8.5x11, fully blank 28# stock, duplex.
+/* Z-fold pressure-seal imposition — 8.5x11, fully blank 28# stock, single-sided.
    Panel geometry: three panels at 3.667in folds (top 0-3.667, middle 3.667-7.333,
    bottom 7.333-11). Calibration offsets (±1/16in steps) come in as inches via
    template vars offset_x_in / offset_y_in. */

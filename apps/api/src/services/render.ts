@@ -5,6 +5,7 @@
 import { and, eq } from 'drizzle-orm';
 import {
   AppError,
+  copyBLabels,
   formatCents,
   formatTin,
   getFormDef,
@@ -21,28 +22,6 @@ const OMB_BY_TYPE: Record<FormType, string> = {
   DIV: '1545-0110',
   '1098': '1545-0901',
 };
-
-// Copy B block labels. 1099 forms: PAYER (filer) → RECIPIENT. Form 1098 inverts
-// the roles — the filer is the lender and the statement goes to the borrower — so
-// the labels flip (our "payer" record is the lender, our "recipient" is borrower).
-function copyBLabels(formType: FormType) {
-  if (formType === '1098') {
-    return {
-      payer_label: "RECIPIENT'S/LENDER'S name, street address, city or town, state or province, country, ZIP or foreign postal code, and telephone no.",
-      payer_tin_label: "RECIPIENT'S/LENDER'S TIN",
-      recipient_tin_label: "PAYER'S/BORROWER'S TIN",
-      recipient_label: "PAYER'S/BORROWER'S name and address",
-      copy_for: 'For Payer/Borrower',
-    };
-  }
-  return {
-    payer_label: "PAYER'S name, street address, city or town, state or province, country, ZIP or foreign postal code, and telephone no.",
-    payer_tin_label: "PAYER'S TIN",
-    recipient_tin_label: "RECIPIENT'S TIN",
-    recipient_label: "RECIPIENT'S name and address",
-    copy_for: 'For Recipient',
-  };
-}
 
 export interface CopyBOptions {
   variant: 'portal' | 'copy2';
@@ -199,10 +178,6 @@ export async function renderZfoldSheet(db: Db, firmId: string, formRecordId: str
     data: {
       form: payload.form,
       instructions_key: payload.instructions_key,
-      firm_return: {
-        name: firm.name,
-        address_lines: addressLines(firm.address),
-      },
       offset_x_in: firm.impositionOffsetX16 / 16,
       offset_y_in: firm.impositionOffsetY16 / 16,
     },

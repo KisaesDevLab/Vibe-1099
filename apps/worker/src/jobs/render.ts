@@ -7,7 +7,7 @@ import { and, eq, inArray } from 'drizzle-orm';
 import { Job } from 'bullmq';
 import { createLogger, getRedis, getRenderClient, notify, putBlob, type RenderBatchJob } from '@vibe1099/core';
 import { formRecords, getDb, paperBatches, payers, recipients, firms } from '@vibe1099/db';
-import { maskTin, type FormType, formatCents, getFormDef, formatTin } from '@vibe1099/shared';
+import { copyBLabels, maskTin, type FormType, formatCents, getFormDef, formatTin } from '@vibe1099/shared';
 import { getCrypto } from '@vibe1099/core';
 
 const log = createLogger('worker:render');
@@ -80,6 +80,9 @@ async function renderZfoldForRecord(recordId: string, firmId: string): Promise<B
         form_title: def.title,
         omb: OMB_BY_TYPE[record.formType] ?? '',
         copy_label: 'Copy B',
+        // _form_grid.html reads these under StrictUndefined — omitting them
+        // crashes every batch render (the bug that broke paper batches).
+        ...copyBLabels(record.formType as FormType),
         account_number: record.accountNumber,
         second_tin_notice: record.secondTinNotice,
         payer: {
@@ -98,7 +101,6 @@ async function renderZfoldForRecord(recordId: string, firmId: string): Promise<B
         state_boxes: stateBoxes,
       },
       instructions_key: record.formType.toLowerCase(),
-      firm_return: { name: firm.name, address_lines: addressLines(firm.address) },
       offset_x_in: firm.impositionOffsetX16 / 16,
       offset_y_in: firm.impositionOffsetY16 / 16,
     },
@@ -158,7 +160,7 @@ export async function handleRenderJob(job: Job): Promise<void> {
           tax_year: batch.taxYear,
           form_count: batch.formCount,
           created_at: batch.createdAt.toISOString().slice(0, 16).replace('T', ' '),
-          order_note: 'Deterministic order: payer legal name → recipient name. Duplex: each form = front (mailer+form) / back (instructions).',
+          order_note: 'Deterministic order: payer legal name → recipient name. Simplex: each form = one sheet (instructions / form / mailer face with payer return address).',
         },
         rows: manifestRows,
       },
