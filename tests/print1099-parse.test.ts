@@ -168,6 +168,50 @@ describe('parse1099Print — 2-up MISC print PDF (second generator)', () => {
   });
 });
 
+// Third generator style ("PrintForm1099" data-only overlay for preprinted
+// stock): NO template boilerplate at all — just the filled values, 3-up (NEC)
+// or 2-up (MISC). Payer block carries a phone line; the amount prints before
+// the payer TIN on NEC and between payer name and street on MISC; MISC pages
+// interleave single-space filler lines. Form type is undetectable (nothing in
+// the text names the form) and must come back null, not misguessed.
+const OVERLAY_NEC_PAGE = [
+  '2025', 'Sample Grower', '11111 County Road 1000', 'Pierce City, MO 65723', '417-555-0100',
+  '1320.00', '43-7654321', '400-11-2222', 'Alpha  Tester', '22222 County Road 1070', 'Pierce City,MO 65723',
+  '2025', 'Sample Grower', '11111 County Road 1000', 'Pierce City, MO 65723', '417-555-0100',
+  '2275.06', '43-7654321', '400-33-4444', 'Beta  Tester JR', 'Tester Farm', '33333 Newton Rd', 'Newton,MO 64862',
+].join('\n');
+
+const OVERLAY_MISC_PAGE = [
+  '2025', 'Sample Grower', '3000.00', '11111 County Road 1000', 'Pierce City, MO 65723', '417-555-0100', ' ',
+  '43-7654321', '400-55-6666', ' ', 'Gamma  Tester', ' ', '44444 County Road 1050', 'Wentworth,MO 64873', ' ',
+  '2025', 'Sample Grower', '2250.00', '11111 County Road 1000', 'Pierce City, MO 65723', '417-555-0100', ' ',
+  '43-7654321', '400-77-8888', ' ', 'Delta  Tester', ' ', '55555 Hwy 97', 'Pierce City,MO 65723', ' ',
+].join('\n');
+
+describe('parse1099Print — data-only overlay print (no template text)', () => {
+  it('parses the 3-up NEC-style overlay: payer with phone line, recipients, amounts', () => {
+    const p = parse1099Print([OVERLAY_NEC_PAGE]);
+    expect(p.taxYear).toBe(2025);
+    expect(p.formType).toBeNull(); // nothing in the text names the form
+    expect(p.payer).toMatchObject({ tin: '43-7654321', tinType: 'EIN', name1: 'Sample Grower' });
+    expect(p.payer?.address).toMatchObject({ line1: '11111 County Road 1000', city: 'Pierce City', state: 'MO', zip: '65723' });
+    expect(p.recipients).toHaveLength(2);
+    expect(p.recipients[0]).toMatchObject({ tin: '400-11-2222', tinType: 'SSN', name1: 'Alpha Tester', amount: '1320.00' });
+    expect(p.recipients[1]).toMatchObject({ name1: 'Beta Tester JR', name2: 'Tester Farm', amount: '2275.06' });
+    expect(p.warnings).toEqual([]);
+  });
+
+  it('parses the 2-up MISC-style overlay: amount between payer name and street', () => {
+    const p = parse1099Print([OVERLAY_MISC_PAGE]);
+    expect(p.payer).toMatchObject({ tin: '43-7654321', name1: 'Sample Grower' });
+    expect(p.recipients).toHaveLength(2);
+    expect(p.recipients[0]).toMatchObject({ tin: '400-55-6666', tinType: 'SSN', name1: 'Gamma Tester', amount: '3000.00' });
+    expect(p.recipients[0]?.address).toMatchObject({ line1: '44444 County Road 1050', city: 'Wentworth', state: 'MO', zip: '64873' });
+    expect(p.recipients[1]).toMatchObject({ tin: '400-77-8888', name1: 'Delta Tester', amount: '2250.00' });
+    expect(p.warnings).toEqual([]);
+  });
+});
+
 describe('parse1099Print — edge cases', () => {
   it('resolves bare 9-digit TINs from the name shape, with a warning', () => {
     const page = [NEC_BOILER, block(PAYER, '100.00', '46-1234567', '921234567', ['Gulf Services LLC', '1 Main St', 'Rogers,AR 72756']), block(PAYER, '50.00', '46-1234567', '123456789', ['John Smith', '2 Main St', 'Rogers,AR 72756'])].join('\n');

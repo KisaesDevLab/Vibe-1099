@@ -55,6 +55,10 @@ export function PdfImportWizard({ onClose, onImported }: { onClose: () => void; 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [proposal, setProposal] = useState<Proposal | null>(null);
+  // Data-only overlay prints (values only, for preprinted stock) carry no
+  // "1099-XXX" text, so the parse can't tell the form type — the operator picks
+  // it here and it becomes the created payer's default form type.
+  const [formType, setFormType] = useState<'' | 'NEC' | 'MISC' | 'INT' | 'DIV'>('');
   const [rows, setRows] = useState<Row[]>([]);
   const [payer, setPayer] = useState({ create: false, legalName: '', tin: '', tinType: 'EIN' as 'SSN' | 'EIN', line1: '', line2: '', city: '', state: '', zip: '', matchName: null as string | null });
 
@@ -65,6 +69,7 @@ export function PdfImportWizard({ onClose, onImported }: { onClose: () => void; 
       const pdf = await fileToBase64(f);
       const p = await api.post<Proposal>('/api/recipients/import/pdf', { pdf });
       setProposal(p);
+      setFormType(p.formType ?? '');
       setRows(
         p.recipients.map((r) => ({
           include: !r.match, // already-in-vault rows default to skip
@@ -119,7 +124,7 @@ export function PdfImportWizard({ onClose, onImported }: { onClose: () => void; 
           tin: payer.tin,
           tinType: payer.tinType,
           address: { line1: payer.line1, line2: payer.line2, city: payer.city, state: payer.state.toUpperCase(), zip: payer.zip },
-          defaultFormTypes: proposal?.formType ? [proposal.formType] : undefined,
+          defaultFormTypes: formType ? [formType] : undefined,
         });
         payerNote = `Payer "${payer.legalName}" created. `;
       }
@@ -178,6 +183,18 @@ export function PdfImportWizard({ onClose, onImported }: { onClose: () => void; 
             {proposal.taxYear ? ` · tax year ${proposal.taxYear}` : ''} · {proposal.recipients.length} recipient form(s).
             Amounts shown are prior-year values for eyeballing only — they are not imported.
           </p>
+          {!proposal.formType && (
+            <div className="field" style={{ maxWidth: 320, marginBottom: 8 }}>
+              <label>Form type <span className="muted">(the PDF doesn’t say — sets the new payer’s default)</span></label>
+              <select value={formType} onChange={(e) => setFormType(e.target.value as typeof formType)}>
+                <option value="">— not set —</option>
+                <option value="NEC">1099-NEC</option>
+                <option value="MISC">1099-MISC</option>
+                <option value="INT">1099-INT</option>
+                <option value="DIV">1099-DIV</option>
+              </select>
+            </div>
+          )}
           {proposal.warnings.length > 0 && (
             <div className="error-box" style={{ background: 'transparent' }}>
               {proposal.warnings.map((w, i) => (<div key={i}>⚠ {w}</div>))}
