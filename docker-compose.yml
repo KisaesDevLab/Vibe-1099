@@ -38,7 +38,7 @@ services:
 
   render:
     build: ./render
-    image: ${VIBE1099_REGISTRY:-}vibe1099-render:${VIBE1099_VERSION:-0.1.14}
+    image: ${VIBE1099_REGISTRY:-}vibe1099-render:${VIBE1099_VERSION:-0.1.15}
     # No host port publish: the render sidecar is reached only over the internal
     # Docker network by api/worker (RENDER_URL=http://render:8212). Exposing it
     # publicly would open the /render + /validate-xml endpoints to untrusted input.
@@ -50,7 +50,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.node
-    image: ${VIBE1099_REGISTRY:-}vibe1099-app:${VIBE1099_VERSION:-0.1.14}
+    image: ${VIBE1099_REGISTRY:-}vibe1099-app:${VIBE1099_VERSION:-0.1.15}
     command: ["pnpm", "--filter", "@vibe1099/api", "start"]
     environment: &appenv
       NODE_ENV: production
@@ -128,7 +128,7 @@ services:
     restart: unless-stopped
 
   worker:
-    image: ${VIBE1099_REGISTRY:-}vibe1099-app:${VIBE1099_VERSION:-0.1.14}
+    image: ${VIBE1099_REGISTRY:-}vibe1099-app:${VIBE1099_VERSION:-0.1.15}
     build:
       context: .
       dockerfile: Dockerfile.node
@@ -145,7 +145,7 @@ services:
 
   web:
     build: ./apps/web
-    image: ${VIBE1099_REGISTRY:-}vibe1099-web:${VIBE1099_VERSION:-0.1.14}
+    image: ${VIBE1099_REGISTRY:-}vibe1099-web:${VIBE1099_VERSION:-0.1.15}
     ports:
       - "8211:8211"
     depends_on:

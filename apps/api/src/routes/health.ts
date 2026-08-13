@@ -9,7 +9,7 @@ import { getDb } from '@vibe1099/db';
 import { h } from '../middleware/error.js';
 import { computeApplianceHealth, type StatusCheck } from './appliance-health.js';
 
-export const APP_VERSION = '0.1.14';
+export const APP_VERSION = '0.1.15';
 
 export const healthRouter = Router();
 
