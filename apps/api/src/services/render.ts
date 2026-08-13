@@ -2,7 +2,7 @@
  * Render service (Phase 6): builds template payloads from form records via the
  * registry, with TIN truncation on ALL payee output (payer TIN full per rules).
  */
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import {
   AppError,
   copyBLabels,
@@ -182,6 +182,49 @@ export async function renderZfoldSheet(db: Db, firmId: string, formRecordId: str
       offset_y_in: firm.impositionOffsetY16 / 16,
     },
   });
+}
+
+/**
+ * Client copy: compact multi-up print of forms for the CLIENT'S records — not a
+ * filing copy, never furnished to recipients. Grouped per payer (new page per
+ * payer); recipient TINs truncated, payer's own TIN full. Ordered payer →
+ * recipient for a stable, checkable printout.
+ */
+export async function renderClientCopyPdf(db: Db, firmId: string, formRecordIds: string[]): Promise<Buffer> {
+  const rows = await db
+    .select({ id: formRecords.id, payerId: formRecords.payerId, payerName: payers.legalName, recipientName: recipients.name1 })
+    .from(formRecords)
+    .innerJoin(payers, eq(payers.id, formRecords.payerId))
+    .innerJoin(recipients, eq(recipients.id, formRecords.recipientId))
+    .where(and(eq(formRecords.firmId, firmId), inArray(formRecords.id, formRecordIds)));
+  if (!rows.length) throw AppError.notFound('Forms');
+  rows.sort((a, b) => a.payerName.localeCompare(b.payerName) || a.recipientName.localeCompare(b.recipientName));
+
+  interface ClientCopyGroup {
+    payer: unknown;
+    tax_year: number;
+    form_number: string;
+    forms: unknown[];
+  }
+  const groups = new Map<string, ClientCopyGroup>();
+  for (const row of rows) {
+    const p = await buildFormPayload(db, firmId, row.id);
+    let g = groups.get(row.payerId);
+    if (!g) {
+      g = { payer: p.form.payer, tax_year: p.form.tax_year, form_number: p.form.form_number, forms: [] };
+      groups.set(row.payerId, g);
+    }
+    const boxes = [...p.form.boxes, ...p.form.state_boxes.map((s) => ({ ...s, kind: 'cents' as const }))].filter(
+      (b) => (b.kind === 'checkbox' ? b.value === true : b.value !== '' && b.value != null),
+    );
+    g.forms.push({
+      recipient: p.form.recipient,
+      account_number: p.form.account_number,
+      corrected: p.form.corrected,
+      boxes,
+    });
+  }
+  return getRenderClient().render({ template: 'client_copy.html', data: { groups: [...groups.values()] } });
 }
 
 export async function renderTestPattern(db: Db, firmId: string): Promise<Buffer> {

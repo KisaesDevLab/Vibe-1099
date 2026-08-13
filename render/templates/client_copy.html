@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+{# Client copy: compact multi-up print of a payer's forms for the CLIENT'S
+   records — not a filing copy and not for furnishing to recipients. Recipient
+   TINs are truncated; the payer's own TIN prints in full. Forms flow several
+   to a page (page-break-inside: avoid keeps each card whole); each payer
+   group starts a new page.
+   Data contract: { groups: [{ payer:{name,tin_display,address_lines},
+                    tax_year, form_number, forms:[{ recipient:{name1,name2,
+                    tin_masked,address_lines}, account_number, corrected,
+                    boxes:[{number,label,kind,value}] }] }] } #}
+<html>
+<head>
+  <meta charset="utf-8">
+  <link rel="stylesheet" href="base.css">
+  <link rel="stylesheet" href="client_copy.css">
+</head>
+<body>
+  {% for g in groups %}
+  <div class="payer-group">
+    <div class="group-header">
+      <div class="gh-left">
+        <strong>{{ g.payer.name }}</strong><br>
+        {% for line in g.payer.address_lines %}{{ line }}<br>{% endfor %}
+        TIN: {{ g.payer.tin_display }}
+      </div>
+      <div class="gh-right">
+        <div class="gh-title">{{ g.form_number }} — {{ g.tax_year }}</div>
+        <div class="gh-sub">Client copy · for your records · not for filing</div>
+        <div class="gh-sub">{{ g.forms|length }} form(s)</div>
+      </div>
+    </div>
+    {% for f in g.forms %}
+    <div class="form-card">
+      <div class="fc-recipient">
+        <strong>{{ f.recipient.name1 }}</strong>{% if f.recipient.name2 %} · {{ f.recipient.name2 }}{% endif %}
+        {% if f.corrected %}<span class="corrected">CORRECTED</span>{% endif %}<br>
+        {% for line in f.recipient.address_lines %}{{ line }}<br>{% endfor %}
+        TIN: {{ f.recipient.tin_masked }}{% if f.account_number %} · Acct: {{ f.account_number }}{% endif %}
+      </div>
+      <table class="fc-boxes">
+        {% for b in f.boxes %}
+        <tr>
+          <td class="bl">{% if b.number %}Box {{ b.number }} — {% endif %}{{ b.label }}</td>
+          <td class="bv">{% if b.kind == 'cents' %}${{ b.value }}{% elif b.kind == 'checkbox' %}☒{% else %}{{ b.value }}{% endif %}</td>
+        </tr>
+        {% endfor %}
+        {% if not f.boxes %}<tr><td class="bl fc-muted">No amounts</td><td></td></tr>{% endif %}
+      </table>
+    </div>
+    {% endfor %}
+  </div>
+  {% endfor %}
+</body>
+</html>

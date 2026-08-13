@@ -11,7 +11,7 @@ import { deleteBlob, getBlob, getQueue, getRenderClient, QUEUE_NAMES, type Rende
 import { deliveries, formRecords, getDb, paperBatches, payers, recipients } from '@vibe1099/db';
 import { h } from '../middleware/error.js';
 import { requireStaff } from '../middleware/auth.js';
-import { renderCopy2Pdf, renderPortalPdf, renderTestPattern, renderZfoldSheet } from '../services/render.js';
+import { renderClientCopyPdf, renderCopy2Pdf, renderPortalPdf, renderTestPattern, renderZfoldSheet } from '../services/render.js';
 
 const RENDER_CHUNK_SIZE = 50; // 500-form batch => 10 chunked jobs (perf target <60s)
 
@@ -146,24 +146,41 @@ batchesRouter.get(
   }),
 );
 
-/** Batch print: merge selected forms' Copy B PDFs into one printable PDF. */
+/**
+ * Batch print from the entry grid. Layouts:
+ *  - copyb  (default): full Copy B + instructions, one form per page pair
+ *  - zfold: pressure-seal sheets (same imposition the paper batches use)
+ *  - client: compact client copy — several forms per page, for the payer's records
+ */
 batchesRouter.post(
   '/print',
   h(async (req, res) => {
-    const { formRecordIds } = z.object({ formRecordIds: z.array(z.string().uuid()).min(1).max(500) }).parse(req.body);
+    const { formRecordIds, layout } = z
+      .object({
+        formRecordIds: z.array(z.string().uuid()).min(1).max(500),
+        layout: z.enum(['copyb', 'zfold', 'client']).default('copyb'),
+      })
+      .parse(req.body);
     const db = getDb();
-    // scope to the firm + keep a stable order (recipient name)
-    const owned = await db
-      .select({ id: formRecords.id })
-      .from(formRecords)
-      .innerJoin(recipients, eq(recipients.id, formRecords.recipientId))
-      .where(and(eq(formRecords.firmId, req.staff!.firmId), inArray(formRecords.id, formRecordIds)))
-      .orderBy(recipients.name1);
-    if (!owned.length) throw AppError.notFound('Forms');
-    const pdfs: Buffer[] = [];
-    for (const f of owned) pdfs.push(await renderPortalPdf(db, req.staff!.firmId, f.id));
-    const merged = pdfs.length === 1 ? pdfs[0]! : await getRenderClient().merge(pdfs);
-    res.locals['audit'] = { action: 'forms.batch-print', entityType: 'form_record', detail: { count: owned.length } };
+    let merged: Buffer;
+    if (layout === 'client') {
+      merged = await renderClientCopyPdf(db, req.staff!.firmId, formRecordIds);
+    } else {
+      // scope to the firm + keep a stable order (recipient name)
+      const owned = await db
+        .select({ id: formRecords.id })
+        .from(formRecords)
+        .innerJoin(recipients, eq(recipients.id, formRecords.recipientId))
+        .where(and(eq(formRecords.firmId, req.staff!.firmId), inArray(formRecords.id, formRecordIds)))
+        .orderBy(recipients.name1);
+      if (!owned.length) throw AppError.notFound('Forms');
+      const pdfs: Buffer[] = [];
+      for (const f of owned) {
+        pdfs.push(layout === 'zfold' ? await renderZfoldSheet(db, req.staff!.firmId, f.id) : await renderPortalPdf(db, req.staff!.firmId, f.id));
+      }
+      merged = pdfs.length === 1 ? pdfs[0]! : await getRenderClient().merge(pdfs);
+    }
+    res.locals['audit'] = { action: 'forms.batch-print', entityType: 'form_record', detail: { count: formRecordIds.length, layout } };
     res.type('application/pdf').send(merged);
   }),
 );

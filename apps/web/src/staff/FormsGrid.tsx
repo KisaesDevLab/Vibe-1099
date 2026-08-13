@@ -138,12 +138,12 @@ export function FormsGrid() {
     load();
   };
 
-  const printSelected = async () => {
+  const printSelected = async (layout: 'copyb' | 'zfold' | 'client') => {
     const ids = [...selected];
     if (!ids.length) return setError('Select rows to print.');
     try {
-      const blob = await api.post<Blob>('/api/batches/print', { formRecordIds: ids });
-      downloadBlob(blob, `1099-${formType}-${taxYear}-print.pdf`);
+      const blob = await api.post<Blob>('/api/batches/print', { formRecordIds: ids, layout });
+      downloadBlob(blob, `1099-${formType}-${taxYear}-${layout}.pdf`);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : String(err));
     }
@@ -235,7 +235,9 @@ export function FormsGrid() {
               <button className="secondary" disabled={!selectedActionable} onClick={() => bulkStatus('ready')} title={!selectedActionable ? 'Accepted forms can’t change status' : ''}>Mark ready</button>
               <button className="secondary" disabled={!selectedActionable} onClick={() => bulkStatus('queued')}>Queue</button>
               <button className="secondary" disabled={!selectedActionable} onClick={() => bulkStatus('draft')}>↩ Draft</button>
-              <button className="secondary" disabled={!selected.size} onClick={printSelected} title="Print the selected forms (Copy B) as one PDF">🖨 Print selected</button>
+              <button className="secondary" disabled={!selected.size} onClick={() => void printSelected('copyb')} title="Print the selected forms as full Copy B pages (one form per page)">🖨 Copy B</button>
+              <button className="secondary" disabled={!selected.size} onClick={() => void printSelected('zfold')} title="Print the selected forms as Z-fold pressure-seal mailer sheets">🖨 Z-fold</button>
+              <button className="secondary" disabled={!selected.size} onClick={() => void printSelected('client')} title="Compact client copy for the payer's records — several forms per page, recipient TINs truncated">🖨 Client copy</button>
               <button disabled={!hasQueued} onClick={transmit} title={hasQueued ? "Transmit this payer's queued records to the IRS" : 'No queued records to transmit'}>Transmit queued →</button>
             </>);
           })()}
