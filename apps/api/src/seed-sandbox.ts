@@ -3,10 +3,11 @@
  * Settings → Advanced → "Load sandbox test data"). See services/sandbox-seed.ts
  * for the data and simulation-rule documentation.
  *
- * Run: pnpm seed:sandbox                  (TY2026 drafts for sandbox transmits)
- *      pnpm seed:sandbox -- --prior-year  (TY2025 filed history: accepted +
- *                                          filedVia:external — rollforward &
- *                                          prior-year flow testing, inert)
+ * Run: pnpm seed:sandbox                  (drafts in the CURRENT processing year)
+ *      pnpm seed:sandbox -- --prior-year  (processing year − 1 filed history:
+ *                                          accepted + filedVia:external —
+ *                                          rollforward testing, inert)
+ * The year follows Settings → tax years (current filing year).
  */
 import { createLogger, loadEnv } from '@vibe1099/core';
 import { closeDb, firms, getDb, getPool, runMigrations } from '@vibe1099/db';

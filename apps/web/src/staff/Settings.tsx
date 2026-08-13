@@ -270,10 +270,11 @@ export function Settings() {
 
   const [sandboxPrior, setSandboxPrior] = useState(false);
   const loadSandboxSeed = async () => {
+    const y = filingYears.current;
     const ok = await dialogs.confirm(
       sandboxPrior
-        ? 'Load 10 fabricated payers + 30 recipients with TY2025 forms recorded as FILED HISTORY (accepted, filed outside Vibe 1099)? Inert — nothing can transmit; use it to test rollforward and prior-year flows. They mix into your real payer list until you remove them.'
-        : 'Load 10 fabricated payers + 30 recipients with TY2026 draft forms for TaxBandits SANDBOX testing? They mix into your real payer list until you remove them (Remove test data deletes EVERYTHING, so on a production firm delete the 10 test payers individually instead).',
+        ? `Load 10 fabricated payers + 30 recipients with TY${y - 1} forms recorded as FILED HISTORY (accepted, filed outside Vibe 1099)? Inert — nothing can transmit; use it to test rollforward and prior-year flows. They mix into your real payer list until you remove them.`
+        : `Load 10 fabricated payers + 30 recipients with TY${y} draft forms for TaxBandits SANDBOX testing? They mix into your real payer list until you remove them (Remove test data deletes EVERYTHING, so on a production firm delete the 10 test payers individually instead).`,
       { title: 'Load sandbox test data' },
     );
     if (!ok) return;
@@ -864,19 +865,21 @@ export function Settings() {
         <div className="panel">
           <h2 style={{ marginTop: 0 }}>Sandbox test data</h2>
           <p className="muted">
-            Loads 10 test payers + 30 recipients with TY2026 draft forms whose TINs script the TaxBandits <b>sandbox</b> simulation:
-            most accept, one payer rejects three ways (TIN error / huge amount / excess withholding), one has a state rejection, one stays
-            stuck TRANSMITTED, one returns accepted-with-errors, and ELLIS PARK fails TIN matching. Each form's notes state its expected
-            outcome. Idempotent — re-running never duplicates. Refuses to load while TaxBandits is set to production. Clean up afterwards
-            with “Remove test data” below.
+            Loads 10 test payers + 30 recipients with TY{filingYears.current} draft forms (your current processing year — change it under
+            tax years above) whose TINs script the TaxBandits <b>sandbox</b> simulation: most accept, one payer rejects three ways (TIN
+            error / huge amount / excess withholding), one has a state rejection, one stays stuck TRANSMITTED, one returns
+            accepted-with-errors, and ELLIS PARK fails TIN matching. Each form's notes state its expected outcome. Idempotent — re-running
+            never duplicates. Refuses to load while TaxBandits is set to production. Clean up afterwards with “Remove test data” below.
           </p>
           <label style={{ display: 'block', marginBottom: 8 }}>
             <input type="checkbox" style={{ width: 'auto' }} checked={sandboxPrior} onChange={(e) => setSandboxPrior(e.target.checked)} />{' '}
-            Seed as <b>prior-year (TY2025) filed history</b> instead — accepted records marked “filed outside Vibe 1099” (inert, nothing
-            transmits) so you can test <b>Rollforward</b>, client-portal prior-year lists, and the client-copy print. Load both variants for
-            a full season simulation.
+            Seed as <b>prior-year (TY{filingYears.current - 1}) filed history</b> instead — accepted records marked “filed outside Vibe
+            1099” (inert, nothing transmits) so you can test <b>Rollforward</b>, client-portal prior-year lists, and the client-copy print.
+            Load both variants for a full season simulation.
           </label>
-          <button className="secondary" onClick={() => void loadSandboxSeed()}>Load sandbox test data{sandboxPrior ? ' (TY2025 history)' : ' (TY2026 drafts)'}</button>
+          <button className="secondary" onClick={() => void loadSandboxSeed()}>
+            Load sandbox test data ({sandboxPrior ? `TY${filingYears.current - 1} history` : `TY${filingYears.current} drafts`})
+          </button>
         </div>
       )}
 

@@ -19,8 +19,7 @@ import { and, eq } from 'drizzle-orm';
 import { AppError, tinLast4 } from '@vibe1099/shared';
 import { getCrypto } from '@vibe1099/core';
 import { firms, formRecords, payers, recipients, type Db } from '@vibe1099/db';
-
-export const SANDBOX_TAX_YEAR = 2026;
+import { getFilingYears } from './settings.js';
 
 interface PayeeDef {
   tin: string;
@@ -134,18 +133,22 @@ export interface SandboxSeedCounts {
 
 export interface SandboxSeedOptions {
   /**
-   * Seed the forms as PRIOR-YEAR (TY2025) filed history instead of current-year
-   * drafts: records land `accepted` with a filedVia:external snapshot (the same
-   * model as the prior-year PDF import), so rollforward pre-lists the fleet for
-   * TY2026 and the client portal / client-copy prior-year flows are testable.
-   * Inert by design — accepted has no path to the filing queue.
+   * Seed the forms as PRIOR-YEAR filed history (current processing year − 1)
+   * instead of current-year drafts: records land `accepted` with a
+   * filedVia:external snapshot (the same model as the prior-year PDF import),
+   * so rollforward pre-lists the fleet for the processing year and the client
+   * portal / client-copy prior-year flows are testable. Inert by design —
+   * accepted has no path to the filing queue.
    */
   priorYear?: boolean;
 }
 
 export async function seedSandboxData(db: Db, firmId: string, opts: SandboxSeedOptions = {}): Promise<SandboxSeedCounts> {
   const priorYear = !!opts.priorYear;
-  const taxYear = priorYear ? SANDBOX_TAX_YEAR - 1 : SANDBOX_TAX_YEAR;
+  // Follow the firm's configured processing year (Settings → tax years): drafts
+  // land in the CURRENT filing year; history lands one year behind it.
+  const { current } = await getFilingYears();
+  const taxYear = priorYear ? current - 1 : current;
   const firm = await db.query.firms.findFirst({ where: eq(firms.id, firmId) });
   if (!firm) throw AppError.notFound('Firm');
   // Safety interlock: never stage test data that could transmit as REAL filings.
