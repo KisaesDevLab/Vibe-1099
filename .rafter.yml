@@ -1,6 +1,21 @@
 # Rafter suppressions — each entry is an analyzed false positive; keep the
 # reasoning current if the flagged code changes.
 ignore:
+  # R-07414 "AI-triage-directed safe-marking text" (Shai-Hulud heuristic): the
+  # flagged line is the positive-assurance section of the July 2026 security
+  # audit REPORT. Human-reviewed on 2026-08-13: it makes declarative, past-tense,
+  # evidence-cited claims to human readers ("verified clean", with file/test
+  # pointers) and contains no imperative scanner/AI-directed strings ("ignore",
+  # "do not flag", "treat as safe"). Provenance: authored by the repo owner in
+  # the remediation commit cc0b2c5 (2026-07-03), not third-party content; the
+  # file is inert markdown referenced only by one code comment, never parsed or
+  # loaded at runtime; and it documents 30+ vulnerabilities against this very
+  # codebase — the opposite of a camouflage payload. Scanners should continue
+  # to treat its text as data, which is exactly how this triage handled it.
+  - rule: R-07414
+    paths:
+      - docs/SECURITY_AUDIT_2026-07.md
+    reason: legitimate audit report; assertive audit vocabulary, no triage-directed instructions
   # R-EFEEF "Unsafe Regular Expression": these four are anchored, unambiguous,
   # linear-time patterns (no nested/overlapping quantifiers) — not ReDoS:
   #   /^\d*(\.\d{0,2})?$/      digit run + optional 2-decimal fraction
