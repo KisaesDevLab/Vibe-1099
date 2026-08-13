@@ -109,6 +109,7 @@ correctionsRouter.get(
     const q = z
       .object({
         payerId: z.string().uuid().optional(),
+        taxYear: z.coerce.number().int().optional(),
         limit: z.coerce.number().int().min(1).max(500).default(100),
         offset: z.coerce.number().int().min(0).default(0),
       })
@@ -120,6 +121,7 @@ correctionsRouter.get(
       inArray(formRecords.status, ['draft', 'ready', 'queued', 'transmitted', 'accepted', 'accepted_with_errors', 'rejected']),
     ];
     if (q.payerId) conds.push(eq(formRecords.payerId, q.payerId));
+    if (q.taxYear) conds.push(eq(formRecords.taxYear, q.taxYear));
     const [rows, [countRow]] = await Promise.all([
       db
         .select({ f: formRecords, payerName: payers.legalName, recipientName: recipients.name1, recipientTin: recipients.tinLast4 })

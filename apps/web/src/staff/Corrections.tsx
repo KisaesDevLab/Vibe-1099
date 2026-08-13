@@ -43,6 +43,8 @@ export function Corrections() {
 
   const [payerFilter, setPayerFilter] = useState('');
   const [formType, setFormType] = useState('');
+  const [yearFilter, setYearFilter] = useState('');
+  const [taxYears, setTaxYears] = useState<number[]>([]);
   const [search, setSearch] = useState('');
 
   const [target, setTarget] = useState<FormRow | null>(null);
@@ -61,17 +63,20 @@ export function Corrections() {
     const qs = new URLSearchParams({ status: 'accepted,accepted_with_errors', limit: String(LIMIT), offset: String(off) });
     if (payerFilter) qs.set('payerId', payerFilter);
     if (formType) qs.set('formType', formType);
+    if (yearFilter) qs.set('taxYear', yearFilter);
     if (search) qs.set('search', search);
     return api.get<{ forms: FormRow[]; total: number }>(`/api/forms?${qs}`).then((r) => { setAccepted(r.forms); setTotal(r.total); setOffset(off); });
   };
   const loadOutstanding = (off = 0) =>
-    api.get<{ outstanding: Outstanding[]; total: number }>(`/api/corrections/outstanding?limit=${LIMIT}&offset=${off}${payerFilter ? `&payerId=${payerFilter}` : ''}`)
-      .then((r) => { setOutstanding(r.outstanding); setOutTotal(r.total); setOutOffset(off); });
+    api.get<{ outstanding: Outstanding[]; total: number }>(
+      `/api/corrections/outstanding?limit=${LIMIT}&offset=${off}${payerFilter ? `&payerId=${payerFilter}` : ''}${yearFilter ? `&taxYear=${yearFilter}` : ''}`,
+    ).then((r) => { setOutstanding(r.outstanding); setOutTotal(r.total); setOutOffset(off); });
 
   useEffect(() => {
     api.get<{ payers: Payer[] }>('/api/payers?limit=1000').then((r) => setPayers(r.payers));
+    api.get<{ years: number[] }>('/api/admin/tax-years').then((r) => setTaxYears(r.years)).catch(() => {});
   }, []);
-  useEffect(() => { void loadList(0); void loadOutstanding(0); }, [payerFilter, formType]);
+  useEffect(() => { void loadList(0); void loadOutstanding(0); }, [payerFilter, formType, yearFilter]);
 
   // deep-link: /corrections?formId=… opens the correction flow for that record
   useEffect(() => {
@@ -141,6 +146,10 @@ export function Corrections() {
           <div className="field"><label>Form type</label>
             <select value={formType} onChange={(e) => setFormType(e.target.value)}>
               <option value="">All</option>{['NEC', 'MISC', 'INT', 'DIV'].map((t) => <option key={t} value={t}>1099-{t}</option>)}
+            </select></div>
+          <div className="field"><label>Tax year</label>
+            <select value={yearFilter} onChange={(e) => setYearFilter(e.target.value)}>
+              <option value="">All</option>{taxYears.map((y) => <option key={y} value={y}>{y}</option>)}
             </select></div>
           <div className="field grow"><label>Recipient search</label>
             <input value={search} onChange={(e) => setSearch(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && loadList(0)} placeholder="name or last-4…" /></div>
