@@ -268,15 +268,18 @@ export function Settings() {
     }
   };
 
+  const [sandboxPrior, setSandboxPrior] = useState(false);
   const loadSandboxSeed = async () => {
     const ok = await dialogs.confirm(
-      'Load 10 fabricated payers + 30 recipients with TY2026 draft forms for TaxBandits SANDBOX testing? They mix into your real payer list until you remove them (Remove test data deletes EVERYTHING, so on a production firm delete the 10 test payers individually instead).',
+      sandboxPrior
+        ? 'Load 10 fabricated payers + 30 recipients with TY2025 forms recorded as FILED HISTORY (accepted, filed outside Vibe 1099)? Inert — nothing can transmit; use it to test rollforward and prior-year flows. They mix into your real payer list until you remove them.'
+        : 'Load 10 fabricated payers + 30 recipients with TY2026 draft forms for TaxBandits SANDBOX testing? They mix into your real payer list until you remove them (Remove test data deletes EVERYTHING, so on a production firm delete the 10 test payers individually instead).',
       { title: 'Load sandbox test data' },
     );
     if (!ok) return;
     try {
-      const r = await api.post<{ created: { payers: number; recipients: number; forms: number }; taxYear: number }>('/api/admin/sandbox-seed', {});
-      dialogs.toast(`Sandbox data loaded: +${r.created.payers} payers, +${r.created.recipients} recipients, +${r.created.forms} TY${r.taxYear} draft forms.`, 'success');
+      const r = await api.post<{ created: { payers: number; recipients: number; forms: number }; taxYear: number }>('/api/admin/sandbox-seed', { priorYear: sandboxPrior });
+      dialogs.toast(`Sandbox data loaded: +${r.created.payers} payers, +${r.created.recipients} recipients, +${r.created.forms} TY${r.taxYear} ${sandboxPrior ? 'filed-history' : 'draft'} forms.`, 'success');
       loadAll();
     } catch (err) { setError(err instanceof ApiError ? err.message : String(err)); }
   };
@@ -867,7 +870,13 @@ export function Settings() {
             outcome. Idempotent — re-running never duplicates. Refuses to load while TaxBandits is set to production. Clean up afterwards
             with “Remove test data” below.
           </p>
-          <button className="secondary" onClick={() => void loadSandboxSeed()}>Load sandbox test data</button>
+          <label style={{ display: 'block', marginBottom: 8 }}>
+            <input type="checkbox" style={{ width: 'auto' }} checked={sandboxPrior} onChange={(e) => setSandboxPrior(e.target.checked)} />{' '}
+            Seed as <b>prior-year (TY2025) filed history</b> instead — accepted records marked “filed outside Vibe 1099” (inert, nothing
+            transmits) so you can test <b>Rollforward</b>, client-portal prior-year lists, and the client-copy print. Load both variants for
+            a full season simulation.
+          </label>
+          <button className="secondary" onClick={() => void loadSandboxSeed()}>Load sandbox test data{sandboxPrior ? ' (TY2025 history)' : ' (TY2026 drafts)'}</button>
         </div>
       )}
 

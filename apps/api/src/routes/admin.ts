@@ -12,7 +12,7 @@ import { h } from '../middleware/error.js';
 import { requireStaff } from '../middleware/auth.js';
 import { addFilingYear, allSettings, getFilingYears, setCurrentFilingYear, setSetting } from '../services/settings.js';
 import { resetFirmData } from '../services/reset-data.js';
-import { seedSandboxData, SANDBOX_TAX_YEAR } from '../services/sandbox-seed.js';
+import { seedSandboxData } from '../services/sandbox-seed.js';
 import { getCloudflareConfig, PUBLIC_PATHS, saveCloudflareConfig, tunnelStatus } from '../services/cloudflare.js';
 
 export const adminRouter = Router();
@@ -77,9 +77,10 @@ adminRouter.post(
   '/sandbox-seed',
   requireStaff('admin'),
   h(async (req, res) => {
-    const counts = await seedSandboxData(getDb(), req.staff!.firmId);
+    const { priorYear } = z.object({ priorYear: z.boolean().default(false) }).parse(req.body);
+    const counts = await seedSandboxData(getDb(), req.staff!.firmId, { priorYear });
     res.locals['audit'] = { action: 'firm.sandbox-seed', entityType: 'firm', entityId: req.staff!.firmId, detail: counts };
-    res.json({ ok: true, taxYear: SANDBOX_TAX_YEAR, created: counts });
+    res.json({ ok: true, taxYear: counts.taxYear, priorYear, created: counts });
   }),
 );
 

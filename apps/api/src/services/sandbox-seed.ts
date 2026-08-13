@@ -129,20 +129,35 @@ export interface SandboxSeedCounts {
   payers: number;
   recipients: number;
   forms: number;
+  taxYear: number;
 }
 
-export async function seedSandboxData(db: Db, firmId: string): Promise<SandboxSeedCounts> {
+export interface SandboxSeedOptions {
+  /**
+   * Seed the forms as PRIOR-YEAR (TY2025) filed history instead of current-year
+   * drafts: records land `accepted` with a filedVia:external snapshot (the same
+   * model as the prior-year PDF import), so rollforward pre-lists the fleet for
+   * TY2026 and the client portal / client-copy prior-year flows are testable.
+   * Inert by design — accepted has no path to the filing queue.
+   */
+  priorYear?: boolean;
+}
+
+export async function seedSandboxData(db: Db, firmId: string, opts: SandboxSeedOptions = {}): Promise<SandboxSeedCounts> {
+  const priorYear = !!opts.priorYear;
+  const taxYear = priorYear ? SANDBOX_TAX_YEAR - 1 : SANDBOX_TAX_YEAR;
   const firm = await db.query.firms.findFirst({ where: eq(firms.id, firmId) });
   if (!firm) throw AppError.notFound('Firm');
   // Safety interlock: never stage test data that could transmit as REAL filings.
-  if (firm.taxbanditsEnvironment === 'production') {
+  // Prior-year history is inert (accepted, never queueable), so it is exempt.
+  if (!priorYear && firm.taxbanditsEnvironment === 'production') {
     throw AppError.state(
       'TaxBandits is set to PRODUCTION — sandbox test data would transmit as real filings. Switch Settings → E-file → TaxBandits environment to sandbox first.',
     );
   }
 
   const crypto = getCrypto();
-  const counts: SandboxSeedCounts = { payers: 0, recipients: 0, forms: 0 };
+  const counts: SandboxSeedCounts = { payers: 0, recipients: 0, forms: 0, taxYear };
   let streetNo = 500;
 
   for (const p of SANDBOX_PAYERS) {
@@ -197,7 +212,7 @@ export async function seedSandboxData(db: Db, firmId: string): Promise<SandboxSe
           eq(formRecords.firmId, firmId),
           eq(formRecords.payerId, payer.id),
           eq(formRecords.recipientId, recip.id),
-          eq(formRecords.taxYear, SANDBOX_TAX_YEAR),
+          eq(formRecords.taxYear, taxYear),
           eq(formRecords.formType, pe.formType),
         ),
       });
@@ -206,12 +221,27 @@ export async function seedSandboxData(db: Db, firmId: string): Promise<SandboxSe
         firmId,
         payerId: payer.id,
         recipientId: recip.id,
-        taxYear: SANDBOX_TAX_YEAR,
+        taxYear,
         formType: pe.formType,
         boxValues: pe.boxValues,
         moSource: false,
-        status: 'draft',
-        notes: `Sandbox simulation: ${pe.purpose}`,
+        ...(priorYear
+          ? {
+              status: 'accepted' as const,
+              filedSnapshot: {
+                filedVia: 'external',
+                source: 'sandbox-seed',
+                importedAt: new Date().toISOString(),
+                formType: pe.formType,
+                taxYear,
+                boxValues: pe.boxValues,
+              },
+              notes: 'Sandbox seed (prior-year filed history) — original filed outside Vibe 1099.',
+            }
+          : {
+              status: 'draft' as const,
+              notes: `Sandbox simulation: ${pe.purpose}`,
+            }),
       });
       counts.forms++;
     }
