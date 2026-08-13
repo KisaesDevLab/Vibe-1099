@@ -58,10 +58,9 @@ const zEnv = z.object({
   TAX1099_PROD_BASE_URL: z.string().default('https://api.tax1099.com'),
   TAX1099_MOCK_BASE_URL: z.string().default(''),
 
-  // TaxBandits (SPAN Enterprises) managed-filing backend — optional, off by
-  // default (feature-flagged). Used when a firm/payer selects provider
-  // 'taxbandits' (e.g. TCC-pending contingency). Point *_MOCK_BASE_URL at the mock.
-  TAXBANDITS_ENABLED: z.coerce.number().int().default(0),
+  // TaxBandits (SPAN Enterprises) managed-filing backend — always offered in
+  // Settings; gated per-firm by the enable checkbox, credentials, and §7216
+  // acknowledgment. Point *_MOCK_BASE_URL at the mock.
   TAXBANDITS_SANDBOX_BASE_URL: z.string().default('https://testapi.taxbandits.com'),
   TAXBANDITS_PROD_BASE_URL: z.string().default('https://api.taxbandits.com'),
   TAXBANDITS_MOCK_BASE_URL: z.string().default(''),

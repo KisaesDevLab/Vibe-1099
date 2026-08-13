@@ -4,10 +4,9 @@
 
 **What it's for:** an optional third transmission backend (alongside [IRIS A2A and Tax1099](filing-irs-and-tax1099.md)) that files under **TaxBandits' (SPAN Enterprises)** transmitter credentials. It exists mainly so a firm whose **IRS TCC application is still pending** can file on time, then migrate to direct IRIS A2A once its own TCC reaches Production. TaxBandits also offers real-time TIN matching.
 
-TaxBandits is **never the default** and is only available when:
-1. the appliance operator sets `TAXBANDITS_ENABLED=1`, **and**
-2. an admin enables it for the firm and enters credentials under **Settings → E-file**, **and**
-3. an admin accepts the §7216 disclosure (below).
+TaxBandits is **never the default** and is only usable when:
+1. an admin enables it for the firm and enters credentials under **Settings → E-file**, **and**
+2. an admin accepts the §7216 disclosure (below).
 
 ## §7216 disclosure — one-time acknowledgment
 

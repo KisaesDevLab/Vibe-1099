@@ -12,7 +12,7 @@ import { errorTranslations, firms, formRecords, getDb, recipients, taxbanditsWeb
 import { h } from '../middleware/error.js';
 import { requireStaff } from '../middleware/auth.js';
 import { composeTransmission } from '../services/iris.js';
-import { buildTaxBanditsClient, buildTax1099Client, isTaxBanditsAvailable } from '../services/filing.js';
+import { buildTaxBanditsClient, buildTax1099Client } from '../services/filing.js';
 
 export const irisRouter = Router();
 irisRouter.use(requireStaff());
@@ -37,8 +37,7 @@ irisRouter.get(
       tax1099Mailing: firm.tax1099Mailing,
       hasTax1099Key: !!firm.tax1099ApiKeyEncrypted,
       tax1099DisclosureAckAt: firm.tax1099DisclosureAckAt,
-      // TaxBandits backend (env flag OR latched DB setting — survives restarts)
-      taxbanditsAvailable: await isTaxBanditsAvailable(getDb()),
+      // TaxBandits backend (always offered; gated per-firm by enable + creds + §7216 ack)
       taxbanditsEnabled: firm.taxbanditsEnabled,
       taxbanditsEnvironment: firm.taxbanditsEnvironment,
       taxbanditsPostalMailing: firm.taxbanditsPostalMailing,
@@ -99,19 +98,17 @@ irisRouter.put(
       patch['tax1099DisclosureAckAt'] = new Date();
       patch['tax1099DisclosureAckBy'] = req.staff!.userId;
     }
-    // TaxBandits config (only when the provider is available on this appliance)
-    if (await isTaxBanditsAvailable(db)) {
-      if (input.taxbanditsEnabled !== undefined) patch['taxbanditsEnabled'] = input.taxbanditsEnabled;
-      if (input.taxbanditsEnvironment !== undefined) patch['taxbanditsEnvironment'] = input.taxbanditsEnvironment;
-      if (input.taxbanditsPostalMailing !== undefined) patch['taxbanditsPostalMailing'] = input.taxbanditsPostalMailing;
-      if (input.taxbanditsOnlineAccess !== undefined) patch['taxbanditsOnlineAccess'] = input.taxbanditsOnlineAccess;
-      if (input.taxbanditsClientId) patch['taxbanditsClientIdEncrypted'] = getCrypto().encrypt(input.taxbanditsClientId);
-      if (input.taxbanditsClientSecret) patch['taxbanditsClientSecretEncrypted'] = getCrypto().encrypt(input.taxbanditsClientSecret);
-      if (input.taxbanditsUserToken) patch['taxbanditsUserTokenEncrypted'] = getCrypto().encrypt(input.taxbanditsUserToken);
-      if (input.acknowledgeTaxbanditsDisclosure && !firm.taxbanditsDisclosureAckAt) {
-        patch['taxbanditsDisclosureAckAt'] = new Date();
-        patch['taxbanditsDisclosureAckBy'] = req.staff!.userId;
-      }
+    // TaxBandits config
+    if (input.taxbanditsEnabled !== undefined) patch['taxbanditsEnabled'] = input.taxbanditsEnabled;
+    if (input.taxbanditsEnvironment !== undefined) patch['taxbanditsEnvironment'] = input.taxbanditsEnvironment;
+    if (input.taxbanditsPostalMailing !== undefined) patch['taxbanditsPostalMailing'] = input.taxbanditsPostalMailing;
+    if (input.taxbanditsOnlineAccess !== undefined) patch['taxbanditsOnlineAccess'] = input.taxbanditsOnlineAccess;
+    if (input.taxbanditsClientId) patch['taxbanditsClientIdEncrypted'] = getCrypto().encrypt(input.taxbanditsClientId);
+    if (input.taxbanditsClientSecret) patch['taxbanditsClientSecretEncrypted'] = getCrypto().encrypt(input.taxbanditsClientSecret);
+    if (input.taxbanditsUserToken) patch['taxbanditsUserTokenEncrypted'] = getCrypto().encrypt(input.taxbanditsUserToken);
+    if (input.acknowledgeTaxbanditsDisclosure && !firm.taxbanditsDisclosureAckAt) {
+      patch['taxbanditsDisclosureAckAt'] = new Date();
+      patch['taxbanditsDisclosureAckBy'] = req.staff!.userId;
     }
     if (input.privateJwk) {
       patch['irisJwkEncrypted'] = getCrypto().encrypt(JSON.stringify(input.privateJwk));

@@ -27,7 +27,7 @@ import {
   type IrisTransmitJob,
 } from '@vibe1099/core';
 import { applyAckToRecords, audit, notify } from '@vibe1099/core';
-import { appSettings, deliveries, firms, formRecords, getDb, taxbanditsCostLedger, transmissions, users } from '@vibe1099/db';
+import { deliveries, firms, formRecords, getDb, taxbanditsCostLedger, transmissions, users } from '@vibe1099/db';
 
 const log = createLogger('worker:iris');
 
@@ -53,9 +53,6 @@ export async function providerFor(firmId: string, kind: FilingProviderKind): Pro
   }
 
   if (kind === 'taxbandits') {
-    // env flag OR latched DB setting (survives restarts without the env var)
-    const latched = env.TAXBANDITS_ENABLED === 1 || (await db.query.appSettings.findFirst({ where: eq(appSettings.key, 'taxbandits_feature_enabled') }))?.value === true;
-    if (!latched) throw new Error('TaxBandits provider not enabled on this appliance');
     if (!firm.taxbanditsEnabled || !firm.taxbanditsClientIdEncrypted || !firm.taxbanditsClientSecretEncrypted || !firm.taxbanditsUserTokenEncrypted) {
       throw new Error('TaxBandits not configured');
     }

@@ -4,7 +4,6 @@
 import { createLogger, loadEnv } from '@vibe1099/core';
 import { getPool, runMigrations } from '@vibe1099/db';
 import { createApp } from './app.js';
-import { setSetting } from './services/settings.js';
 
 const log = createLogger('api:boot');
 
@@ -14,13 +13,6 @@ async function main(): Promise<void> {
 
   await runMigrations(getPool(env.DATABASE_URL), (m) => log.info(m));
   log.info('migrations up to date');
-
-  // Latch the TaxBandits feature flag into the DB the first time the appliance
-  // boots with it enabled, so availability survives restarts even if the process
-  // env var is later missing (feature availability then resolves from env OR DB).
-  if (env.TAXBANDITS_ENABLED === 1) {
-    await setSetting('taxbandits_feature_enabled', true).catch((e) => log.warn(`could not latch taxbandits flag: ${String(e)}`));
-  }
 
   const app = createApp();
   app.listen(env.API_PORT, () => {

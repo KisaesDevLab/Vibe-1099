@@ -21,7 +21,6 @@ interface IrisSettings {
   tax1099DisclosureAckAt: string | null;
   acknowledgeTax1099Disclosure?: boolean; // transient input only
   // TaxBandits backend
-  taxbanditsAvailable: boolean;
   taxbanditsEnabled: boolean;
   taxbanditsEnvironment: 'sandbox' | 'production';
   taxbanditsPostalMailing: boolean;
@@ -380,7 +379,7 @@ export function Settings() {
               <select value={iris.filingProvider} onChange={(e) => setIris({ ...iris, filingProvider: e.target.value as 'iris' | 'tax1099' | 'taxbandits' })}>
                 <option value="iris">IRIS A2A — we are the Transmitter (needs our TCC)</option>
                 <option value="tax1099">Tax1099 (Zenwork) — files on our behalf (no TCC)</option>
-                {iris.taxbanditsAvailable && <option value="taxbandits">TaxBandits — files on our behalf (no TCC; TCC-pending contingency)</option>}
+                <option value="taxbandits">TaxBandits — files on our behalf (no TCC; TCC-pending contingency)</option>
               </select></div>
             <button onClick={saveIris}>Save</button>
           </div>
@@ -418,7 +417,7 @@ export function Settings() {
             </div>
           )}
 
-          {iris.taxbanditsAvailable && iris.filingProvider === 'taxbandits' && (
+          {iris.filingProvider === 'taxbandits' && (
             <div className="panel" style={{ background: '#eff6ff', borderColor: '#bfdbfe' }}>
               <h2 style={{ marginTop: 0 }}>TaxBandits (SPAN Enterprises)</h2>
               <p className="muted">Contingency transmitter for firms whose IRS TCC is still pending. Prepaid-credit billing; corrections always stay on the provider that filed the original.</p>
