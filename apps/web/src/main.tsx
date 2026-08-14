@@ -3,6 +3,7 @@ import ReactDOM from 'react-dom/client';
 import { createBrowserRouter, RouterProvider } from 'react-router-dom';
 import './styles.css';
 import { DialogProvider } from './components/Dialogs';
+import { AppErrorBoundary, RouteErrorBoundary } from './components/ErrorBoundary';
 import { StaffShell } from './staff/Shell';
 import { Login } from './staff/Login';
 import { ResetPassword } from './staff/ResetPassword';
@@ -27,42 +28,47 @@ import { ClientPortal } from './portal/ClientPortal';
 import { RecipientPortal } from './portal/RecipientPortal';
 import { W9Portal } from './portal/W9Portal';
 
+// errorElement on every route: a render fault shows a recoverable panel instead
+// of a blank page with a stack trace.
 const router = createBrowserRouter([
-  { path: '/login', element: <Login /> },
-  { path: '/reset-password', element: <ResetPassword /> },
+  { path: '/login', element: <Login />, errorElement: <RouteErrorBoundary /> },
+  { path: '/reset-password', element: <ResetPassword />, errorElement: <RouteErrorBoundary /> },
   // public zones
-  { path: '/client', element: <ClientPortal /> },
-  { path: '/f/:token', element: <RecipientPortal /> },
-  { path: '/w9/:token', element: <W9Portal /> },
-  // staff zone
+  { path: '/client', element: <ClientPortal />, errorElement: <RouteErrorBoundary /> },
+  { path: '/f/:token', element: <RecipientPortal />, errorElement: <RouteErrorBoundary /> },
+  { path: '/w9/:token', element: <W9Portal />, errorElement: <RouteErrorBoundary /> },
+  // staff zone — child errorElements keep the shell (nav) mounted
   {
     path: '/',
     element: <StaffShell />,
+    errorElement: <RouteErrorBoundary />,
     children: [
-      { index: true, element: <Dashboard /> },
-      { path: 'inbox', element: <Inbox /> },
-      { path: 'fleet', element: <Fleet /> },
-      { path: 'payers', element: <Payers /> },
-      { path: 'recipients', element: <Recipients /> },
-      { path: 'forms', element: <FormsGrid /> },
-      { path: 'review', element: <ReviewQueue /> },
-      { path: 'invites', element: <Invites /> },
-      { path: 'w9', element: <W9Dashboard /> },
-      { path: 'batches', element: <Batches /> },
-      { path: 'deliveries', element: <Deliveries /> },
-      { path: 'transmissions', element: <Transmissions /> },
-      { path: 'filing-status', element: <FilingStatus /> },
-      ...(MO_FILING_ENABLED ? [{ path: 'missouri', element: <MoFiles /> }] : []),
-      { path: 'corrections', element: <Corrections /> },
-      { path: 'settings', element: <Settings /> },
+      { index: true, element: <Dashboard />, errorElement: <RouteErrorBoundary /> },
+      { path: 'inbox', element: <Inbox />, errorElement: <RouteErrorBoundary /> },
+      { path: 'fleet', element: <Fleet />, errorElement: <RouteErrorBoundary /> },
+      { path: 'payers', element: <Payers />, errorElement: <RouteErrorBoundary /> },
+      { path: 'recipients', element: <Recipients />, errorElement: <RouteErrorBoundary /> },
+      { path: 'forms', element: <FormsGrid />, errorElement: <RouteErrorBoundary /> },
+      { path: 'review', element: <ReviewQueue />, errorElement: <RouteErrorBoundary /> },
+      { path: 'invites', element: <Invites />, errorElement: <RouteErrorBoundary /> },
+      { path: 'w9', element: <W9Dashboard />, errorElement: <RouteErrorBoundary /> },
+      { path: 'batches', element: <Batches />, errorElement: <RouteErrorBoundary /> },
+      { path: 'deliveries', element: <Deliveries />, errorElement: <RouteErrorBoundary /> },
+      { path: 'transmissions', element: <Transmissions />, errorElement: <RouteErrorBoundary /> },
+      { path: 'filing-status', element: <FilingStatus />, errorElement: <RouteErrorBoundary /> },
+      ...(MO_FILING_ENABLED ? [{ path: 'missouri', element: <MoFiles />, errorElement: <RouteErrorBoundary /> }] : []),
+      { path: 'corrections', element: <Corrections />, errorElement: <RouteErrorBoundary /> },
+      { path: 'settings', element: <Settings />, errorElement: <RouteErrorBoundary /> },
     ],
   },
 ]);
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
-    <DialogProvider>
-      <RouterProvider router={router} />
-    </DialogProvider>
+    <AppErrorBoundary>
+      <DialogProvider>
+        <RouterProvider router={router} />
+      </DialogProvider>
+    </AppErrorBoundary>
   </React.StrictMode>,
 );

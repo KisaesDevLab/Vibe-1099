@@ -6,7 +6,7 @@ interface StatusCheck {
   derived: string;
   terminal: boolean;
   applying: boolean;
-  errors: Array<{ recordId: string; code: string; message: string }>;
+  errors: Array<{ recordId?: string; code?: string; message?: string }>;
   raw: string;
   error?: string;
 }
@@ -21,7 +21,12 @@ interface Tx {
   status: string;
   isCorrection: boolean;
   recordCount: number;
-  errorDetails: Array<{ recordId: string; code: string; message: string }> | null;
+  /**
+   * Two shapes live here: per-record ack errors ({recordId, code, message}) and
+   * whole-transmission failures written by the worker ({error}). Render
+   * defensively — a missing field must never blank the screen.
+   */
+  errorDetails: Array<{ recordId?: string; code?: string; message?: string; error?: string }> | null;
   transmittedAt: string | null;
   resolvedAt: string | null;
   createdAt: string;
@@ -117,7 +122,7 @@ export function Transmissions() {
                         </p>
                         {check.errors.length > 0 && (
                           <table className="grid"><thead><tr><th>Record</th><th>Code</th><th>Message</th></tr></thead>
-                            <tbody>{check.errors.map((e, i) => (<tr key={i}><td className="mono" style={{ fontSize: 11 }}>{e.recordId.slice(0, 8)}…</td><td>{e.code}</td><td>{e.message}</td></tr>))}</tbody>
+                            <tbody>{check.errors.map((e, i) => (<tr key={i}><td className="mono" style={{ fontSize: 11 }}>{e.recordId ? `${e.recordId.slice(0, 8)}…` : '—'}</td><td>{e.code}</td><td>{e.message}</td></tr>))}</tbody>
                           </table>
                         )}
                         {check.raw && (
@@ -138,7 +143,11 @@ export function Transmissions() {
                       <thead><tr><th>Record</th><th>Code</th><th>Message</th></tr></thead>
                       <tbody>
                         {t.errorDetails.map((e, i) => (
-                          <tr key={i}><td className="mono" style={{ fontSize: 11 }}>{e.recordId.slice(0, 8)}…</td><td>{e.code}</td><td>{e.message}</td></tr>
+                          <tr key={i}>
+                            <td className="mono" style={{ fontSize: 11 }}>{e.recordId ? `${e.recordId.slice(0, 8)}…` : <span className="muted">whole submission</span>}</td>
+                            <td>{e.code ?? (e.error ? 'TRANSMIT_FAILED' : '')}</td>
+                            <td>{e.message ?? e.error ?? ''}</td>
+                          </tr>
                         ))}
                       </tbody>
                     </table>

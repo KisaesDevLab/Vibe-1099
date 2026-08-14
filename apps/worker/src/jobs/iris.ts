@@ -147,7 +147,9 @@ export async function handleIrisTransmit(job: Job): Promise<void> {
     if (terminal) {
       await db
         .update(transmissions)
-        .set({ status: 'failed', errorDetails: [{ error: (err as Error).message }] })
+        // Same shape as per-record ack errors (recordId empty = whole submission)
+        // so every consumer can read one structure.
+        .set({ status: 'failed', errorDetails: [{ recordId: '', code: 'TRANSMIT_FAILED', message: (err as Error).message }] })
         .where(eq(transmissions.id, tx.id));
       // records return to queued for a fresh compose after fix
       await db
