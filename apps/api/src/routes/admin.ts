@@ -6,7 +6,7 @@ import { Router } from 'express';
 import { and, desc, eq, gte, lte, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { AppError } from '@vibe1099/shared';
-import { getCrypto, getQueue, loadEnv, QUEUE_NAMES, type QueueName } from '@vibe1099/core';
+import { getCrypto, getQueue, loadEnv, QUEUE_NAMES, resolveEmailAdapter, resolveSmsAdapter, toE164, type QueueName } from '@vibe1099/core';
 import { auditLog, firms, getDb } from '@vibe1099/db';
 import { h } from '../middleware/error.js';
 import { requireStaff } from '../middleware/auth.js';
@@ -69,6 +69,76 @@ adminRouter.post(
     const counts = await resetFirmData(getDb(), req.staff!.firmId);
     res.locals['audit'] = { action: 'firm.reset-test-data', entityType: 'firm', entityId: req.staff!.firmId, detail: counts };
     res.json({ ok: true, deleted: counts });
+  }),
+);
+
+// --- delivery self-test (admin) ---------------------------------------------------
+/**
+ * Send a real test message through the SAME adapter resolution the delivery
+ * worker uses (core delivery/resolve.ts), so a pass here means real sends work.
+ * Synchronous on purpose: the operator needs the provider's actual error text,
+ * not a queued job they have to go hunting for. Errors are returned verbatim
+ * (staff zone) because that string is the whole diagnostic value.
+ */
+adminRouter.post(
+  '/test-message',
+  requireStaff('admin'),
+  h(async (req, res) => {
+    const { channel, to } = z
+      .object({ channel: z.enum(['email', 'sms']), to: z.string().min(3).max(254) })
+      .parse(req.body);
+    const db = getDb();
+    const firmId = req.staff!.firmId;
+    const firm = await db.query.firms.findFirst({ where: eq(firms.id, firmId) });
+    const stamp = new Date().toLocaleString();
+    const started = Date.now();
+    // The no-op adapter silently swallows sends. Reporting that as success is
+    // worse than failing: staff would believe delivery works while every invite
+    // and portal link quietly goes nowhere.
+    const notConfigured = (adapterName: string): boolean => adapterName === 'null';
+    try {
+      if (channel === 'email') {
+        const emailer = await resolveEmailAdapter(db, firmId);
+        if (notConfigured(emailer.name)) {
+          return void res.json({
+            ok: false,
+            channel,
+            adapter: emailer.name,
+            ms: Date.now() - started,
+            error:
+              'No email provider is configured, so nothing was sent — the message went to a no-op adapter. Choose EmailIt or SMTP above (or configure the appliance environment), save, then test again.',
+          });
+        }
+        await emailer.send({
+          to,
+          subject: `Vibe 1099 test message — ${firm?.name ?? 'your firm'}`,
+          text:
+            `This is a test message from Vibe 1099 (${stamp}).\n\n` +
+            `If you received it, your email settings are working and client invites, ` +
+            `recipient portal links, and W-9 requests will send.\n\nNo action is needed.`,
+        });
+        res.locals['audit'] = { action: 'settings.test-message', entityType: 'firm', entityId: firmId, detail: { channel, ms: Date.now() - started } };
+        return void res.json({ ok: true, channel, adapter: emailer.name, ms: Date.now() - started });
+      }
+      const sms = await resolveSmsAdapter(db, firmId);
+      if (notConfigured(sms.name)) {
+        return void res.json({
+          ok: false,
+          channel,
+          adapter: sms.name,
+          ms: Date.now() - started,
+          error:
+            'No SMS provider is configured, so nothing was sent — the message went to a no-op adapter. Choose TextLink or Twilio above (or configure the appliance environment), save, then test again.',
+        });
+      }
+      await sms.send({ to: toE164(to), body: `Vibe 1099 test message (${stamp}). Your SMS settings are working.` });
+      res.locals['audit'] = { action: 'settings.test-message', entityType: 'firm', entityId: firmId, detail: { channel, ms: Date.now() - started } };
+      res.json({ ok: true, channel, adapter: sms.name, ms: Date.now() - started });
+    } catch (err) {
+      // A failed test is a normal outcome, not a server fault — return 200 with
+      // the provider's message so the UI can show it inline.
+      res.json({ ok: false, channel, ms: Date.now() - started, error: err instanceof Error ? err.message : String(err) });
+    }
   }),
 );
 

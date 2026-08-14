@@ -4,83 +4,22 @@
  */
 import { eq } from 'drizzle-orm';
 import { Job } from 'bullmq';
-import { eq as eqOp } from 'drizzle-orm';
 import {
   createLogger,
   DEFAULT_TEMPLATES,
-  EmailItEmailAdapter,
-  getCrypto,
-  getEmailAdapter,
-  getSmsAdapter,
   renderTemplate,
-  SmtpEmailAdapter,
-  TextLinkSmsAdapter,
+  resolveEmailAdapter,
+  resolveSmsAdapter,
   toE164,
-  TwilioSmsAdapter,
   type DeliveryJob,
-  type EmailAdapter,
   type MessageTemplate,
-  type SmsAdapter,
 } from '@vibe1099/core';
-import { appSettings, deliveries, firms, getDb } from '@vibe1099/db';
+import { appSettings, deliveries, getDb } from '@vibe1099/db';
 
 const log = createLogger('worker:delivery');
-
-/**
- * Per-firm SMS adapter resolution: Settings-configured override (secrets
- * envelope-encrypted in firms.sms_override) wins; env-configured adapter is
- * the fallback.
- */
-async function resolveSmsAdapter(firmId: string): Promise<SmsAdapter> {
-  const firm = await getDb().query.firms.findFirst({ where: eqOp(firms.id, firmId) });
-  const o = (firm?.smsOverride ?? null) as Record<string, string> | null;
-  if (o?.['provider'] === 'textlink' && o['textlinkApiKeyEncrypted']) {
-    return new TextLinkSmsAdapter(getCrypto().decrypt(o['textlinkApiKeyEncrypted']));
-  }
-  if (o?.['provider'] === 'twilio' && o['twilioAuthTokenEncrypted']) {
-    return new TwilioSmsAdapter(
-      o['twilioAccountSid'] ?? '',
-      getCrypto().decrypt(o['twilioAuthTokenEncrypted']),
-      o['twilioFromNumber'] ?? '',
-    );
-  }
-  if (o?.['provider'] === 'none') {
-    throw new Error('SMS disabled for this firm (Settings → SMS provider)');
-  }
-  return getSmsAdapter();
-}
-
-/**
- * Per-firm email adapter resolution: Settings-configured override (secrets
- * envelope-encrypted in firms.smtp_override) wins; env-configured adapter is
- * the fallback. Supports EmailIt (API) and SMTP.
- */
-async function resolveEmailAdapter(firmId: string): Promise<EmailAdapter> {
-  const firm = await getDb().query.firms.findFirst({ where: eqOp(firms.id, firmId) });
-  const o = (firm?.smtpOverride ?? null) as Record<string, string> | null;
-  const crypto = getCrypto();
-  if (o?.['provider'] === 'emailit' && o['emailitApiKeyEncrypted']) {
-    return new EmailItEmailAdapter({
-      apiKey: crypto.decrypt(o['emailitApiKeyEncrypted']),
-      from: o['from'] ?? '',
-      replyTo: o['replyTo'] || undefined,
-    });
-  }
-  if (o?.['provider'] === 'smtp' && o['host']) {
-    return new SmtpEmailAdapter({
-      host: o['host'],
-      port: Number(o['port'] ?? 587),
-      user: o['user'] ?? '',
-      pass: o['passEncrypted'] ? crypto.decrypt(o['passEncrypted']) : '',
-      from: o['from'] ?? '',
-      secure: o['secure'] === '1',
-    });
-  }
-  if (o?.['provider'] === 'none') {
-    throw new Error('Email disabled for this firm (Settings → Email provider)');
-  }
-  return getEmailAdapter();
-}
+// Adapter resolution lives in @vibe1099/core (delivery/resolve.ts) so the
+// Settings "send test message" action exercises the exact same precedence as
+// these real sends.
 
 async function resolveTemplate(key: string): Promise<MessageTemplate> {
   const db = getDb();
@@ -101,10 +40,10 @@ export async function handleDeliveryJob(job: Job): Promise<void> {
   try {
     if (data.channel === 'email') {
       const subject = renderTemplate(template.subject, data.vars);
-      const emailer = await resolveEmailAdapter(data.firmId);
+      const emailer = await resolveEmailAdapter(db, data.firmId);
       await emailer.send({ to: data.to, subject, text: body });
     } else {
-      const sms = await resolveSmsAdapter(data.firmId);
+      const sms = await resolveSmsAdapter(db, data.firmId);
       await sms.send({ to: toE164(data.to), body });
     }
     if (data.deliveryId) {

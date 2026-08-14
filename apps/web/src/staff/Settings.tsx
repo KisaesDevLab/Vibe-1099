@@ -344,6 +344,31 @@ export function Settings() {
     } catch (err) { setError(err instanceof ApiError ? err.message : String(err)); }
   };
 
+  // Delivery self-test: sends a real message through the same adapter
+  // resolution the worker uses, so a pass here means real sends work.
+  const [testing, setTesting] = useState<'email' | 'sms' | null>(null);
+  const [testResult, setTestResult] = useState<{ channel: string; ok: boolean; adapter?: string; ms?: number; error?: string } | null>(null);
+  const sendTest = async (channel: 'email' | 'sms') => {
+    const to = await dialogs.prompt(
+      channel === 'email'
+        ? 'Send a test email to which address? (Use your own — it sends immediately.)'
+        : 'Send a test text to which mobile number?',
+      { title: channel === 'email' ? 'Send test email' : 'Send test text', defaultValue: channel === 'email' ? me.email : '' },
+    );
+    if (!to?.trim()) return;
+    setTesting(channel);
+    setTestResult(null);
+    try {
+      const r = await api.post<{ ok: boolean; adapter?: string; ms: number; error?: string }>('/api/admin/test-message', { channel, to: to.trim() });
+      setTestResult({ channel, ...r });
+      dialogs.toast(r.ok ? `Test ${channel === 'email' ? 'email' : 'text'} sent.` : `Test failed — see the message below.`, r.ok ? 'success' : 'error');
+    } catch (err) {
+      setTestResult({ channel, ok: false, error: err instanceof ApiError ? err.message : String(err) });
+    } finally {
+      setTesting(null);
+    }
+  };
+
   const saveSetting = async (key: string, value: unknown) => {
     await api.put(`/api/admin/settings/${key}`, { value });
     dialogs.toast('Setting saved.', 'success');
@@ -665,7 +690,18 @@ export function Settings() {
               </label>
             </div>
           )}
-          <button className="secondary" onClick={saveEmail}>Save email settings</button>
+          <div className="row" style={{ alignItems: 'center' }}>
+            <button className="secondary" onClick={saveEmail}>Save email settings</button>
+            <button className="secondary" disabled={testing === 'email'} onClick={() => void sendTest('email')}>
+              {testing === 'email' ? 'Sending…' : 'Send test email'}
+            </button>
+            <span className="muted">Save first — the test uses the saved settings.</span>
+          </div>
+          {testResult?.channel === 'email' && (
+            testResult.ok
+              ? <div className="ok-box">Sent via {testResult.adapter} in {testResult.ms} ms. If it doesn’t arrive, check spam and the from-address domain’s SPF/DKIM.</div>
+              : <div className="error-box">Send failed: {testResult.error}</div>
+          )}
 
           <h2 style={{ marginTop: 20 }}>SMS provider <span className="muted" style={{ fontWeight: 400 }}>(firm-level; overrides appliance env: {sms.envProvider})</span></h2>
           <div className="row">
@@ -704,7 +740,15 @@ export function Settings() {
                 loadAll();
               } catch (err) { setError(err instanceof ApiError ? err.message : String(err)); }
             }}>Save SMS settings</button>
+            <button className="secondary" disabled={testing === 'sms'} onClick={() => void sendTest('sms')}>
+              {testing === 'sms' ? 'Sending…' : 'Send test text'}
+            </button>
           </div>
+          {testResult?.channel === 'sms' && (
+            testResult.ok
+              ? <div className="ok-box">Sent via {testResult.adapter} in {testResult.ms} ms.</div>
+              : <div className="error-box">Send failed: {testResult.error}</div>
+          )}
           <h2>Message templates</h2>
           <p className="muted">Placeholders use {'{{var}}'}. Links always carry opaque tokens — never a TIN or a name.</p>
           <MessageTemplates disabled={!isAdmin} value={settings['message_templates']} onSave={(v) => saveSetting('message_templates', v)} />

@@ -18,7 +18,7 @@ interface Invite {
   lastActivityAt: string | null;
 }
 
-interface Payer { id: string; legalName: string; contactEmail: string | null; defaultFormTypes?: string[] }
+interface Payer { id: string; legalName: string; contactEmail: string | null; contactMobile?: string | null; defaultFormTypes?: string[] }
 
 export function Invites() {
   const dialogs = useDialogs();
@@ -41,11 +41,26 @@ export function Invites() {
     });
   }, []);
 
+  // Where the link goes. Prefilled from the payer's contacts so staff can see
+  // (and override) the destination instead of it being sent invisibly.
+  const [sendEmail, setSendEmail] = useState(true);
+  const [sendSms, setSendSms] = useState(true);
+  const [toEmail, setToEmail] = useState('');
+  const [toMobile, setToMobile] = useState('');
+
+  const fillContacts = (id: string) => {
+    const p = payers.find((x) => x.id === id);
+    setToEmail(p?.contactEmail ?? '');
+    setToMobile(p?.contactMobile ?? '');
+  };
+  useEffect(() => { if (payerId) fillContacts(payerId); }, [payerId, payers]);
+
   // when the selected payer changes, default the form-type picker to its preset
   const onPayerChange = (id: string) => {
     setPayerId(id);
     const p = payers.find((x) => x.id === id);
     if (p?.defaultFormTypes?.length) setFormTypes(p.defaultFormTypes);
+    fillContacts(id);
   };
 
   const toggleType = (t: string) =>
@@ -55,8 +70,21 @@ export function Invites() {
     e.preventDefault();
     setError('');
     try {
-      const r = await api.post<{ id: string; link: string }>('/api/invites', { payerId, taxYear, formTypes });
+      const r = await api.post<{ id: string; link: string; sentEmail: boolean; sentSms: boolean }>('/api/invites', {
+        payerId,
+        taxYear,
+        formTypes,
+        email: toEmail.trim() || null,
+        mobile: toMobile.trim() || null,
+        sendEmail,
+        sendSms,
+      });
       setLink(r.link);
+      const channels = [r.sentEmail && `email (${toEmail.trim()})`, r.sentSms && `text (${toMobile.trim()})`].filter(Boolean);
+      dialogs.toast(
+        channels.length ? `Invite sent by ${channels.join(' and ')}.` : 'Link generated — nothing sent. Copy it below and send it yourself.',
+        channels.length ? 'success' : 'info',
+      );
       load();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : String(err));
@@ -123,8 +151,29 @@ export function Invites() {
               ))}
             </div>
           </div>
-          <button type="submit" disabled={!formTypes.length}>Generate magic link</button>
         </div>
+        {/* delivery: visible destinations + explicit send toggles */}
+        <div className="row">
+          <div className="field grow">
+            <label>
+              <input type="checkbox" style={{ width: 'auto' }} checked={sendEmail} onChange={(e) => setSendEmail(e.target.checked)} /> Email the link to
+            </label>
+            <input value={toEmail} disabled={!sendEmail} placeholder="client@example.com" onChange={(e) => setToEmail(e.target.value)} />
+          </div>
+          <div className="field grow">
+            <label>
+              <input type="checkbox" style={{ width: 'auto' }} checked={sendSms} onChange={(e) => setSendSms(e.target.checked)} /> Text the link to
+            </label>
+            <input value={toMobile} disabled={!sendSms} placeholder="(816) 555-0123" onChange={(e) => setToMobile(e.target.value)} />
+          </div>
+          <button type="submit" disabled={!formTypes.length} style={{ alignSelf: 'flex-end' }}>
+            {(sendEmail && toEmail.trim()) || (sendSms && toMobile.trim()) ? 'Generate & send link' : 'Generate link'}
+          </button>
+        </div>
+        <p className="muted" style={{ margin: 0 }}>
+          Prefilled from the payer’s contact details. Clear a box or untick it to skip that channel — the link is always shown here so you can
+          send it yourself.
+        </p>
       </form>
 
       <table className="grid">

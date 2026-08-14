@@ -68,6 +68,9 @@ async function createAndSendInvite(opts: {
   createdBy: string;
   email?: string | null;
   mobile?: string | null;
+  /** false = generate the link but don't notify on that channel */
+  sendEmail?: boolean;
+  sendSms?: boolean;
   expiryDays: number;
 }): Promise<{ id: string; link: string; expiresAt: Date; sentEmail: boolean; sentSms: boolean }> {
   const db = getDb();
@@ -100,8 +103,8 @@ async function createAndSendInvite(opts: {
     link,
     expires: expiresAt.toISOString().slice(0, 10),
   };
-  const to = opts.email ?? payer.contactEmail;
-  const toMobile = opts.mobile ?? payer.contactMobile;
+  const to = (opts.sendEmail ?? true) ? (opts.email ?? payer.contactEmail) : null;
+  const toMobile = (opts.sendSms ?? true) ? (opts.mobile ?? payer.contactMobile) : null;
   if (to) await getQueue(QUEUE_NAMES.delivery).add('client_invite', { kind: 'client_invite', channel: 'email', firmId: opts.firmId, to, templateKey: 'client_invite', vars } as DeliveryJob);
   if (toMobile) await getQueue(QUEUE_NAMES.delivery).add('client_invite', { kind: 'client_invite', channel: 'sms', firmId: opts.firmId, to: toMobile, templateKey: 'client_invite', vars } as DeliveryJob);
   return { id: created.id, link, expiresAt, sentEmail: !!to, sentSms: !!toMobile };
@@ -120,10 +123,12 @@ invitesRouter.post(
       createdBy: req.staff!.userId,
       email: input.email,
       mobile: input.mobile,
+      sendEmail: input.sendEmail,
+      sendSms: input.sendSms,
       expiryDays,
     });
-    res.locals['audit'] = { action: 'invite.create', entityType: 'client_invite', entityId: r.id };
-    res.status(201).json({ id: r.id, link: r.link, expiresAt: r.expiresAt });
+    res.locals['audit'] = { action: 'invite.create', entityType: 'client_invite', entityId: r.id, detail: { sentEmail: r.sentEmail, sentSms: r.sentSms } };
+    res.status(201).json({ id: r.id, link: r.link, expiresAt: r.expiresAt, sentEmail: r.sentEmail, sentSms: r.sentSms });
   }),
 );
 

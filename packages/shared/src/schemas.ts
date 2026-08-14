@@ -82,8 +82,13 @@ export const zClientInviteInput = z.object({
   payerId: z.string().uuid(),
   taxYear: zTaxYear,
   formTypes: z.array(zFormType).min(1),
+  // Where to send it. Blank falls back to the payer's contact on file; the
+  // send* flags let staff generate a link WITHOUT notifying (e.g. to paste it
+  // into their own email) — the link is always returned either way.
   email: zEmail.optional().nullable(),
   mobile: z.string().optional().nullable(),
+  sendEmail: z.boolean().optional().default(true),
+  sendSms: z.boolean().optional().default(true),
   expiresInDays: z.number().int().min(1).max(365).optional().default(30),
 });
 

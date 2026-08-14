@@ -3,6 +3,7 @@ export * from './email-smtp.js';
 export * from './email-emailit.js';
 export * from './sms.js';
 export * from './templates.js';
+export * from './resolve.js';
 
 import { loadEnv } from '../env.js';
 import type { EmailAdapter, SmsAdapter } from './types.js';
