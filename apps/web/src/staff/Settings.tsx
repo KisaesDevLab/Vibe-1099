@@ -892,11 +892,15 @@ export function Settings() {
         <div className="panel">
           <h2 style={{ marginTop: 0 }}>Stored document cleanup</h2>
           <p className="muted">
-            Delete generated <b>PDFs and zip files</b> older than this many days — print batches, report PDFs, and export zips. These are
-            regenerated on demand, so purging them only reclaims disk. Leave <b>0</b> to keep them until the long-term retention window
-            below. Filing evidence (form &amp; W-9 PDFs, IRS XML and acknowledgements, provider payloads, MO .txt) is <b>never</b> purged on
-            this schedule — it carries a multi-year retention floor and is disposed of only by the retention sweep. Runs hourly; deletions
-            are recorded in the audit log.
+            Delete generated <b>PDFs and zip files</b> older than this many days — print batches, report PDFs, export zips, and stored form
+            PDFs. All of these are regenerated on demand (a recipient's portal copy is rendered per request, so purging never breaks their
+            link), so this only reclaims disk. Leave <b>0</b> to keep them until the long-term retention window.
+          </p>
+          <p className="muted">
+            Two things are deliberately <b>never</b> purged on this schedule: <b>signed W-9 PDFs</b> (the recipient's signature exists only
+            in that file — it cannot be regenerated) and the <b>filing evidence</b> (IRS XML and acknowledgements, provider payloads, MO
+            .txt), which carries a multi-year retention floor. Those are disposed of only by the retention window below. Runs hourly;
+            deletions are recorded in the audit log.
           </p>
           <div className="row">
             <div className="field" style={{ maxWidth: 220 }}>

@@ -131,14 +131,18 @@ async function retentionSweep(): Promise<void> {
 
 /**
  * Short-horizon purge of GENERATED documents (operator-set days, Settings →
- * Advanced). Deliberately limited to artifacts that can be regenerated on
- * demand from the records — print batches, report PDFs, export zips. Filing
- * evidence (form/W-9 PDFs, IRIS XML + acks, provider payloads, MO .txt) is NOT
- * touched here: those carry a multi-year retention floor (§6501, Pub 4557) and
- * are disposed of only by the years-based retention sweep above.
- * 0 / unset = disabled.
+ * Advanced). Limited to artifacts that can be regenerated on demand from the
+ * records: print batches, report PDFs, export zips, and archived form PDFs
+ * (recipient portal copies are rendered per request, so purging a stored form
+ * PDF never breaks a recipient's link).
+ *
+ * Still NOT touched here, by design: signed W-9 PDFs (not regenerable — the
+ * recipient's signature exists only in that file) and the filing evidence
+ * itself (IRIS XML + acks, provider payloads, MO .txt), which carry a
+ * multi-year retention floor (§6501, Pub 4557) and are disposed of only by the
+ * years-based retention sweep above. 0 / unset = disabled.
  */
-const PURGEABLE_KINDS = ['batch_pdf', 'report_pdf', 'export_zip'] as const;
+const PURGEABLE_KINDS = ['batch_pdf', 'report_pdf', 'export_zip', 'form_pdf'] as const;
 
 async function purgeGeneratedDocuments(): Promise<void> {
   const db = getDb();
