@@ -319,13 +319,18 @@ export function toTaxBanditsWire(payload: TaxBanditsPayload): Record<string, unk
     if (n.suffix) business['Suffix'] = n.suffix;
   }
 
+  // State filing is declared ONLY when a record actually carries a state block.
+  // It must not key off the CF/SF election list: that list is global (every
+  // participating state, independent of these records), so including it made
+  // every submission claim state filing even with no state data at all —
+  // risking add-on charges and provider validation rejections.
   const anyStates = returnData.some((rd) => (rd[`${ft}FormData`] as Record<string, unknown>)['States'] !== undefined);
   return {
     SubmissionManifest: {
       TaxYear: String(payload.taxYear),
       IRSFilingType: 'IRIS',
       IsFederalFiling: true,
-      IsStateFiling: anyStates || payload.combinedFederalState.length > 0,
+      IsStateFiling: anyStates,
       IsPostal: payload.records.some((r) => r.postalMailing),
       IsOnlineAccess: payload.records.some((r) => r.onlineAccess),
       IsScheduleFiling: false,

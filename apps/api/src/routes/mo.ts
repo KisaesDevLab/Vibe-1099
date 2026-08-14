@@ -16,7 +16,7 @@ import {
   putBlob,
   type Mo1220PayerGroup,
 } from '@vibe1099/core';
-import { firms, formRecords, getDb, payers, recipients, stateFiles, statesConfig, type Db } from '@vibe1099/db';
+import { firms, formRecords, getDb, payers, recipients, stateFiles, statesConfig, transmissions, type Db } from '@vibe1099/db';
 import { h } from '../middleware/error.js';
 import { requireStaff } from '../middleware/auth.js';
 
@@ -30,6 +30,8 @@ interface MoCandidate {
   stateTaxWithheldCents: number;
   includable: boolean;
   reason?: string;
+  /** A provider already filed MO for this record — including it would double-file. */
+  alreadyStateFiled?: boolean;
 }
 
 async function collectMoCandidates(
@@ -42,10 +44,14 @@ async function collectMoCandidates(
   const config = await db.query.statesConfig.findFirst({ where: eq(statesConfig.state, 'MO') });
   const thresholdCents = config?.thresholdCents ?? 120000;
 
+  // Pull the transmission that filed each record so we can tell whether a
+  // provider (Tax1099/TaxBandits) already filed MO for it — those records must
+  // NOT go into the Pub 1220 file or Missouri receives the return twice.
   const rows = await db
-    .select({ record: formRecords, recipient: recipients })
+    .select({ record: formRecords, recipient: recipients, statesFiled: transmissions.statesFiled, provider: transmissions.provider })
     .from(formRecords)
     .innerJoin(recipients, eq(recipients.id, formRecords.recipientId))
+    .leftJoin(transmissions, eq(transmissions.id, formRecords.transmissionId))
     .where(
       and(
         eq(formRecords.firmId, firmId),
@@ -58,14 +64,19 @@ async function collectMoCandidates(
     );
 
   const byPayer = new Map<string, MoCandidate[]>();
-  for (const { record, recipient } of rows) {
+  for (const { record, recipient, statesFiled, provider } of rows) {
     const { amounts, stateTaxWithheldCents } = boxValuesToAmountCodes(
       record.formType as FormType,
       taxYear,
       record.boxValues,
     );
+    // NULL statesFiled = pre-0.1.21 transmission (unknown) → treated as not
+    // state-filed, preserving prior behaviour for historical records.
+    const alreadyStateFiled = (statesFiled ?? []).includes('MO');
     const meets = meetsMoThreshold(amounts, stateTaxWithheldCents, thresholdCents);
-    const includable = meets || includeBelowThreshold;
+    // The provider-filed exclusion is absolute: includeBelowThreshold must not
+    // be able to pull a double filing back into the file.
+    const includable = !alreadyStateFiled && (meets || includeBelowThreshold);
     const list = byPayer.get(record.payerId) ?? [];
     list.push({
       record,
@@ -73,7 +84,12 @@ async function collectMoCandidates(
       amounts,
       stateTaxWithheldCents,
       includable,
-      reason: meets ? undefined : `below $${(thresholdCents / 100).toFixed(0)} MO threshold`,
+      alreadyStateFiled,
+      reason: alreadyStateFiled
+        ? `already filed with Missouri by ${provider ?? 'the filing provider'} — including it would file the return twice`
+        : meets
+          ? undefined
+          : `below $${(thresholdCents / 100).toFixed(0)} MO threshold`,
     });
     byPayer.set(record.payerId, list);
   }
@@ -102,6 +118,8 @@ moRouter.post(
         totalPayments: formatCents(sumCents(included.flatMap((c) => Object.values(c.amounts)))),
         totalWithheld: formatCents(sumCents(included.map((c) => c.stateTaxWithheldCents))),
         missingWithholdingId: !payer?.moWithholdingId && included.some((c) => c.stateTaxWithheldCents > 0),
+        // surfaced so the operator understands why a record vanished from the file
+        alreadyStateFiled: candidates.filter((c) => c.alreadyStateFiled).length,
       });
     }
     res.json({ preview });
@@ -127,7 +145,12 @@ moRouter.post(
 
     const byPayer = await collectMoCandidates(db, firmId, input.taxYear, input.payerIds, input.includeBelowThreshold);
     if (![...byPayer.values()].some((c) => c.some((x) => x.includable))) {
-      throw AppError.validation('No MO-source records match — check the MO-source flag and record statuses');
+      const providerFiled = [...byPayer.values()].flat().filter((c) => c.alreadyStateFiled).length;
+      throw AppError.validation(
+        providerFiled > 0
+          ? `No MO-source records left to file — ${providerFiled} record(s) were already filed with Missouri by your filing provider. Nothing to upload; Missouri has them.`
+          : 'No MO-source records match — check the MO-source flag and record statuses',
+      );
     }
 
     const crypto = getCrypto();

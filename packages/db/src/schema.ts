@@ -284,6 +284,11 @@ export const transmissions = pgTable('transmissions', {
   ackPayload: jsonb('ack_payload').$type<Record<string, unknown>>(),
   errorDetails: jsonb('error_details').$type<Array<Record<string, unknown>>>(),
   cfsfStates: jsonb('cfsf_states').$type<string[]>(), // CF/SF election states in this submission
+  // State returns this submission actually files (provider-filed states for
+  // Tax1099/TaxBandits; CF/SF-forwarded states for IRIS). Read by the state
+  // direct-file paths so the same state return is never filed twice. NULL on
+  // pre-0.1.21 rows = unknown, treated as not state-filed.
+  statesFiled: jsonb('states_filed').$type<string[]>(),
   transmittedAt: timestamp('transmitted_at', { withTimezone: true }),
   resolvedAt: timestamp('resolved_at', { withTimezone: true }),
   createdBy: uuid('created_by'),

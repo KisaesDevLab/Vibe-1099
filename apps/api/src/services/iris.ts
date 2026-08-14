@@ -50,6 +50,28 @@ async function cfsfStates(db: Db): Promise<string[]> {
 }
 
 /**
+ * The state returns this submission actually files — recorded so the state
+ * direct-file paths (MO Pub 1220) never file the same return a second time.
+ *
+ * Tax1099/TaxBandits file states directly from each record's state block, so
+ * every state present on the records is filed. IRIS does not file states: the
+ * IRS only forwards returns for states in the CF/SF election, so only elected
+ * states count (Missouri is deliberately not a CF/SF state — it stays a
+ * direct file).
+ */
+function statesFiledBy(provider: FilingProviderKind, records: IrisFormRecord[], elected: string[]): string[] {
+  const onRecords = [
+    ...new Set(
+      records
+        .map((r) => String(r.boxValues['stateCode'] ?? '').trim().toUpperCase())
+        .filter((s) => s.length === 2),
+    ),
+  ];
+  if (provider === 'iris') return onRecords.filter((s) => elected.includes(s));
+  return onRecords;
+}
+
+/**
  * Compose a transmission from queued records for one payer + tax year.
  * Snapshot-on-transmit: each record stores an immutable as-filed copy.
  */
@@ -288,6 +310,7 @@ export async function composeTransmission(
         recordCount: records.length,
         xmlBlobId,
         cfsfStates: input.cfsfStates,
+        statesFiled: statesFiledBy(provider, irisRecords, input.cfsfStates),
         createdBy,
       })
       .returning({ id: transmissions.id });
