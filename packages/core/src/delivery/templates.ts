@@ -58,6 +58,17 @@ export const DEFAULT_TEMPLATES: MessageTemplate[] = [
     vars: ['firmName', 'payerName', 'taxYear', 'link', 'expires'],
   },
   {
+    // Sent by "Resend" on an existing invite — reads as a nudge rather than a
+    // first-time invitation. Falls back to client_invite if removed.
+    key: 'client_invite_reminder',
+    channel: 'both',
+    subject: 'Reminder: {{firmName}} still needs your {{taxYear}} 1099 information',
+    body:
+      'A quick reminder from {{firmName}} — we still need the {{taxYear}} 1099 information for {{payerName}}. ' +
+      'Your secure link: {{link}} (expires {{expires}}). If you have already sent it, thank you — no action needed.',
+    vars: ['firmName', 'payerName', 'taxYear', 'link', 'expires'],
+  },
+  {
     key: 'password_reset',
     channel: 'email',
     subject: 'Vibe 1099 password reset',

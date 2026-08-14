@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useState } from 'react';
 import { api, ApiError } from '../api';
 import { Combobox } from '../components/Combobox';
+import { useDialogs } from '../components/Dialogs';
 import { useTaxYears } from '../components/useTaxYears';
 
 interface Invite {
@@ -20,6 +21,7 @@ interface Invite {
 interface Payer { id: string; legalName: string; contactEmail: string | null; defaultFormTypes?: string[] }
 
 export function Invites() {
+  const dialogs = useDialogs();
   const [invites, setInvites] = useState<Invite[]>([]);
   const [payers, setPayers] = useState<Payer[]>([]);
   const [payerId, setPayerId] = useState('');
@@ -65,6 +67,32 @@ export function Invites() {
     const r = await api.post<{ link?: string }>(`/api/invites/${id}/${verb}`);
     if (r.link) setLink(r.link);
     load();
+  };
+
+  // Fresh link straight to the clipboard (reissues under the hood — the old
+  // link is superseded, expiry restarts).
+  const copyLink = async (id: string) => {
+    try {
+      const r = await api.post<{ link: string }>(`/api/invites/${id}/reissue`);
+      await navigator.clipboard?.writeText(r.link);
+      setLink(r.link);
+      dialogs.toast('Fresh link copied to clipboard.', 'success');
+      load();
+    } catch (err) { setError(err instanceof ApiError ? err.message : String(err)); }
+  };
+
+  const resend = async (id: string, payerName: string) => {
+    try {
+      const r = await api.post<{ link: string; sentEmail: boolean; sentSms: boolean }>(`/api/invites/${id}/resend`);
+      setLink(r.link);
+      dialogs.toast(
+        r.sentEmail || r.sentSms
+          ? `Invite re-sent to ${payerName}${r.sentEmail && r.sentSms ? ' (email + SMS)' : r.sentEmail ? ' (email)' : ' (SMS)'}.`
+          : `No contact on file for ${payerName} — fresh link generated above; copy it to them directly.`,
+        r.sentEmail || r.sentSms ? 'success' : 'warning',
+      );
+      load();
+    } catch (err) { setError(err instanceof ApiError ? err.message : String(err)); }
   };
 
   return (
@@ -116,8 +144,11 @@ export function Invites() {
               <td>{new Date(inv.expiresAt).toLocaleDateString()}</td>
               <td>{inv.lastActivityAt ? new Date(inv.lastActivityAt).toLocaleString() : '—'}</td>
               <td style={{ whiteSpace: 'nowrap' }}>
+                {!inv.submittedAt && (<>
+                  <button className="small secondary" onClick={() => void copyLink(inv.id)} title="Mint a fresh link and copy it to the clipboard (the old link stops working; expiry restarts)">Copy link</button>
+                  <button className="small secondary" onClick={() => void resend(inv.id, inv.payerName)} title="Mint a fresh link and email/text it to the contact on file">Resend</button>
+                </>)}
                 {!inv.revokedAt && !inv.submittedAt && <button className="small danger" onClick={() => action(inv.id, 'revoke')}>Revoke</button>}
-                <button className="small secondary" onClick={() => action(inv.id, 'reissue')}>Reissue</button>
                 {inv.submittedAt && <button className="small secondary" onClick={() => action(inv.id, 'reopen')}>Re-open</button>}
               </td>
             </tr>

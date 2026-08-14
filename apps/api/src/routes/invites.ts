@@ -222,8 +222,9 @@ invitesRouter.post(
         };
         const to = invite.email ?? payer.contactEmail;
         const toMobile = invite.mobile ?? payer.contactMobile;
-        if (to) await getQueue(QUEUE_NAMES.delivery).add('client_invite', { kind: 'client_invite', channel: 'email', firmId, to, templateKey: 'client_invite', vars } as DeliveryJob);
-        if (toMobile) await getQueue(QUEUE_NAMES.delivery).add('client_invite', { kind: 'client_invite', channel: 'sms', firmId, to: toMobile, templateKey: 'client_invite', vars } as DeliveryJob);
+        // bulk resend is also a nudge, not a first invitation
+        if (to) await getQueue(QUEUE_NAMES.delivery).add('client_invite', { kind: 'client_invite', channel: 'email', firmId, to, templateKey: 'client_invite_reminder', vars } as DeliveryJob);
+        if (toMobile) await getQueue(QUEUE_NAMES.delivery).add('client_invite', { kind: 'client_invite', channel: 'sms', firmId, to: toMobile, templateKey: 'client_invite_reminder', vars } as DeliveryJob);
         if (to || toMobile) resent++;
       } catch (err) {
         failed.push(invite.id);
@@ -264,6 +265,50 @@ invitesRouter.post(
     const env = loadEnv();
     res.locals['audit'] = { action: 'invite.reissue', entityType: 'client_invite', entityId: id };
     res.json({ link: `${env.APP_BASE_URL}/client?token=${encodeURIComponent(token)}`, expiresAt });
+  }),
+);
+
+/**
+ * Resend ONE invite: mint a fresh link (extends expiry, clears any revoke,
+ * supersedes the old token) and queue the email/SMS to the contacts on file —
+ * no need to recreate the invite.
+ */
+invitesRouter.post(
+  '/:id/resend',
+  h(async (req, res) => {
+    const id = z.string().uuid().parse(req.params['id']);
+    const db = getDb();
+    const [row] = await db
+      .select({ invite: clientInvites, payer: payers })
+      .from(clientInvites)
+      .innerJoin(payers, eq(payers.id, clientInvites.payerId))
+      .where(and(eq(clientInvites.id, id), eq(clientInvites.firmId, req.staff!.firmId)))
+      .limit(1);
+    if (!row) throw AppError.notFound('Invite');
+    const { invite, payer } = row;
+    if (invite.submittedAt) throw AppError.state('Engagement already submitted — re-open it first, then resend.');
+    const expiryDays = (await getSetting<number>('invite_expiry_days')) ?? 30;
+    const expiresAt = new Date(Date.now() + expiryDays * 86_400_000);
+    await db.update(clientInvites).set({ revokedAt: null, expiresAt }).where(eq(clientInvites.id, id));
+    const token = await issueInviteToken(id, expiresAt);
+    const env = loadEnv();
+    const link = `${env.APP_BASE_URL}/client?token=${encodeURIComponent(token)}`;
+    const firm = await db.query.firms.findFirst({ where: eq(firms.id, req.staff!.firmId) });
+    const vars = {
+      firmName: firm?.name ?? 'Your accounting firm',
+      payerName: payer.legalName,
+      taxYear: String(invite.taxYear),
+      link,
+      expires: expiresAt.toISOString().slice(0, 10),
+    };
+    const to = invite.email ?? payer.contactEmail;
+    const toMobile = invite.mobile ?? payer.contactMobile;
+    // Reminder wording — the first-time "has invited you" copy reads wrong on a resend.
+    const templateKey = 'client_invite_reminder';
+    if (to) await getQueue(QUEUE_NAMES.delivery).add('client_invite', { kind: 'client_invite', channel: 'email', firmId: req.staff!.firmId, to, templateKey, vars } as DeliveryJob);
+    if (toMobile) await getQueue(QUEUE_NAMES.delivery).add('client_invite', { kind: 'client_invite', channel: 'sms', firmId: req.staff!.firmId, to: toMobile, templateKey, vars } as DeliveryJob);
+    res.locals['audit'] = { action: 'invite.resend', entityType: 'client_invite', entityId: id, detail: { sentEmail: !!to, sentSms: !!toMobile } };
+    res.json({ link, expiresAt, sentEmail: !!to, sentSms: !!toMobile });
   }),
 );
 
