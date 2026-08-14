@@ -268,6 +268,9 @@ export const transmissions = pgTable('transmissions', {
   environment: text('environment').notNull().$type<'ATS' | 'PROD'>(),
   // filing backend that owns this transmission (worker dispatches accordingly)
   provider: text('provider').notNull().default('iris').$type<'iris' | 'tax1099' | 'taxbandits'>(),
+  // the payer this submission files for (compose is per-payer); survives record
+  // unlinking on rejection so the transmissions screen stays identifiable
+  payerId: uuid('payer_id').references(() => payers.id),
   utid: text('utid').notNull(), // unique transmission id / submission ref (idempotency guard)
   receiptId: text('receipt_id'), // IRIS Receipt ID or Tax1099 submission id
   status: text('status')

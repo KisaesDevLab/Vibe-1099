@@ -13,6 +13,7 @@ interface StatusCheck {
 
 interface Tx {
   id: string;
+  payerName: string | null;
   taxYear: number;
   environment: 'ATS' | 'PROD';
   utid: string;
@@ -71,11 +72,12 @@ export function Transmissions() {
         Keep Receipt IDs — IRS support requires the UTID/Receipt ID. ATS transmissions are test filings.
       </p>
       <table className="grid">
-        <thead><tr><th>UTID / Receipt</th><th>Env</th><th>Year</th><th className="num">Records</th><th>Status</th><th>Transmitted</th><th></th></tr></thead>
+        <thead><tr><th>Payer</th><th>UTID / Receipt</th><th>Env</th><th>Year</th><th className="num">Records</th><th>Status</th><th>Transmitted</th><th></th></tr></thead>
         <tbody>
           {rows.map((t) => (
             <>
               <tr key={t.id}>
+                <td>{t.payerName ?? <span className="muted">—</span>}</td>
                 <td className="mono" style={{ fontSize: 11 }}>
                   {t.utid.slice(0, 20)}…{t.isCorrection && <span className="badge corrected" style={{ marginLeft: 4 }}>CORR</span>}<br />
                   {t.receiptId && <span className="muted">Receipt: {t.receiptId}</span>}
@@ -103,7 +105,7 @@ export function Transmissions() {
               </tr>
               {check?.id === t.id && (
                 <tr>
-                  <td colSpan={7}>
+                  <td colSpan={8}>
                     {check.error ? (
                       <div className="error-box">{check.error}</div>
                     ) : (
@@ -131,7 +133,7 @@ export function Transmissions() {
               )}
               {expanded === t.id && t.errorDetails && (
                 <tr>
-                  <td colSpan={7}>
+                  <td colSpan={8}>
                     <table className="grid">
                       <thead><tr><th>Record</th><th>Code</th><th>Message</th></tr></thead>
                       <tbody>
@@ -145,7 +147,7 @@ export function Transmissions() {
               )}
             </>
           ))}
-          {!rows.length && <tr><td colSpan={7} className="muted">No transmissions yet. Queue forms in Form entry, then Transmit.</td></tr>}
+          {!rows.length && <tr><td colSpan={8} className="muted">No transmissions yet. Queue forms in Form entry, then Transmit.</td></tr>}
         </tbody>
       </table>
     </div>

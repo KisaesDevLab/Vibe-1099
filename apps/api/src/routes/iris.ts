@@ -8,7 +8,7 @@ import { and, desc, eq, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { AppError, deadlinesFor, zTaxYear } from '@vibe1099/shared';
 import { generateJwkPair, getBlob, getCrypto, getQueue, loadEnv, QUEUE_NAMES, type IrisTransmitJob } from '@vibe1099/core';
-import { errorTranslations, firms, formRecords, getDb, recipients, taxbanditsWebhookEvents, tinMatchResults, transmissions } from '@vibe1099/db';
+import { errorTranslations, firms, formRecords, getDb, payers, recipients, taxbanditsWebhookEvents, tinMatchResults, transmissions } from '@vibe1099/db';
 import { h } from '../middleware/error.js';
 import { requireStaff } from '../middleware/auth.js';
 import { composeTransmission } from '../services/iris.js';
@@ -294,13 +294,15 @@ irisRouter.get(
     const conds = [eq(transmissions.firmId, req.staff!.firmId)];
     if (q.taxYear) conds.push(eq(transmissions.taxYear, q.taxYear));
     const rows = await getDb()
-      .select()
+      .select({ t: transmissions, payerName: payers.legalName })
       .from(transmissions)
+      .leftJoin(payers, eq(payers.id, transmissions.payerId))
       .where(and(...conds))
       .orderBy(desc(transmissions.createdAt));
     res.json({
-      transmissions: rows.map((t) => ({
+      transmissions: rows.map(({ t, payerName }) => ({
         id: t.id,
+        payerName: payerName ?? null,
         taxYear: t.taxYear,
         environment: t.environment,
         utid: t.utid,

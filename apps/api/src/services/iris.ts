@@ -281,6 +281,7 @@ export async function composeTransmission(
         taxYear,
         provider,
         environment,
+        payerId,
         utid,
         status: 'building',
         isCorrection: !!opts.isCorrection,
