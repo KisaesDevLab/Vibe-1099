@@ -18,7 +18,7 @@ interface Payer {
   contactMobile: string | null;
   moWithholdingId: string | null;
   moSourceDefault: boolean;
-  filingProviderOverride: 'iris' | 'tax1099' | null;
+  filingProviderOverride: 'iris' | 'tax1099' | 'taxbandits' | null;
   defaultFormTypes: string[];
 }
 
@@ -26,7 +26,7 @@ const emptyForm = {
   legalName: '', clientId: '', firstName: '', lastName: '', dbaName: '', tin: '', tinType: 'EIN' as 'SSN' | 'EIN',
   line1: '', line2: '', city: '', state: 'MO', zip: '',
   phone: '', contactEmail: '', contactMobile: '', moWithholdingId: '', moSourceDefault: true,
-  filingProviderOverride: '' as '' | 'iris' | 'tax1099',
+  filingProviderOverride: '' as '' | 'iris' | 'tax1099' | 'taxbandits',
   defaultFormTypes: ['NEC'] as string[],
 };
 
@@ -193,10 +193,11 @@ export function Payers() {
               </select>
             </div>
             <div className="field"><label>Filing backend</label>
-              <select value={form.filingProviderOverride} onChange={(e) => setForm((f) => ({ ...f, filingProviderOverride: e.target.value as '' | 'iris' | 'tax1099' }))}>
+              <select value={form.filingProviderOverride} onChange={(e) => setForm((f) => ({ ...f, filingProviderOverride: e.target.value as '' | 'iris' | 'tax1099' | 'taxbandits' }))}>
                 <option value="">Firm default</option>
                 <option value="iris">IRIS (self-file)</option>
                 <option value="tax1099">Tax1099 (managed)</option>
+                <option value="taxbandits">TaxBandits (managed)</option>
               </select>
             </div>
             <div className="field">

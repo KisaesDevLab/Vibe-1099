@@ -52,7 +52,10 @@ export const zPayerInput = z.object({
   moWithholdingId: z.string().max(14).optional().nullable(),
   moSourceDefault: z.boolean().optional().default(false),
   defaultFormTypes: z.array(zFormType).optional(), // preset for invites/grid
-  filingProviderOverride: z.enum(['iris', 'tax1099']).nullable().optional(), // null = inherit firm
+  // null = inherit the firm default. MUST list every provider kind: a payer set
+  // to a provider missing here cannot be edited at all, because the UI round-
+  // trips the current value back and validation rejects it.
+  filingProviderOverride: z.enum(['iris', 'tax1099', 'taxbandits']).nullable().optional(),
 });
 export type PayerInput = z.infer<typeof zPayerInput>;
 
