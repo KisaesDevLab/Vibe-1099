@@ -1,6 +1,6 @@
 {
   "name": "vibe-1099",
-  "version": "0.1.16",
+  "version": "0.1.17",
   "private": true,
   "license": "MIT",
   "description": "Vibe 1099 — self-hosted 1099 preparation, recipient delivery, and IRS IRIS A2A e-filing appliance for CPA firms",
