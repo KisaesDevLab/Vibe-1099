@@ -103,6 +103,8 @@ interface TbStatusRecord {
   PayeeRef?: string;
   FederalReturn?: { Status?: string; Errors?: TbStatusError[] | null } | null;
   Errors?: TbStatusError[] | null;
+  /** set only when the provider is holding the return for a future date */
+  ScheduleFiling?: { ScheduledOn?: string | null; Info?: string | null } | null;
 }
 
 /** Create/Correction rejections: identified by SequenceId, RecordId is null. */
@@ -312,6 +314,13 @@ export class TaxBanditsClient implements FilingProvider {
       return { status: 'Processing', errors: [], raw };
     }
 
+    // Per-record status for the operator (why is this "stuck"?).
+    const perRecord = [...success, ...failed].map((r) => ({
+      recordId: r.PayeeRef ?? r.RecordId ?? '',
+      status: (r.FederalReturn?.Status ?? (failed.includes(r) ? 'ERROR' : 'UNKNOWN')).trim(),
+      ...(r.ScheduleFiling?.ScheduledOn ? { scheduledOn: r.ScheduleFiling.ScheduledOn } : {}),
+    }));
+
     const errors: RecordError[] = [];
     const buckets = { accepted: 0, awe: 0, rejected: 0, processing: 0 };
     const pushErrors = (r: TbStatusRecord, list: TbStatusError[] | null | undefined) => {
@@ -335,14 +344,14 @@ export class TaxBanditsClient implements FilingProvider {
       pushErrors(r, r.Errors ?? r.FederalReturn?.Errors);
     }
 
-    if (buckets.processing > 0) return { status: 'Processing', errors: [], raw };
+    if (buckets.processing > 0) return { status: 'Processing', errors: [], raw, records: perRecord };
     const status: IrisAckStatus =
       buckets.accepted + buckets.awe === 0
         ? 'Rejected'
         : buckets.rejected + buckets.awe > 0
           ? 'AcceptedWithErrors'
           : 'Accepted';
-    return { status, errors, raw };
+    return { status, errors, raw, records: perRecord };
   }
 
   /**

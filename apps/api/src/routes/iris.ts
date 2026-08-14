@@ -310,6 +310,9 @@ irisRouter.get(
         status: t.status,
         isCorrection: t.isCorrection,
         recordCount: t.recordCount,
+        provider: t.provider,
+        // null = unknown (pre-0.1.21); [] = explicitly none
+        statesFiled: t.statesFiled,
         errorDetails: t.errorDetails,
         transmittedAt: t.transmittedAt,
         resolvedAt: t.resolvedAt,
@@ -393,8 +396,57 @@ irisRouter.get(
       terminal,
       applying: terminal,
       errors: result.errors.slice(0, 20),
+      // per-record provider status makes a "stuck" submission self-explanatory
+      // (CREATED = staged not released; scheduledOn = provider holding it)
+      records: (result.records ?? []).slice(0, 50),
+      scheduledOn: (result.records ?? []).find((r) => r.scheduledOn)?.scheduledOn ?? null,
       raw: result.raw.slice(0, 4000),
     });
+  }),
+);
+
+/**
+ * Backfill which states a transmission filed (admin).
+ *
+ * Transmissions created before v0.1.21 carry no state-filing history, so their
+ * records still appear in the state direct-file paths (MO Pub 1220) even when a
+ * provider already filed the state. Recording it here drops them out.
+ *
+ * Direction of risk: marking a state as filed EXCLUDES those records from the
+ * state file, so a wrong entry causes an under-filing. Admin-only, audited, and
+ * the response reports how many records it affects so the operator can sanity
+ * check before trusting it.
+ */
+irisRouter.put(
+  '/transmissions/:id/states-filed',
+  requireStaff('admin'),
+  h(async (req, res) => {
+    const id = z.string().uuid().parse(req.params['id']);
+    const { states } = z
+      .object({
+        states: z
+          .array(z.string().regex(/^[A-Za-z]{2}$/, 'Use two-letter state codes'))
+          .max(60)
+          .transform((a) => [...new Set(a.map((s) => s.toUpperCase()))]),
+      })
+      .parse(req.body);
+    const db = getDb();
+    const tx = await db.query.transmissions.findFirst({
+      where: and(eq(transmissions.id, id), eq(transmissions.firmId, req.staff!.firmId)),
+    });
+    if (!tx) throw AppError.notFound('Transmission');
+    const [{ n: affected } = { n: 0 }] = await db
+      .select({ n: sql<number>`count(*)::int` })
+      .from(formRecords)
+      .where(eq(formRecords.transmissionId, id));
+    await db.update(transmissions).set({ statesFiled: states }).where(eq(transmissions.id, id));
+    res.locals['audit'] = {
+      action: 'transmission.states-filed.set',
+      entityType: 'transmission',
+      entityId: id,
+      detail: { before: tx.statesFiled ?? null, after: states, recordsAffected: affected },
+    };
+    res.json({ ok: true, statesFiled: states, recordsAffected: affected });
   }),
 );
 

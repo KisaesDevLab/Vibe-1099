@@ -32,6 +32,13 @@ export interface FilingStatusResult {
   status: IrisAckStatus; // shared normalized ack vocabulary
   errors: RecordError[];
   raw: string;
+  /**
+   * Per-record provider status, surfaced so a "stuck" submission is
+   * diagnosable without reading raw JSON: CREATED means staged but not
+   * released, SENT TO AGENCY means in flight at the IRS, and scheduledOn
+   * being set means the provider is holding it for a future date.
+   */
+  records?: Array<{ recordId: string; status: string; scheduledOn?: string }>;
 }
 
 export interface FilingProvider {

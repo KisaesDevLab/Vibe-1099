@@ -127,3 +127,29 @@ describe('MO Pub 1220 double-file guard', () => {
     expect(moIncludable({ statesFiled: ['AR'], meetsThreshold: true, includeBelowThreshold: false })).toBe(true);
   });
 });
+
+/** Mirrors the states-filed backfill parsing in routes/iris.ts + the UI. */
+function parseStatesInput(entered: string): string[] {
+  return [...new Set(entered.split(',').map((s) => s.trim()).filter(Boolean).map((s) => s.toUpperCase()))];
+}
+
+describe('historical states-filed backfill', () => {
+  it('normalizes operator input to unique upper-case codes', () => {
+    expect(parseStatesInput(' mo , MO,  ar ')).toEqual(['MO', 'AR']);
+  });
+
+  it('blank input means no states were provider-filed', () => {
+    expect(parseStatesInput('')).toEqual([]);
+  });
+
+  it('backfilling MO removes the records from the MO file', () => {
+    const before = moIncludable({ statesFiled: null, meetsThreshold: true, includeBelowThreshold: false });
+    const after = moIncludable({ statesFiled: parseStatesInput('MO'), meetsThreshold: true, includeBelowThreshold: false });
+    expect(before).toBe(true); // unknown history → still offered for upload
+    expect(after).toBe(false); // recorded as provider-filed → excluded
+  });
+
+  it('backfilling "none" keeps the records available for the MO file', () => {
+    expect(moIncludable({ statesFiled: parseStatesInput(''), meetsThreshold: true, includeBelowThreshold: false })).toBe(true);
+  });
+});
