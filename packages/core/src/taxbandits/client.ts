@@ -105,6 +105,13 @@ interface TbStatusRecord {
   Errors?: TbStatusError[] | null;
 }
 
+/** Create/Correction rejections: identified by SequenceId, RecordId is null. */
+interface TbErrorRecord {
+  SequenceId?: string;
+  RecordId?: string | null;
+  Errors?: TbStatusError[] | null;
+}
+
 export class TaxBanditsClient implements FilingProvider {
   readonly kind = 'taxbandits' as const;
   private readonly auth: TaxBanditsAuth;
@@ -133,11 +140,41 @@ export class TaxBanditsClient implements FilingProvider {
     }
   }
 
-  private parseSubmission(raw: string): FilingTransmitResult {
+  /**
+   * Pull per-record validation failures out of a Create/Correction response.
+   * Their ErrorRecords identify the record by **SequenceId only** (RecordId is
+   * null — the record was never created), and SequenceId is the 1-based index
+   * into the ReturnData we sent, so map it back to our own record id through
+   * the payload order. Without this the operator only ever sees
+   * "rejected (400)" and has to read raw JSON to learn which payee failed.
+   */
+  private extractRecordErrors(raw: string, payeeRefs: string[]): RecordError[] {
+    let body: { Form1099Records?: { ErrorRecords?: TbErrorRecord[] | null } | null; Errors?: TbStatusError[] | null };
+    try {
+      body = JSON.parse(raw) as typeof body;
+    } catch {
+      return [];
+    }
+    const out: RecordError[] = [];
+    for (const r of body.Form1099Records?.ErrorRecords ?? []) {
+      const seq = Number(r.SequenceId);
+      const recordId = Number.isInteger(seq) && seq >= 1 && seq <= payeeRefs.length ? payeeRefs[seq - 1]! : (r.RecordId ?? '');
+      for (const e of r.Errors ?? []) {
+        out.push({ recordId, code: e.Id ?? e.Code ?? 'VALIDATION', message: `${e.Name ? `${e.Name}: ` : ''}${e.Message ?? ''}`.trim() });
+      }
+    }
+    // submission-level errors (no record scope)
+    for (const e of body.Errors ?? []) {
+      out.push({ recordId: '', code: e.Id ?? e.Code ?? 'VALIDATION', message: `${e.Name ? `${e.Name}: ` : ''}${e.Message ?? ''}`.trim() });
+    }
+    return out;
+  }
+
+  private parseSubmission(raw: string, payeeRefs: string[]): FilingTransmitResult {
     let body: {
       SubmissionId?: string;
       submissionId?: string;
-      Form1099Records?: { ErrorRecords?: TbStatusRecord[] | null } | null;
+      Form1099Records?: { ErrorRecords?: TbErrorRecord[] | null } | null;
     };
     try {
       body = JSON.parse(raw) as typeof body;
@@ -150,7 +187,8 @@ export class TaxBanditsClient implements FilingProvider {
     // (at-most-once handling returns the records to queued for the operator).
     const errorRecords = body.Form1099Records?.ErrorRecords ?? [];
     if (errorRecords.length) {
-      throw new AppError(ErrorCodes.E_IRIS, `TaxBandits rejected ${errorRecords.length} record(s) at create`, 502, { raw });
+      const recordErrors = this.extractRecordErrors(raw, payeeRefs);
+      throw new AppError(ErrorCodes.E_IRIS, `TaxBandits rejected ${errorRecords.length} record(s) at create`, 502, { raw, recordErrors });
     }
     const ref = body.SubmissionId ?? body.submissionId;
     if (!ref) throw new AppError(ErrorCodes.E_IRIS, 'TaxBandits response missing SubmissionId', 502, { raw });
@@ -159,8 +197,9 @@ export class TaxBanditsClient implements FilingProvider {
 
   /** Stored payloads are our provider-neutral shape; convert to their wire
    *  contract ({SubmissionManifest, ReturnHeader, ReturnData}) and route to the
-   *  form-typed endpoint. */
-  private toWire(payloadJson: string): { formType: string; body: string } {
+   *  form-typed endpoint. payeeRefs preserves the ReturnData order so a
+   *  SequenceId in an error response resolves back to our record. */
+  private toWire(payloadJson: string): { formType: string; body: string; payeeRefs: string[] } {
     let neutral: TaxBanditsPayload;
     try {
       neutral = JSON.parse(payloadJson) as TaxBanditsPayload;
@@ -168,7 +207,7 @@ export class TaxBanditsClient implements FilingProvider {
       throw new AppError(ErrorCodes.E_IRIS, 'TaxBandits payload is not valid JSON', 500);
     }
     const formType = neutral.records[0]?.formType ?? 'NEC';
-    return { formType, body: JSON.stringify(toTaxBanditsWire(neutral)) };
+    return { formType, body: JSON.stringify(toTaxBanditsWire(neutral)), payeeRefs: neutral.records.map((r) => r.payeeRef) };
   }
 
   /**
@@ -188,15 +227,21 @@ export class TaxBanditsClient implements FilingProvider {
   }
 
   async transmit(payloadJson: string): Promise<FilingTransmitResult> {
-    const { formType, body } = this.toWire(payloadJson);
+    const { formType, body, payeeRefs } = this.toWire(payloadJson);
     const res = await this.call(this.endpoints.formUrl(formType, 'Create'), {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body,
     });
     const raw = await res.text();
-    if (!res.ok) throw new AppError(ErrorCodes.E_IRIS, `TaxBandits create rejected (${res.status})`, 502, { raw });
-    const created = this.parseSubmission(raw);
+    if (!res.ok) {
+      // Carry the per-record reasons so the operator sees WHICH payee failed
+      // and why, not just the HTTP status.
+      const recordErrors = this.extractRecordErrors(raw, payeeRefs);
+      const detail = recordErrors.length ? ` — ${recordErrors.length} record error(s)` : '';
+      throw new AppError(ErrorCodes.E_IRIS, `TaxBandits create rejected (${res.status})${detail}`, 502, { raw, recordErrors });
+    }
+    const created = this.parseSubmission(raw, payeeRefs);
     try {
       await this.release(formType, created.providerRef);
     } catch {
@@ -210,15 +255,19 @@ export class TaxBanditsClient implements FilingProvider {
 
   /** Corrections/voids go through the correction endpoint but return the same ref shape. */
   async transmitCorrection(payloadJson: string): Promise<FilingTransmitResult> {
-    const { formType, body } = this.toWire(payloadJson);
+    const { formType, body, payeeRefs } = this.toWire(payloadJson);
     const res = await this.call(this.endpoints.formUrl(formType, 'Correction'), {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body,
     });
     const raw = await res.text();
-    if (!res.ok) throw new AppError(ErrorCodes.E_IRIS, `TaxBandits correction rejected (${res.status})`, 502, { raw });
-    const created = this.parseSubmission(raw);
+    if (!res.ok) {
+      const recordErrors = this.extractRecordErrors(raw, payeeRefs);
+      const detail = recordErrors.length ? ` — ${recordErrors.length} record error(s)` : '';
+      throw new AppError(ErrorCodes.E_IRIS, `TaxBandits correction rejected (${res.status})${detail}`, 502, { raw, recordErrors });
+    }
+    const created = this.parseSubmission(raw, payeeRefs);
     try {
       await this.release(formType, created.providerRef);
     } catch {

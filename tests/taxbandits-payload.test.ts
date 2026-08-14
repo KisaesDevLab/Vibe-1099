@@ -271,6 +271,79 @@ describe('TaxBandits release (Create → Transmit)', () => {
   });
 });
 
+// A 400 Create carries per-record validation failures under ErrorRecords,
+// identified by SequenceId only (RecordId is null — the record was never
+// created). Verbatim shape from a live sandbox rejection, 2026-08-14.
+describe('TaxBandits create rejection → per-record errors', () => {
+  const REJECTION = {
+    StatusCode: 400,
+    StatusName: 'BadRequest',
+    StatusMessage: 'Validation error has occurred',
+    SubmissionId: 'a38973d2-893a-4905-b71f-b88cab6a4e4e',
+    Form1099Type: 'NEC',
+    Form1099Records: {
+      SuccessRecords: null,
+      ErrorRecords: [
+        { SequenceId: '2', RecordId: null, Errors: [{ Id: 'F68-100329', Name: 'NECFormData.B1NEC', Message: 'Possible Duplicate. Another return has been created for the same recipient with the same amount.' }] },
+        { SequenceId: '3', RecordId: null, Errors: [{ Id: 'F68-100329', Name: 'NECFormData.B1NEC', Message: 'Possible Duplicate. Another return has been created for the same recipient with the same amount.' }] },
+        { SequenceId: '1', RecordId: null, Errors: [{ Id: 'F68-100342', Name: 'NECFormData.B4FedTaxWH', Message: 'Federal withheld should not be greater than 40 % of sum of B1 Nonemployee compensation and B3 Excess golden parachute payments' }] },
+      ],
+    },
+    Errors: null,
+  };
+
+  const rejectingClient = (): TaxBanditsClient => {
+    const fetchImpl = (async (url: unknown) => {
+      if (String(url).includes('tbsauth')) return new Response(JSON.stringify({ AccessToken: 'tok', ExpiresIn: 3600 }), { status: 200 });
+      return new Response(JSON.stringify(REJECTION), { status: 400 });
+    }) as typeof fetch;
+    return new TaxBanditsClient(
+      taxbanditsEndpoints('https://mock.test', 'https://mock.test/v2/tbsauth'),
+      { clientId: 'c', clientSecret: 's', userToken: 'u' },
+      fetchImpl,
+    );
+  };
+
+  const threeRecordPayload = () => {
+    const input = baseInput();
+    input.records = [
+      { ...input.records[0]!, recordId: 'rec-A' },
+      { ...input.records[0]!, recordId: 'rec-B' },
+      { ...input.records[0]!, recordId: 'rec-C' },
+    ];
+    return JSON.stringify(buildTaxBanditsPayload(input, 'sandbox'));
+  };
+
+  it('maps SequenceId back to our record ids and keeps every reason', async () => {
+    let caught: unknown;
+    try {
+      await rejectingClient().transmit(threeRecordPayload());
+    } catch (e) {
+      caught = e;
+    }
+    const err = caught as { message: string; details?: { recordErrors?: Array<{ recordId: string; code: string; message: string }> } };
+    expect(err.message).toContain('3 record error(s)');
+    const byRecord = Object.fromEntries((err.details?.recordErrors ?? []).map((e) => [e.recordId, e]));
+    // SequenceId is 1-based over the ReturnData we sent
+    expect(byRecord['rec-A']?.code).toBe('F68-100342');
+    expect(byRecord['rec-A']?.message).toContain('Federal withheld should not be greater than 40 %');
+    expect(byRecord['rec-B']?.code).toBe('F68-100329');
+    expect(byRecord['rec-C']?.code).toBe('F68-100329');
+    expect(byRecord['rec-B']?.message).toContain('Possible Duplicate');
+  });
+
+  it('prefixes the offending field so the operator sees which box failed', async () => {
+    let caught: unknown;
+    try {
+      await rejectingClient().transmit(threeRecordPayload());
+    } catch (e) {
+      caught = e;
+    }
+    const errs = (caught as { details?: { recordErrors?: Array<{ message: string }> } }).details?.recordErrors ?? [];
+    expect(errs.some((e) => e.message.startsWith('NECFormData.B4FedTaxWH:'))).toBe(true);
+  });
+});
+
 describe('TaxBandits auth assertion', () => {
   it('builds a three-segment HS256 JWS with the TaxBandits claim set (iss/sub/aud/iat, no exp)', () => {
     const jws = buildAssertion({ clientId: 'cid', clientSecret: 'secret', userToken: 'utok' }, 1_700_000_000_000);

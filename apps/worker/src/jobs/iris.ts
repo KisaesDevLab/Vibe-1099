@@ -26,7 +26,7 @@ import {
   type IrisPollJob,
   type IrisTransmitJob,
 } from '@vibe1099/core';
-import { applyAckToRecords, audit, notify } from '@vibe1099/core';
+import { applyAckToRecords, audit, notify, type RecordError } from '@vibe1099/core';
 import { deliveries, firms, formRecords, getDb, taxbanditsCostLedger, transmissions, users } from '@vibe1099/db';
 
 const log = createLogger('worker:iris');
@@ -145,12 +145,32 @@ export async function handleIrisTransmit(job: Job): Promise<void> {
   } catch (err) {
     const terminal = job.attemptsMade + 1 >= (job.opts.attempts ?? 1);
     if (terminal) {
+      // Providers reject per record (TaxBandits returns ErrorRecords on a 400
+      // Create). Persist those so the operator sees WHICH payee failed and why
+      // instead of a bare HTTP status; fall back to the summary message.
+      const details = (err as { details?: { recordErrors?: RecordError[] } }).details;
+      const recordErrors = details?.recordErrors ?? [];
+      const errorDetails = recordErrors.length
+        ? [
+            { recordId: '', code: 'TRANSMIT_FAILED', message: (err as Error).message },
+            ...recordErrors.map((e) => ({ recordId: e.recordId, code: e.code, message: e.message })),
+          ]
+        : [{ recordId: '', code: 'TRANSMIT_FAILED', message: (err as Error).message }];
       await db
         .update(transmissions)
         // Same shape as per-record ack errors (recordId empty = whole submission)
         // so every consumer can read one structure.
-        .set({ status: 'failed', errorDetails: [{ recordId: '', code: 'TRANSMIT_FAILED', message: (err as Error).message }] })
+        .set({ status: 'failed', errorDetails })
         .where(eq(transmissions.id, tx.id));
+      // Attach the reasons to the records themselves so they surface on the
+      // forms grid, not just in the transmission log.
+      for (const e of recordErrors) {
+        if (!e.recordId) continue;
+        await db
+          .update(formRecords)
+          .set({ recordErrors: [{ code: e.code, message: e.message }], updatedAt: new Date() })
+          .where(eq(formRecords.id, e.recordId));
+      }
       // records return to queued for a fresh compose after fix
       await db
         .update(formRecords)
