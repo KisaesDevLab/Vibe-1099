@@ -86,7 +86,7 @@ internal network before any staff session exists.
 
 ## Versioning & publishing
 
-The app version (`0.1.17`) is single-sourced across `package.json`, `appliance/manifest.yaml`
+The app version (`0.1.18`) is single-sourced across `package.json`, `appliance/manifest.yaml`
 (`version:`), and `APP_VERSION` (surfaced at `/api/about` and `/api/status`).
 
 `.github/workflows/release.yml` verifies the commit, builds the three images, pushes them to
@@ -94,15 +94,15 @@ GHCR — `ghcr.io/kisaesdevlab/vibe1099-{app,web,render}:<version>` (plus `lates
 the GitHub Release. Trigger it either by pushing a tag or from the Actions tab:
 
 ```bash
-git tag v0.1.17 && git push origin v0.1.17      # tag push
-# — or — Actions → Release → Run workflow → version = 0.1.17   (also creates the vX.Y.Z tag)
+git tag v0.1.18 && git push origin v0.1.18      # tag push
+# — or — Actions → Release → Run workflow → version = 0.1.18   (also creates the vX.Y.Z tag)
 ```
 
 The appliance can either **build locally** (default) or **pull the published images**. Compose
-image refs are `${VIBE1099_REGISTRY:-}vibe1099-<svc>:${VIBE1099_VERSION:-0.1.17}`, so:
+image refs are `${VIBE1099_REGISTRY:-}vibe1099-<svc>:${VIBE1099_VERSION:-0.1.18}`, so:
 
-- `VIBE1099_REGISTRY=` (empty, default) → builds `vibe1099-app:0.1.17` from source.
-- `VIBE1099_REGISTRY=ghcr.io/kisaesdevlab/` + `VIBE1099_VERSION=0.1.17` → `docker compose pull &&
+- `VIBE1099_REGISTRY=` (empty, default) → builds `vibe1099-app:0.1.18` from source.
+- `VIBE1099_REGISTRY=ghcr.io/kisaesdevlab/` + `VIBE1099_VERSION=0.1.18` → `docker compose pull &&
   docker compose up -d` deploys the exact published version (and the same vars pin a rollback).
 
 ## Console actions
