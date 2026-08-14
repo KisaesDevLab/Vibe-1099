@@ -130,6 +130,37 @@ async function retentionSweep(): Promise<void> {
 }
 
 /**
+ * Short-horizon purge of GENERATED documents (operator-set days, Settings →
+ * Advanced). Deliberately limited to artifacts that can be regenerated on
+ * demand from the records — print batches, report PDFs, export zips. Filing
+ * evidence (form/W-9 PDFs, IRIS XML + acks, provider payloads, MO .txt) is NOT
+ * touched here: those carry a multi-year retention floor (§6501, Pub 4557) and
+ * are disposed of only by the years-based retention sweep above.
+ * 0 / unset = disabled.
+ */
+const PURGEABLE_KINDS = ['batch_pdf', 'report_pdf', 'export_zip'] as const;
+
+async function purgeGeneratedDocuments(): Promise<void> {
+  const db = getDb();
+  const days = await settingNumber('document_retention_days', 0);
+  if (!days || days < 1) return;
+  const cutoff = new Date(Date.now() - days * 86_400_000);
+  const deleted = await db
+    .delete(blobs)
+    .where(and(lt(blobs.createdAt, cutoff), inArray(blobs.kind, [...PURGEABLE_KINDS])))
+    .returning({ id: blobs.id });
+  if (deleted.length) {
+    log.info({ count: deleted.length, days }, 'generated-document purge removed expired PDFs/zips');
+    await audit(db, {
+      actorType: 'system',
+      action: 'documents.purge',
+      entityType: 'blob',
+      detail: { deletedCount: deleted.length, retentionDays: days, kinds: PURGEABLE_KINDS },
+    });
+  }
+}
+
+/**
  * Poll pending TaxBandits TIN-match submissions for their Success/Failed verdict
  * (async batch — up to 24h). Groups open pending rows by (firm, submission) to
  * minimize calls; on a mismatch, flags the recipient's W-9 status stale.
@@ -183,5 +214,6 @@ export async function handleHousekeepingJob(_job: Job): Promise<void> {
   await sendW9Reminders();
   await markStaleW9s();
   await pollPendingTinMatches();
+  await purgeGeneratedDocuments();
   await retentionSweep();
 }

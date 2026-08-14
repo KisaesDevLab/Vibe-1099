@@ -268,6 +268,33 @@ export function Settings() {
     }
   };
 
+  // Retention fields are free-text while editing so a half-typed number never
+  // saves; they seed from settings once loaded.
+  const [docDays, setDocDays] = useState('');
+  const [retYears, setRetYears] = useState('');
+  useEffect(() => {
+    setDocDays(String((settings['document_retention_days'] as number) ?? 0));
+    setRetYears(String((settings['data_retention_years'] as number) ?? 4));
+  }, [settings]);
+  const saveDocDays = async () => {
+    const n = Number(docDays);
+    if (!Number.isInteger(n) || n < 0 || n > 3650) return setError('Days must be a whole number between 0 and 3650 (0 = keep).');
+    try {
+      await api.put('/api/admin/settings/document_retention_days', { value: n });
+      dialogs.toast(n === 0 ? 'Purge disabled — generated files kept until the retention window.' : `Generated PDFs/zips will be deleted after ${n} day(s).`, 'success');
+      loadAll();
+    } catch (err) { setError(err instanceof ApiError ? err.message : String(err)); }
+  };
+  const saveRetYears = async () => {
+    const n = Number(retYears);
+    if (!Number.isInteger(n) || n < 4 || n > 100) return setError('Retention must be a whole number of years between 4 and 100.');
+    try {
+      await api.put('/api/admin/settings/data_retention_years', { value: n });
+      dialogs.toast(`Long-term retention set to ${n} year(s).`, 'success');
+      loadAll();
+    } catch (err) { setError(err instanceof ApiError ? err.message : String(err)); }
+  };
+
   const [sandboxPrior, setSandboxPrior] = useState(false);
   const loadSandboxSeed = async () => {
     const y = filingYears.current;
@@ -679,8 +706,8 @@ export function Settings() {
             }}>Save SMS settings</button>
           </div>
           <h2>Message templates</h2>
-          <p className="muted">Placeholders use {'{{var}}'}. Links always carry opaque tokens — never a TIN or a name. Edit as JSON:</p>
-          <TemplateEditor disabled={!isAdmin} value={settings['message_templates']} onSave={(v) => saveSetting('message_templates', v)} />
+          <p className="muted">Placeholders use {'{{var}}'}. Links always carry opaque tokens — never a TIN or a name.</p>
+          <MessageTemplates disabled={!isAdmin} value={settings['message_templates']} onSave={(v) => saveSetting('message_templates', v)} />
         </div>
       )}
 
@@ -863,6 +890,44 @@ export function Settings() {
 
       {tab === 'advanced' && isAdmin && (
         <div className="panel">
+          <h2 style={{ marginTop: 0 }}>Stored document cleanup</h2>
+          <p className="muted">
+            Delete generated <b>PDFs and zip files</b> older than this many days — print batches, report PDFs, and export zips. These are
+            regenerated on demand, so purging them only reclaims disk. Leave <b>0</b> to keep them until the long-term retention window
+            below. Filing evidence (form &amp; W-9 PDFs, IRS XML and acknowledgements, provider payloads, MO .txt) is <b>never</b> purged on
+            this schedule — it carries a multi-year retention floor and is disposed of only by the retention sweep. Runs hourly; deletions
+            are recorded in the audit log.
+          </p>
+          <div className="row">
+            <div className="field" style={{ maxWidth: 220 }}>
+              <label>Delete generated PDFs/zips after (days)</label>
+              <input
+                type="number"
+                min={0}
+                max={3650}
+                value={docDays}
+                onChange={(e) => setDocDays(e.target.value)}
+                placeholder="0 = keep"
+              />
+            </div>
+            <button className="secondary" style={{ alignSelf: 'flex-end' }} onClick={() => void saveDocDays()}>Save</button>
+            <div className="field" style={{ maxWidth: 260 }}>
+              <label>Long-term retention (years, min 4)</label>
+              <input
+                type="number"
+                min={4}
+                max={100}
+                value={retYears}
+                onChange={(e) => setRetYears(e.target.value)}
+              />
+            </div>
+            <button className="secondary" style={{ alignSelf: 'flex-end' }} onClick={() => void saveRetYears()}>Save</button>
+          </div>
+        </div>
+      )}
+
+      {tab === 'advanced' && isAdmin && (
+        <div className="panel">
           <h2 style={{ marginTop: 0 }}>Sandbox test data</h2>
           <p className="muted">
             Loads 10 test payers + 30 recipients with TY{filingYears.current} draft forms (your current processing year — change it under
@@ -888,6 +953,92 @@ export function Settings() {
           <h2 style={{ marginTop: 0, color: '#b91c1c' }}>Danger zone</h2>
           <p className="muted">Remove all test data before starting a real filing season. Deletes every payer, recipient, form, transmission, delivery, batch, W-9, and generated document for this firm. Keeps your firm settings, e-file credentials, users, and the audit log.</p>
           <button className="danger" onClick={resetTestData}>Remove test data</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+interface MsgTemplate { key: string; channel: 'email' | 'sms' | 'both'; subject: string; body: string; vars: string[] }
+
+/**
+ * Message templates: edit the shipped messages and ADD your own. A template
+ * only sends when something references its key, so a new message is either a
+ * custom key you trigger yourself or an override of a shipped key. Saving
+ * writes the whole array to app_settings.message_templates; keys absent from
+ * the array fall back to the shipped defaults at send time.
+ */
+function MessageTemplates({ value, onSave, disabled }: { value: unknown; onSave: (v: unknown) => void; disabled: boolean }) {
+  const initial = Array.isArray(value) ? (value as MsgTemplate[]) : [];
+  const [rows, setRows] = useState<MsgTemplate[]>(initial);
+  const [raw, setRaw] = useState(false);
+  const [err, setErr] = useState('');
+  useEffect(() => { setRows(Array.isArray(value) ? (value as MsgTemplate[]) : []); }, [value]);
+
+  const set = (i: number, patch: Partial<MsgTemplate>) => setRows((rs) => rs.map((r, j) => (j === i ? { ...r, ...patch } : r)));
+  const addMessage = () =>
+    setRows((rs) => [...rs, { key: '', channel: 'both', subject: '', body: '', vars: [] }]);
+  const remove = (i: number) => setRows((rs) => rs.filter((_, j) => j !== i));
+
+  const save = () => {
+    const keys = rows.map((r) => r.key.trim());
+    if (keys.some((k) => !k)) return setErr('Every message needs a key (e.g. season_kickoff).');
+    if (new Set(keys).size !== keys.length) return setErr('Message keys must be unique.');
+    if (rows.some((r) => !r.body.trim())) return setErr('Every message needs a body.');
+    // vars are derived from the body so a placeholder can never be undeclared
+    const cleaned = rows.map((r) => ({
+      ...r,
+      key: r.key.trim(),
+      vars: [...new Set([...r.body.matchAll(/\{\{(\w+)\}\}/g)].map((m) => m[1]!).concat([...r.subject.matchAll(/\{\{(\w+)\}\}/g)].map((m) => m[1]!)))],
+    }));
+    setErr('');
+    onSave(cleaned);
+  };
+
+  if (raw) {
+    return (
+      <div>
+        <button className="secondary small" style={{ marginBottom: 6 }} onClick={() => setRaw(false)}>← Back to the editor</button>
+        <TemplateEditor disabled={disabled} value={rows} onSave={onSave} />
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      {err && <div className="error-box">{err}</div>}
+      {!rows.length && (
+        <p className="muted">
+          Using the shipped defaults. <b>Add a message</b> to override one (use its exact key, e.g. <span className="mono">client_invite</span>,
+          <span className="mono"> client_invite_reminder</span>, <span className="mono">form_available</span>, <span className="mono">w9_request</span>)
+          or to create a new one of your own.
+        </p>
+      )}
+      {rows.map((t, i) => (
+        <div className="panel" key={i} style={{ padding: 8, marginBottom: 8 }}>
+          <div className="row">
+            <div className="field"><label>Key</label>
+              <input className="mono" disabled={disabled} value={t.key} placeholder="e.g. season_kickoff" onChange={(e) => set(i, { key: e.target.value })} /></div>
+            <div className="field"><label>Channel</label>
+              <select disabled={disabled} value={t.channel} onChange={(e) => set(i, { channel: e.target.value as MsgTemplate['channel'] })}>
+                <option value="both">Email + SMS</option><option value="email">Email only</option><option value="sms">SMS only</option>
+              </select></div>
+            <div className="field grow"><label>Subject (email)</label>
+              <input disabled={disabled} value={t.subject} onChange={(e) => set(i, { subject: e.target.value })} /></div>
+            {!disabled && <button className="small danger" style={{ alignSelf: 'flex-end' }} onClick={() => remove(i)}>Remove</button>}
+          </div>
+          <div className="field"><label>Message</label>
+            <textarea rows={3} disabled={disabled} value={t.body} onChange={(e) => set(i, { body: e.target.value })} /></div>
+          <p className="muted" style={{ margin: 0, fontSize: 12 }}>
+            Placeholders found: {[...new Set([...t.body.matchAll(/\{\{(\w+)\}\}/g)].map((m) => m[1]))].join(', ') || 'none'} — never put a TIN in a message.
+          </p>
+        </div>
+      ))}
+      {!disabled && (
+        <div className="row">
+          <button className="secondary" onClick={addMessage}>+ Add a message</button>
+          <button onClick={save} disabled={!rows.length}>Save messages</button>
+          <button className="secondary" onClick={() => setRaw(true)}>Edit as JSON</button>
         </div>
       )}
     </div>

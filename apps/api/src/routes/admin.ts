@@ -331,6 +331,10 @@ adminRouter.put(
       z.object({ years: z.array(zYear).min(1), current: zYear }).parse(value);
     } else if (key === 'data_retention_years') {
       z.number().int().min(4).max(100).parse(value);
+    } else if (key === 'document_retention_days') {
+      // 0 = disabled. Only regenerable documents are purged on this horizon
+      // (see purgeGeneratedDocuments) — filing evidence keeps its years floor.
+      z.number().int().min(0).max(3650).parse(value);
     }
     await setSetting(key, value);
     res.locals['audit'] = { action: 'settings.update', entityType: 'app_settings', entityId: key };
