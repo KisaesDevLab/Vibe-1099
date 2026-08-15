@@ -25,6 +25,9 @@ pnpm dev:api | dev:worker | dev:web
 pnpm --filter @vibe1099/worker mock-iris   # mock IRS on :8299 (IRIS_MOCK_BASE_URL)
 pnpm --filter @vibe1099/worker mock-tax1099      # mock Tax1099 on :8300 (TAX1099_MOCK_BASE_URL)
 pnpm --filter @vibe1099/worker mock-taxbandits   # mock TaxBandits on :8301 (TAXBANDITS_MOCK_BASE_URL)
+pnpm qa:taxbandits    # e2e chain against that mock: OAuth -> Create -> Transmit(release)
+                      # -> Status -> ack, credits, TIN match. Catches integration regressions
+                      # (e.g. the missing mandatory Transmit call) that unit tests can't.
 docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d postgres redis render
 #   dev ports: postgres :55432, redis :56379, render :8212
 ```

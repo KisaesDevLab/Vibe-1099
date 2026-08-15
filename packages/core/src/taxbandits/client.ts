@@ -314,12 +314,16 @@ export class TaxBanditsClient implements FilingProvider {
       return { status: 'Processing', errors: [], raw };
     }
 
-    // Per-record status for the operator (why is this "stuck"?).
-    const perRecord = [...success, ...failed].map((r) => ({
+    // Per-record status for the operator (why is this "stuck"?). Built from the
+    // two buckets separately — an identity lookup back into `failed` would be
+    // quadratic on a 500-record submission and breaks if the shapes are ever
+    // copied rather than referenced.
+    const describe = (r: TbStatusRecord, fallback: string) => ({
       recordId: r.PayeeRef ?? r.RecordId ?? '',
-      status: (r.FederalReturn?.Status ?? (failed.includes(r) ? 'ERROR' : 'UNKNOWN')).trim(),
+      status: (r.FederalReturn?.Status ?? fallback).trim(),
       ...(r.ScheduleFiling?.ScheduledOn ? { scheduledOn: r.ScheduleFiling.ScheduledOn } : {}),
-    }));
+    });
+    const perRecord = [...success.map((r) => describe(r, 'UNKNOWN')), ...failed.map((r) => describe(r, 'ERROR'))];
 
     const errors: RecordError[] = [];
     const buckets = { accepted: 0, awe: 0, rejected: 0, processing: 0 };

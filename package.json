@@ -19,6 +19,7 @@
     "migrate": "tsx packages/db/src/migrate-cli.ts",
     "seed": "pnpm --filter @vibe1099/api exec tsx src/seed.ts",
     "seed:sandbox": "pnpm --filter @vibe1099/api exec tsx src/seed-sandbox.ts",
+    "qa:taxbandits": "tsx scripts/qa-taxbandits-e2e.mts",
     "bootstrap:firm": "pnpm --filter @vibe1099/api exec tsx src/ops/bootstrap-firm.ts",
     "build:web": "pnpm --filter @vibe1099/web build"
   },
