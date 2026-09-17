@@ -107,6 +107,32 @@ export const passwordResets = pgTable('password_resets', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
+/**
+ * Identity behind an SSO-born staff session (Vibe Auth). Staff sessions live in
+ * Redis and carry no identity data; this row maps HMAC(v1099_sid) → the OIDC
+ * issuer/subject/IdP session id so RP-initiated and back-channel logout can find
+ * it. Deleted with the session; cascades with the user.
+ */
+export const authSessionsOidc = pgTable(
+  'auth_sessions_oidc',
+  {
+    sidHash: text('sid_hash').primaryKey(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    issuer: text('issuer').notNull(),
+    subject: text('subject').notNull(),
+    oidcSid: text('oidc_sid'),
+    idToken: text('id_token'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('auth_sessions_oidc_user_id_idx').on(t.userId),
+    index('auth_sessions_oidc_issuer_subject_idx').on(t.issuer, t.subject),
+    index('auth_sessions_oidc_oidc_sid_idx').on(t.oidcSid),
+  ],
+);
+
 export const payers = pgTable('payers', {
   id: uuid('id').primaryKey().defaultRandom(),
   firmId: uuid('firm_id')

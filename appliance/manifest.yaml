@@ -1,4 +1,9 @@
 # Vibe Appliance manifest fragment — vibe-1099
+#
+# LEGACY (Addendum A, YAML shape). The console-shape manifest at
+# .appliance/manifest.json is authoritative since the Vibe Auth (SSO) integration
+# and carries the `requires`/`sso` blocks and the /auth/* matcher; this file is
+# kept for the route/port/backup summary only.
 id: vibe-1099
 name: Vibe 1099
 description: 1099 preparation, recipient delivery, and IRS IRIS A2A e-filing

@@ -110,6 +110,20 @@ backup/restore runbook + restore test script, usage metering (payer count/portal
 WISP appendix, load-test script (scripts/load-test.md). 🟡 Full 5k-record load test not executed
 in this environment.
 
+## Phase 8 (Vibe suite) — step 5: single sign-on via Vibe Auth
+- ✅ `@kisaesdevlab/vibe-auth` engine on `/auth/*` (basePath ""), Redis-session adapter flagged `sso`,
+  identity in `auth_sessions_oidc`, back-channel logout → `destroyAllUserSessions`
+- ✅ User adapter (JIT into the sole firm, unusable hash), audit sink → `audit_log`, break-glass CLI adapter
+- ✅ Login guard (`oidc_only` → break-glass only, product error envelope) + `afterLocalLogin` audit
+- ✅ SPA: `LoginPanel` wrap, `/login/local`, SSO-aware sign-out, Settings → Authentication tab
+- ✅ Migration 0013, nginx/Vite `/auth` proxy, Docker BuildKit secret for GitHub Packages, CI/release wiring
+- ✅ `.appliance/manifest.json` (`requires: identity`, `sso` block, `/auth/*` matcher); `appliance/manifest.yaml` marked legacy
+- ✅ `test/sso-e2e.mjs` + fake IdP + `sso-e2e.yml` workflow; `docs/SSO.md` operator note
+- ⬜ Vibe-Appliance repo: mirror `requires`/`sso`/matcher into `console/manifests/vibe-1099.json`,
+  `VIBE_OIDC_REQUIRE_MFA_AMR=true` in `env-templates/per-app/vibe-1099.env.tmpl`, then
+  `sudo vibe identity register vibe-1099` and the LAN-box sign-in in `both` / `oidc_only`
+- ⬜ One-time: grant this repo Actions read access to the `vibe-auth` package (GitHub Packages) so CI installs
+
 ## Addendum A — Appliance integration
 - ✅ Manifest fragment (appliance/manifest.yaml), compose, ports registered
 - ✅ Caddy route + split-exposure doc · ✅ compatibility addendum · ✅ secrets via env/secret store

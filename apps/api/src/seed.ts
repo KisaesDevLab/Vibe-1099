@@ -9,7 +9,7 @@ import { hash as argonHash } from '@node-rs/argon2';
 import { createLogger, getCrypto, loadEnv } from '@vibe1099/core';
 import { closeDb, firms, formRecords, getDb, getPool, payers, recipients, runMigrations, users } from '@vibe1099/db';
 import { tinLast4 } from '@vibe1099/shared';
-import { ARGON_OPTS } from './routes/auth.js';
+import { ARGON_OPTS } from './lib/argon.js';
 
 const log = createLogger('seed');
 

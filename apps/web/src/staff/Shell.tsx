@@ -10,6 +10,8 @@ export interface Me {
   role: 'admin' | 'preparer' | 'reviewer';
   email: string;
   name: string;
+  /** Session minted by a Vibe Auth (SSO) sign-in rather than a local password. */
+  sso?: boolean;
 }
 
 export function StaffShell() {
@@ -31,6 +33,12 @@ export function StaffShell() {
   if (!me) return null;
 
   const logout = async () => {
+    if (me.sso) {
+      // Vibe Auth engine ends the session and its identity row; ?local=1 keeps the
+      // firm-wide IdP session (signing out of 1099 is not signing out of the suite).
+      window.location.assign('/auth/oidc/logout?local=1');
+      return;
+    }
     await api.post('/api/auth/logout');
     navigate('/login');
   };

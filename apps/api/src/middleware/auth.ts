@@ -38,6 +38,45 @@ export async function destroySession(sid: string): Promise<void> {
   await getRedis().del(`${SESSION_PREFIX}${sid}`);
 }
 
+const cookieOpts = (secure: boolean) => ({
+  httpOnly: true,
+  sameSite: 'lax' as const,
+  secure,
+  path: '/',
+});
+
+/** Set the staff session + CSRF cookies exactly as the password login does. Shared
+ *  with the Vibe Auth session adapter so an SSO login is indistinguishable downstream. */
+export function setSessionCookies(res: Response, sid: string): void {
+  const env = loadEnv();
+  const secure = env.NODE_ENV === 'production' && env.APP_BASE_URL.startsWith('https');
+  res.cookie(SESSION_COOKIE, sid, cookieOpts(secure));
+  res.cookie(CSRF_COOKIE, getCrypto().newToken(16), { ...cookieOpts(secure), httpOnly: false });
+}
+
+export function clearSessionCookies(res: Response): void {
+  res.clearCookie(SESSION_COOKIE);
+  res.clearCookie(CSRF_COOKIE);
+}
+
+/** Resolve the staff session behind the request's cookie without side effects
+ *  (no CSRF check, no rolling refresh); enforces the absolute lifetime cap. */
+export async function readStaffSession(req: Request): Promise<{ sid: string; session: StaffSession } | null> {
+  const sid = (req.cookies as Record<string, string> | undefined)?.[SESSION_COOKIE];
+  if (!sid) return null;
+  const raw = await getRedis().get(`${SESSION_PREFIX}${sid}`);
+  if (!raw) return null;
+  const session = JSON.parse(raw) as StaffSession;
+  // Absolute lifetime cap: a rolling inactivity TTL alone lets a stolen
+  // session live indefinitely if used often enough. Bound it regardless.
+  const maxAgeMs = loadEnv().SESSION_ABSOLUTE_HOURS * 3_600_000;
+  if (session.createdAt && Date.now() - session.createdAt > maxAgeMs) {
+    await destroySession(sid);
+    return null;
+  }
+  return { sid, session };
+}
+
 export async function destroyAllUserSessions(userId: string): Promise<void> {
   // sessions are short-lived (inactivity TTL); brute scan acceptable at appliance scale
   const redis = getRedis();
@@ -52,19 +91,10 @@ export async function destroyAllUserSessions(userId: string): Promise<void> {
 export function requireStaff(...roles: UserRole[]) {
   return async (req: Request, _res: Response, next: NextFunction): Promise<void> => {
     try {
-      const sid = (req.cookies as Record<string, string>)[SESSION_COOKIE];
-      if (!sid) throw AppError.auth();
-      const raw = await getRedis().get(`${SESSION_PREFIX}${sid}`);
-      if (!raw) throw new AppError(ErrorCodes.E_TOKEN_EXPIRED, 'Session expired — sign in again', 401);
-      const session = JSON.parse(raw) as StaffSession;
-
-      // Absolute lifetime cap: a rolling inactivity TTL alone lets a stolen
-      // session live indefinitely if used often enough. Bound it regardless.
-      const maxAgeMs = loadEnv().SESSION_ABSOLUTE_HOURS * 3_600_000;
-      if (session.createdAt && Date.now() - session.createdAt > maxAgeMs) {
-        await destroySession(sid);
-        throw new AppError(ErrorCodes.E_TOKEN_EXPIRED, 'Session expired — sign in again', 401);
-      }
+      if (!(req.cookies as Record<string, string> | undefined)?.[SESSION_COOKIE]) throw AppError.auth();
+      const found = await readStaffSession(req);
+      if (!found) throw new AppError(ErrorCodes.E_TOKEN_EXPIRED, 'Session expired — sign in again', 401);
+      const { sid, session } = found;
 
       // CSRF double-submit on mutations
       if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {

@@ -5,6 +5,13 @@ on:
     branches: [main, master]
   pull_request:
 
+# @kisaesdevlab/vibe-auth (single sign-on) is served from GitHub Packages;
+# GITHUB_TOKEN can read it once the package grants this repository Actions
+# access (Vibe-Auth → Packages → vibe-auth → Manage Actions access).
+permissions:
+  contents: read
+  packages: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -17,7 +24,11 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
+          registry-url: https://npm.pkg.github.com
+          scope: '@kisaesdevlab'
       - run: pnpm install --frozen-lockfile
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Typecheck
         run: pnpm typecheck
       - name: Lint
@@ -32,8 +43,16 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: Build app image
-        run: docker build -f Dockerfile.node -t vibe1099-app:ci .
+        run: docker build --secret id=NODE_AUTH_TOKEN,env=NODE_AUTH_TOKEN -f Dockerfile.node -t vibe1099-app:ci .
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Build render image
         run: docker build -t vibe1099-render:ci ./render
       - name: Build web image
-        run: docker build -t vibe1099-web:ci ./apps/web
+        run: docker build --secret id=NODE_AUTH_TOKEN,env=NODE_AUTH_TOKEN -t vibe1099-web:ci ./apps/web
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Break-glass CLI resolves inside the app image (as USER node)
+        run: |
+          docker run --rm --entrypoint sh vibe1099-app:ci -c \
+            'ls apps/api/node_modules/@kisaesdevlab/vibe-auth/dist/cli.js >/dev/null && node --import tsx apps/api/node_modules/@kisaesdevlab/vibe-auth/dist/cli.js --help >/dev/null && echo cli-ok'
