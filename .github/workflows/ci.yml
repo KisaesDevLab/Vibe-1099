@@ -53,6 +53,8 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Break-glass CLI resolves inside the app image (as USER node)
+        # `--help` prints its usage line and exits 2 by design, so assert on
+        # the output: a module-resolution failure prints a stack, not usage.
         run: |
           docker run --rm --entrypoint sh vibe1099-app:ci -c \
-            'ls apps/api/node_modules/@kisaesdevlab/vibe-auth/dist/cli.js >/dev/null && node --import tsx apps/api/node_modules/@kisaesdevlab/vibe-auth/dist/cli.js --help >/dev/null && echo cli-ok'
+            'out="$(node --import tsx apps/api/node_modules/@kisaesdevlab/vibe-auth/dist/cli.js --help 2>&1)"; echo "$out"; echo "$out" | grep -q "^usage: vibe-auth breakglass" && echo cli-ok'
