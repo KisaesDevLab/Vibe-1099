@@ -1,0 +1,62 @@
+name: SSO end-to-end
+
+# Vibe Auth (single sign-on) exit gate: boots the real API against a scratch
+# Postgres + Redis and the fake OpenID provider in test/fake-idp.mjs, and walks
+# every scenario the integration plan names (test/sso-e2e.mjs).
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  sso-e2e:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # @kisaesdevlab/vibe-auth is served from GitHub Packages; GITHUB_TOKEN
+      # can read it once the package grants this repository Actions access
+      # (Vibe-Auth package settings -> Manage Actions access).
+      packages: read
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: vibe1099
+          POSTGRES_PASSWORD: vibe1099
+          POSTGRES_DB: postgres
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U vibe1099"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7
+        ports:
+          - 56379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.9
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: pnpm
+          registry-url: https://npm.pkg.github.com
+          scope: '@kisaesdevlab'
+      - run: pnpm install --frozen-lockfile
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: SSO end-to-end (fake IdP)
+        run: pnpm test:sso-e2e
+        env:
+          E2E_PG_ADMIN_URL: postgres://vibe1099:vibe1099@127.0.0.1:55432/postgres
+          E2E_REDIS_URL: redis://127.0.0.1:56379/9

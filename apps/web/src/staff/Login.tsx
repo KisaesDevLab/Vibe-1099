@@ -1,8 +1,15 @@
 import { FormEvent, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { LoginPanel } from '@kisaesdevlab/vibe-auth/react';
 import { api, ApiError } from '../api';
 
-export function Login() {
+/**
+ * Staff sign-in. The Vibe Auth LoginPanel wraps the local form: in `local` mode it
+ * renders the form alone (no visual change), in `both` it adds the SSO button, in
+ * `oidc_only` it hides the form — except on the hidden /login/local route
+ * (`breakglass`), which keeps the password form for the break-glass admin.
+ */
+export function Login({ breakglass = false }: { breakglass?: boolean } = {}) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [totp, setTotp] = useState('');
@@ -38,6 +45,12 @@ export function Login() {
         <div className="portal-brand">Vibe 1099 — Staff Sign In</div>
         {error && <div className="error-box">{error}</div>}
         {resetSent && <div className="ok-box">If that account exists, a reset link was emailed.</div>}
+        <LoginPanel
+          basePath=""
+          returnTo="/"
+          breakglass={breakglass}
+          classNames={{ button: 'btn sso-button', divider: 'sso-divider muted', note: 'muted' }}
+        >
         <form onSubmit={submit}>
           <div className="field">
             <label>Email</label>
@@ -58,6 +71,7 @@ export function Login() {
         <p className="muted" style={{ marginTop: 12 }}>
           <a onClick={requestReset} style={{ cursor: 'pointer' }}>Forgot password?</a>
         </p>
+        </LoginPanel>
       </div>
     </div>
   );

@@ -14,7 +14,8 @@ export class ApiError extends Error {
   }
 }
 
-function csrfToken(): string {
+/** The v1099_csrf double-submit token (readable cookie); also handed to the Vibe Auth settings page. */
+export function csrfToken(): string {
   return document.cookie.match(/(?:^|;\s*)v1099_csrf=([^;]+)/)?.[1] ?? '';
 }
 

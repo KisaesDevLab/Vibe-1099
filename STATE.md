@@ -1,5 +1,20 @@
 # STATE — build journal
 
+## 2026-09-17 — Phase 8 step 5: single sign-on via `@kisaesdevlab/vibe-auth`
+
+Staff realm only (recipient/client portals untouched). Verified on this machine:
+
+- `pnpm typecheck` / `pnpm lint` clean; `pnpm test` 163/163 (+ `tests/vibe-auth-users.test.ts`)
+- `pnpm --filter @vibe1099/web build` clean (LoginPanel + AuthSettingsPage from the package's React entry)
+- `pnpm test:sso-e2e` 14/14 against docker postgres/redis + the fake IdP: status local/both, PKCE login → JIT
+  (role map, both cookies, CSRF-protected POST from the SSO session), email link + role sync, unverified email
+  denied, `/auth/settings` 403/200 + CSRF on PUT, `oidc_only` boot refusal without break-glass, RP-initiated and
+  `?local=1` logout, back-channel logout ending every Redis session (replay refused), fresh login after it,
+  break-glass CLI (the exact in-image `node --import tsx … cli.js` command) + local login + audit,
+  `oidc_only` guard on `/api/auth/login` while portals and the TaxBandits webhook probe still answer
+- Migration `0013_vibe_auth.sql` (package SQL verbatim + `auth_sessions_oidc`) applied idempotently on boot
+- Deviations from the Vibe-Auth plan and the appliance-side follow-ups are listed in `docs/SSO.md`
+
 ## 2026-07-02 — full autonomous build (Phases 1–12 + Addendum A)
 
 Built in one pass from `VIBE_1099_BUILD_PLAN.md`. Verified live on this machine:

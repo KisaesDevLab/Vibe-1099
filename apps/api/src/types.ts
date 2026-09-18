@@ -11,6 +11,8 @@ export interface StaffSession {
   name: string;
   createdAt: number;
   lastSeenAt: number;
+  /** True when the session was minted by a Vibe Auth (SSO) login rather than a local password. */
+  sso?: boolean;
 }
 
 export interface ClientScope {

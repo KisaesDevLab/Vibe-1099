@@ -11,7 +11,9 @@ import { audit, getCrypto, getQueue, getRedis, loadEnv, QUEUE_NAMES, type Delive
 import { getDb, passwordResets, users } from '@vibe1099/db';
 import { h } from '../middleware/error.js';
 import { rateLimit, checkLockout, recordFailure, clearFailures } from '../middleware/rate-limit.js';
-import { createSession, destroyAllUserSessions, destroySession, requireStaff, CSRF_COOKIE, SESSION_COOKIE } from '../middleware/auth.js';
+import { clearSessionCookies, createSession, destroyAllUserSessions, destroySession, requireStaff, setSessionCookies, SESSION_COOKIE } from '../middleware/auth.js';
+import { ARGON_OPTS } from '../lib/argon.js';
+import { BREAKGLASS_USERNAME, getVibeAuth, localLoginIdentifier } from '../lib/vibeAuth.js';
 import { generateTotpSecret, otpauthUrl, verifyTotp, verifyTotpCounter } from '../services/totp.js';
 
 /** Reject a TOTP counter already consumed by this user (replay guard, 90s TTL). */
@@ -20,16 +22,9 @@ async function consumeTotpCounter(userId: string, counter: number): Promise<bool
   return set === 'OK';
 }
 
-export const ARGON_OPTS = { memoryCost: 19456, timeCost: 2, parallelism: 1 } as const; // argon2id OWASP baseline
+export { ARGON_OPTS }; // argon2id OWASP baseline (lib/argon.ts) — re-exported for seed/bootstrap
 
 export const authRouter = Router();
-
-const cookieOpts = (secure: boolean) => ({
-  httpOnly: true,
-  sameSite: 'lax' as const,
-  secure,
-  path: '/',
-});
 
 authRouter.post(
   '/login',
@@ -39,6 +34,14 @@ authRouter.post(
     const db = getDb();
     const lockKey = `login:${input.email.toLowerCase()}`;
     await checkLockout(lockKey, 8, 900);
+
+    // Vibe Auth (SSO) policy: in oidc_only mode only the break-glass admin may use a
+    // password (I5). Kept inline so the product's error envelope is preserved.
+    const identifier = localLoginIdentifier(input.email);
+    const policy = getVibeAuth().localLoginAllowed(identifier);
+    if (!policy.allowed) {
+      throw new AppError(ErrorCodes.E_FORBIDDEN, 'Local sign-in is disabled; use single sign-on.', 403, { localLoginDisabled: true });
+    }
 
     const user = await db.query.users.findFirst({ where: eq(users.email, input.email.toLowerCase()) });
     const dummyHash = '$argon2id$v=19$m=19456,t=2,p=1$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
@@ -71,10 +74,7 @@ authRouter.post(
     });
     await db.update(users).set({ lastLoginAt: new Date() }).where(eq(users.id, user.id));
 
-    const env = loadEnv();
-    const secure = env.NODE_ENV === 'production' && env.APP_BASE_URL.startsWith('https');
-    res.cookie(SESSION_COOKIE, sid, cookieOpts(secure));
-    res.cookie(CSRF_COOKIE, getCrypto().newToken(16), { ...cookieOpts(secure), httpOnly: false });
+    setSessionCookies(res, sid);
 
     await audit(getDb(), {
       firmId: user.firmId,
@@ -83,6 +83,13 @@ authRouter.post(
       action: 'auth.login',
       entityType: 'user',
       entityId: user.id,
+      ip: req.ip,
+    });
+    // vibe.auth.breakglass.used when this was the break-glass admin (D12 audit)
+    await getVibeAuth().afterLocalLogin({
+      userId: user.id,
+      email: user.email,
+      username: identifier === BREAKGLASS_USERNAME ? BREAKGLASS_USERNAME : undefined,
       ip: req.ip,
     });
 
@@ -95,8 +102,7 @@ authRouter.post(
   h(async (req, res) => {
     const sid = (req.cookies as Record<string, string>)[SESSION_COOKIE];
     if (sid) await destroySession(sid);
-    res.clearCookie(SESSION_COOKIE);
-    res.clearCookie(CSRF_COOKIE);
+    clearSessionCookies(res);
     res.json({ ok: true });
   }),
 );

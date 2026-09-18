@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useOutletContext } from 'react-router-dom';
-import { api, ApiError, downloadBlob } from '../api';
+import { AuthSettingsPage } from '@kisaesdevlab/vibe-auth/react';
+import { api, ApiError, csrfToken, downloadBlob } from '../api';
 import { useDialogs } from '../components/Dialogs';
 import { Modal } from '../components/Modal';
 import { refreshTaxYears } from '../components/useTaxYears';
@@ -56,7 +57,7 @@ interface AuditEntry { id: number; createdAt: string; actorType: string; actorId
 export function Settings() {
   const me = useOutletContext<Me>();
   const dialogs = useDialogs();
-  const [tab, setTab] = useState<'firm' | 'efile' | 'delivery' | 'users' | 'network' | 'advanced'>('firm');
+  const [tab, setTab] = useState<'firm' | 'efile' | 'delivery' | 'users' | 'authentication' | 'network' | 'advanced'>('firm');
   const [firm, setFirm] = useState<Firm | null>(null);
   const [iris, setIris] = useState<IrisSettings | null>(null);
   const [users, setUsers] = useState<User[]>([]);
@@ -400,6 +401,7 @@ export function Settings() {
           ['efile', 'IRS e-file'],
           ['delivery', 'Delivery & SMS'],
           ['users', 'Users'],
+          ['authentication', 'Authentication'],
           ['network', 'Public access'],
           ['advanced', 'Advanced'],
         ] as const).map(([t, label]) => (
@@ -804,6 +806,23 @@ export function Settings() {
             <div className="field"><label>Password (12+)</label><input type="password" value={newUser.password} onChange={(e) => setNewUser({ ...newUser, password: e.target.value })} /></div>
             <button onClick={addUser}>Create</button>
           </div>
+        </div>
+      )}
+
+      {tab === 'authentication' && isAdmin && (
+        <div className="panel">
+          <h3 style={{ marginTop: 0 }}>Single sign-on (Vibe Auth)</h3>
+          <p className="muted">
+            Staff can sign in through the firm's Vibe Auth identity provider. Mode <b>local</b> keeps password sign-in only,
+            <b> both</b> offers either, <b>oidc_only</b> allows only the break-glass admin to use a password. Recipient and
+            client portals are unaffected.
+          </p>
+          <AuthSettingsPage
+            basePath=""
+            productName="Vibe 1099"
+            headers={() => ({ 'x-csrf-token': csrfToken() })}
+            classNames={{ section: 'panel', label: 'field', buttonDanger: 'danger', error: 'error-box', note: 'muted', table: 'grid' }}
+          />
         </div>
       )}
 

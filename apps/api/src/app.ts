@@ -13,6 +13,7 @@ import './types.js';
 import { errorHandler } from './middleware/error.js';
 import { auditMutations } from './middleware/audit.js';
 import { staffIpAllowlist } from './middleware/auth.js';
+import { vibeAuthMiddleware } from './lib/vibeAuth.js';
 import { authRouter } from './routes/auth.js';
 import { payersRouter } from './routes/payers.js';
 import { recipientsRouter } from './routes/recipients.js';
@@ -41,12 +42,15 @@ export function createApp(): express.Express {
   // resolves to the real client and per-IP rate limits can't be spoofed/collapsed
   app.set('trust proxy', loadEnv().TRUST_PROXY_HOPS);
 
-  app.use(
+  // Strict CSP everywhere except the Vibe Auth engine's own HTML pages under
+  // /auth/* (sign-in error, signed-out, the Settings "Test connection" popup),
+  // which carry a short inline script to notify the opener window.
+  const cspFor = (scriptSrc: string[]) =>
     helmet({
       contentSecurityPolicy: {
         directives: {
           defaultSrc: ["'self'"],
-          scriptSrc: ["'self'"],
+          scriptSrc,
           styleSrc: ["'self'", "'unsafe-inline'"],
           imgSrc: ["'self'", 'data:'],
           objectSrc: ["'none'"],
@@ -54,8 +58,11 @@ export function createApp(): express.Express {
         },
       },
       crossOriginResourcePolicy: { policy: 'same-origin' },
-    }),
-  );
+    });
+  const strictHeaders = cspFor(["'self'"]);
+  const authPageHeaders = cspFor(["'self'", "'unsafe-inline'"]);
+  const isAuthPath = (p: string) => p === '/auth' || p.startsWith('/auth/');
+  app.use((req, res, next) => (isAuthPath(req.path) ? authPageHeaders : strictHeaders)(req, res, next));
 
   app.use((req, _res, next) => {
     req.requestId = randomUUID();
@@ -95,6 +102,15 @@ export function createApp(): express.Express {
   app.use('/api/w9-public', w9PublicRouter);
   app.use('/api/client-portal', clientPortalRouter);
   app.use('/api/webhooks/taxbandits', taxbanditsWebhookRouter);
+
+  // Vibe Auth (single sign-on) engine routes: /auth/status, /auth/oidc/*, /auth/settings.
+  // Mounted after the public zone (webhook mount order preserved) and before the
+  // staff router (I3). Browser-facing routes sit behind the same IP allowlist as
+  // the staff zone; the back-channel logout POST arrives from the identity broker
+  // container and is exempt. The back-channel body is form-encoded.
+  app.use('/auth', express.urlencoded({ extended: false }));
+  app.use('/auth', (req, res, next) => (req.path === '/oidc/backchannel' ? next() : staffIpAllowlist()(req, res, next)));
+  app.use(vibeAuthMiddleware());
 
   // STAFF zone (LAN / Tailscale; optional IP allowlist)
   const staff = express.Router();

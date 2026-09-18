@@ -21,7 +21,9 @@
     "seed:sandbox": "pnpm --filter @vibe1099/api exec tsx src/seed-sandbox.ts",
     "qa:taxbandits": "tsx scripts/qa-taxbandits-e2e.mts",
     "bootstrap:firm": "pnpm --filter @vibe1099/api exec tsx src/ops/bootstrap-firm.ts",
-    "build:web": "pnpm --filter @vibe1099/web build"
+    "build:web": "pnpm --filter @vibe1099/web build",
+    "vibe-auth": "pnpm --filter @vibe1099/api vibe-auth",
+    "test:sso-e2e": "node test/sso-e2e.mjs"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

@@ -32,6 +32,8 @@ import { W9Portal } from './portal/W9Portal';
 // of a blank page with a stack trace.
 const router = createBrowserRouter([
   { path: '/login', element: <Login />, errorElement: <RouteErrorBoundary /> },
+  // hidden break-glass route: keeps the password form visible in SSO-only mode
+  { path: '/login/local', element: <Login breakglass />, errorElement: <RouteErrorBoundary /> },
   { path: '/reset-password', element: <ResetPassword />, errorElement: <RouteErrorBoundary /> },
   // public zones
   { path: '/client', element: <ClientPortal />, errorElement: <RouteErrorBoundary /> },

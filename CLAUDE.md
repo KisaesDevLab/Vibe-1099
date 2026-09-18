@@ -30,7 +30,14 @@ pnpm qa:taxbandits    # e2e chain against that mock: OAuth -> Create -> Transmit
                       # (e.g. the missing mandatory Transmit call) that unit tests can't.
 docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d postgres redis render
 #   dev ports: postgres :55432, redis :56379, render :8212
+pnpm test:sso-e2e     # Vibe Auth (SSO) exit gate: real api vs scratch db + redis db 9 + fake IdP
+                      # (test/sso-e2e.mjs); needs the dev postgres/redis above
+pnpm vibe-auth breakglass ensure|rotate|status   # SSO break-glass admin (needs DATABASE_URL, MASTER_KEY)
 ```
+
+`@kisaesdevlab/vibe-auth` (SSO client) comes from GitHub Packages: `pnpm install` needs
+`//npm.pkg.github.com/:_authToken=<token with read:packages>` in `~/.npmrc` (`gh auth token` works), and
+`docker compose build` needs `NODE_AUTH_TOKEN` exported (BuildKit secret). See `docs/SSO.md`.
 
 Dev env vars for local api/worker: `DATABASE_URL=postgres://vibe1099:vibe1099@localhost:55432/vibe1099`,
 `REDIS_URL=redis://localhost:56379/3`, `RENDER_URL=http://localhost:8212`, `MASTER_KEY=<32B base64>`.
@@ -66,6 +73,11 @@ These deviate from intuition or from the wider Vibe suite; getting them wrong co
 - **State filing follows the provider (LOCKED, v0.1.21):** when an API filing provider (Tax1099/TaxBandits) is enabled it files **federal AND state** from one submission. Each transmission records `states_filed`, and the state direct-file paths (MO Pub 1220) **exclude** records already state-filed by a provider — the same state return must never be filed twice. IRIS does not file states directly: the IRS forwards only CF/SF-elected states, and Missouri is deliberately not one (`states_config.MO.participates_cfsf = false`), so IRIS-filed MO records still need the Pub 1220 upload. `IsStateFiling` is declared only when a record actually carries state data — never off the (global) CF/SF list.
 - **Corrections come from an immutable as-filed snapshot** taken on transmit; corrected records diff against that snapshot. Only `accepted` records are correctable. Type 1 = one-transaction; Type 2 = two-transaction (zeroing record + new original, transmitted as a linked pair).
 - **`audit_log` is append-only**; all mutations go through audit middleware.
+- **Staff SSO (Vibe Auth) mints ordinary Redis sessions.** An SSO login creates the same `v1099_sid`/`v1099_csrf`
+  session as a password login, flagged `sso: true`; identity (issuer/subject/IdP sid) lives only in Postgres
+  `auth_sessions_oidc`, keyed by HMAC(sid). `/auth/*` is the package's engine, mounted on the app between the
+  public zone and the staff router; the back-channel logout POST is exempt from `STAFF_IP_ALLOWLIST`. Only the
+  staff realm gets SSO — never the recipient/client portals. Break-glass admin is `vibe-breakglass@vibe-1099.local`.
 - **Licensing:** MIT (see LICENSE). There is no runtime license gating or activation server — the software is unrestricted. (The former `LICENSE_REQUIRED` flag and per-firm license columns were removed.)
 
 ## Compliance frame

@@ -7,6 +7,7 @@ export default defineConfig({
     port: 8211,
     proxy: {
       '/api': 'http://localhost:8210',
+      '/auth': 'http://localhost:8210', // Vibe Auth (SSO) engine routes
     },
   },
   build: {

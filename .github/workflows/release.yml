@@ -19,7 +19,7 @@ on:
 
 permissions:
   contents: write # create the GitHub Release (and tag, on manual runs)
-  packages: write # push images to GHCR
+  packages: write # push images to GHCR; also reads @kisaesdevlab/vibe-auth from GitHub Packages
 
 jobs:
   meta:
@@ -53,7 +53,11 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
+          registry-url: https://npm.pkg.github.com
+          scope: '@kisaesdevlab'
       - run: pnpm install --frozen-lockfile
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - run: pnpm typecheck
       - run: pnpm lint
       - run: pnpm test
@@ -75,6 +79,8 @@ jobs:
           context: .
           file: Dockerfile.node
           push: true
+          secrets: |
+            NODE_AUTH_TOKEN=${{ secrets.GITHUB_TOKEN }}
           tags: |
             ${{ needs.meta.outputs.prefix }}/vibe1099-app:${{ needs.meta.outputs.version }}
             ${{ needs.meta.outputs.prefix }}/vibe1099-app:latest
@@ -91,6 +97,8 @@ jobs:
         with:
           context: ./apps/web
           push: true
+          secrets: |
+            NODE_AUTH_TOKEN=${{ secrets.GITHUB_TOKEN }}
           tags: |
             ${{ needs.meta.outputs.prefix }}/vibe1099-web:${{ needs.meta.outputs.version }}
             ${{ needs.meta.outputs.prefix }}/vibe1099-web:latest

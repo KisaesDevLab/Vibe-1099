@@ -29,7 +29,7 @@ import { hash as argonHash } from '@node-rs/argon2';
 import { eq } from 'drizzle-orm';
 import { createLogger, loadEnv } from '@vibe1099/core';
 import { closeDb, firms, getDb, getPool, runMigrations, users } from '@vibe1099/db';
-import { ARGON_OPTS } from '../routes/auth.js';
+import { ARGON_OPTS } from '../lib/argon.js';
 
 const log = createLogger('bootstrap-firm');
 
