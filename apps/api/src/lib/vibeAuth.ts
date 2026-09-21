@@ -52,7 +52,17 @@ import {
 } from '../middleware/auth.js';
 import { VIBE_1099_ROLES, createVibeUsers, vibeAuditSink } from './vibeAuthUsers.js';
 
-export { BREAKGLASS_USERNAME, breakglassEmailFor, localLoginIdentifier } from './vibeAuthUsers.js';
+export {
+  BREAKGLASS_PROTECTED_MESSAGE,
+  BREAKGLASS_USERNAME,
+  breakglassEmailFor,
+  breakglassPatchViolation,
+  isBreakglassEmail,
+  localLoginIdentifier,
+  otherActiveAdminExists,
+  resolveLoginEmail,
+  selfServiceResetRefusal,
+} from './vibeAuthUsers.js';
 
 const log = createLogger('api:vibe-auth');
 
@@ -76,13 +86,15 @@ const sessions: SessionAdapter = {
   /** Mint the session the rest of the API already understands, plus the identity row. */
   async create(_req: Request, res: Response, user: VibeUser, identity: SessionIdentity) {
     const db = getDb();
-    const [row] = await db.select({ firmId: users.firmId }).from(users).where(eq(users.id, user.id)).limit(1);
+    const [row] = await db.select({ firmId: users.firmId, role: users.role }).from(users).where(eq(users.id, user.id)).limit(1);
     if (!row) throw new Error(`Vibe Auth: user ${user.id} vanished between provisioning and session creation`);
     const now = Date.now();
     const sid = await createSession({
       userId: user.id,
       firmId: row.firmId,
-      role: user.role as UserRole,
+      // The row, not `user.role`: the package reports the role it ASKED setRole for, and
+      // setRole may have refused it (last active admin / break-glass — lib/vibeAuthUsers.ts).
+      role: row.role satisfies UserRole,
       email: user.email,
       name: user.name ?? user.email,
       createdAt: now,

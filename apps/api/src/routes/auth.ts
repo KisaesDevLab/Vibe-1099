@@ -6,14 +6,23 @@ import { Router } from 'express';
 import { hash as argonHash, verify as argonVerify } from '@node-rs/argon2';
 import { and, eq, isNull } from 'drizzle-orm';
 import { z } from 'zod';
-import { AppError, ErrorCodes, zEmail, zLoginInput, zUserRole } from '@vibe1099/shared';
+import { AppError, ErrorCodes, makeLoginInput, zEmail, zUserRole } from '@vibe1099/shared';
 import { audit, getCrypto, getQueue, getRedis, loadEnv, QUEUE_NAMES, type DeliveryJob } from '@vibe1099/core';
 import { getDb, passwordResets, users } from '@vibe1099/db';
 import { h } from '../middleware/error.js';
 import { rateLimit, checkLockout, recordFailure, clearFailures } from '../middleware/rate-limit.js';
 import { clearSessionCookies, createSession, destroyAllUserSessions, destroySession, requireStaff, setSessionCookies, SESSION_COOKIE } from '../middleware/auth.js';
 import { ARGON_OPTS } from '../lib/argon.js';
-import { BREAKGLASS_USERNAME, getVibeAuth, localLoginIdentifier } from '../lib/vibeAuth.js';
+import {
+  BREAKGLASS_PROTECTED_MESSAGE,
+  BREAKGLASS_USERNAME,
+  breakglassPatchViolation,
+  getVibeAuth,
+  localLoginIdentifier,
+  otherActiveAdminExists,
+  resolveLoginEmail,
+  selfServiceResetRefusal,
+} from '../lib/vibeAuth.js';
 import { generateTotpSecret, otpauthUrl, verifyTotp, verifyTotpCounter } from '../services/totp.js';
 
 /** Reject a TOTP counter already consumed by this user (replay guard, 90s TTL). */
@@ -26,24 +35,29 @@ export { ARGON_OPTS }; // argon2id OWASP baseline (lib/argon.ts) — re-exported
 
 export const authRouter = Router();
 
+/** `email` is an email OR the bare break-glass username (login only — see makeLoginInput). */
+const zLogin = makeLoginInput(BREAKGLASS_USERNAME);
+
 authRouter.post(
   '/login',
   rateLimit({ key: 'login', limit: 10, windowSec: 300 }),
   h(async (req, res) => {
-    const input = zLoginInput.parse(req.body);
+    const input = zLogin.parse(req.body);
     const db = getDb();
-    const lockKey = `login:${input.email.toLowerCase()}`;
+    // `vibe-breakglass` and its address are one account: one lookup key, one lockout counter
+    const email = resolveLoginEmail(input.email);
+    const lockKey = `login:${email}`;
     await checkLockout(lockKey, 8, 900);
 
     // Vibe Auth (SSO) policy: in oidc_only mode only the break-glass admin may use a
     // password (I5). Kept inline so the product's error envelope is preserved.
-    const identifier = localLoginIdentifier(input.email);
+    const identifier = localLoginIdentifier(email);
     const policy = getVibeAuth().localLoginAllowed(identifier);
     if (!policy.allowed) {
       throw new AppError(ErrorCodes.E_FORBIDDEN, 'Local sign-in is disabled; use single sign-on.', 403, { localLoginDisabled: true });
     }
 
-    const user = await db.query.users.findFirst({ where: eq(users.email, input.email.toLowerCase()) });
+    const user = await db.query.users.findFirst({ where: eq(users.email, email) });
     const dummyHash = '$argon2id$v=19$m=19456,t=2,p=1$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
     const ok = await argonVerify(user?.passwordHash ?? dummyHash, input.password).catch(() => false);
     if (!user || !user.active || !ok) {
@@ -124,7 +138,18 @@ authRouter.post(
     const { email } = z.object({ email: zEmail }).parse(req.body);
     const db = getDb();
     const user = await db.query.users.findFirst({ where: eq(users.email, email.toLowerCase()) });
-    if (user && user.active) {
+    // Never by email link: the break-glass admin (rotate it with the CLI) and accounts Vibe
+    // Auth provisioned that never had a local password. Same response as an unknown
+    // address; the refusal is an audit_log row (written by the audit middleware on finish).
+    const refusal = user && user.active ? selfServiceResetRefusal(user) : null;
+    if (user && refusal) {
+      res.locals['audit'] = {
+        action: 'password.reset.refused',
+        entityType: 'user',
+        entityId: user.id,
+        detail: { reason: refusal },
+      };
+    } else if (user && user.active) {
       const crypto = getCrypto();
       const token = crypto.newToken();
       await db.insert(passwordResets).values({
@@ -157,6 +182,11 @@ authRouter.post(
     const crypto = getCrypto();
     const row = await db.query.passwordResets.findFirst({ where: eq(passwordResets.tokenHash, crypto.tokenHash(token)) });
     if (!row || row.usedAt || row.expiresAt.getTime() < Date.now()) {
+      throw new AppError(ErrorCodes.E_TOKEN_EXPIRED, 'Reset link is invalid or expired', 401);
+    }
+    // a link issued before the request route started refusing these accounts is dead too
+    const owner = await db.query.users.findFirst({ where: eq(users.id, row.userId) });
+    if (!owner || selfServiceResetRefusal(owner)) {
       throw new AppError(ErrorCodes.E_TOKEN_EXPIRED, 'Reset link is invalid or expired', 401);
     }
     await db.update(passwordResets).set({ usedAt: new Date() }).where(eq(passwordResets.id, row.id));
@@ -280,6 +310,30 @@ authRouter.patch(
     const id = z.string().uuid().parse(req.params['id']);
     const target = await db.query.users.findFirst({ where: and(eq(users.id, id), eq(users.firmId, req.staff!.firmId)) });
     if (!target) throw AppError.notFound('User');
+
+    // Vibe Auth break-glass admin — in EVERY sign-in mode it stays active, admin and at its
+    // address (oidc_only refuses to boot without it; the CLI finds it by that address).
+    const violation = breakglassPatchViolation(target, input);
+    if (violation) {
+      await audit(db, {
+        firmId: req.staff!.firmId,
+        actorType: 'staff',
+        actorId: req.staff!.userId,
+        action: 'user.update.refused',
+        entityType: 'user',
+        entityId: id,
+        detail: { reason: 'breakglass_protected', field: violation },
+        ip: req.ip,
+      });
+      throw new AppError(ErrorCodes.E_BREAKGLASS_PROTECTED, BREAKGLASS_PROTECTED_MESSAGE, 403, { field: violation });
+    }
+    // Self-lockout: the last active admin cannot deactivate or demote themselves
+    // (the break-glass account does not count as the other admin).
+    const losesAdmin = input.active === false || (input.role !== undefined && input.role !== 'admin');
+    if (id === req.staff!.userId && target.role === 'admin' && losesAdmin && !(await otherActiveAdminExists(target.firmId, id))) {
+      throw AppError.conflict('You are the only active admin — promote or reactivate another admin first.', { lastActiveAdmin: true });
+    }
+
     const patch: Record<string, unknown> = { ...input };
     if (input.email !== undefined) patch['email'] = input.email.toLowerCase();
     try {
@@ -311,7 +365,12 @@ authRouter.post(
     const id = z.string().uuid().parse(req.params['id']);
     const target = await db.query.users.findFirst({ where: and(eq(users.id, id), eq(users.firmId, req.staff!.firmId)) });
     if (!target) throw AppError.notFound('User');
-    await db.update(users).set({ passwordHash: await argonHash(password, ARGON_OPTS) }).where(eq(users.id, id));
+    // an admin deliberately giving the account a local password ends its SSO-only state
+    // (allowed for the break-glass admin too: it keeps the account usable)
+    await db
+      .update(users)
+      .set({ passwordHash: await argonHash(password, ARGON_OPTS), ssoOnlySince: null })
+      .where(eq(users.id, id));
     await destroyAllUserSessions(id);
     res.locals['audit'] = { action: 'user.reset-password', entityType: 'user', entityId: id };
     res.json({ ok: true });

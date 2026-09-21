@@ -9,7 +9,7 @@
  */
 import { randomBytes } from 'node:crypto';
 import { hash as argonHash } from '@node-rs/argon2';
-import { asc, eq } from 'drizzle-orm';
+import { and, asc, eq, ne } from 'drizzle-orm';
 import type { AuditSink, CreateLocalUserInput, CreateUserInput, RoleVocabulary, UserAdapter, VibeUser } from '@kisaesdevlab/vibe-auth';
 import { audit } from '@vibe1099/core';
 import { firms, getDb, users } from '@vibe1099/db';
@@ -44,6 +44,76 @@ export function localLoginIdentifier(email: string): string {
   return e === breakglassEmailFor(BREAKGLASS_USERNAME) ? BREAKGLASS_USERNAME : e;
 }
 
+/** The login form accepts the bare break-glass username too (the Appliance prints only
+ *  `username: vibe-breakglass`): resolve it to the address the account is stored under.
+ *  Anything else is an email (the login schema guarantees it) and is lower-cased. */
+export function resolveLoginEmail(identifier: string): string {
+  const id = identifier.trim().toLowerCase();
+  return id === BREAKGLASS_USERNAME.toLowerCase() ? breakglassEmailFor(BREAKGLASS_USERNAME) : id;
+}
+
+export function isBreakglassEmail(email: string): boolean {
+  return email.trim().toLowerCase() === breakglassEmailFor(BREAKGLASS_USERNAME);
+}
+
+export const BREAKGLASS_PROTECTED_MESSAGE =
+  'The break-glass admin is the recovery account: it cannot be deactivated, demoted from admin or re-addressed. ' +
+  'To change its password run `vibe identity rotate-breakglass` on the appliance (`pnpm vibe-auth breakglass rotate` standalone).';
+
+/** Which protected property of the break-glass account a user-admin PATCH would change
+ *  (in EVERY sign-in mode), or null when the patch is harmless (name, or the same values
+ *  round-tripped by the edit dialog). A changed address would break findByUsername. */
+export function breakglassPatchViolation(
+  target: { email: string },
+  patch: { active?: boolean; role?: string; email?: string },
+): 'active' | 'role' | 'email' | null {
+  if (!isBreakglassEmail(target.email)) return null;
+  if (patch.active === false) return 'active';
+  if (patch.role !== undefined && patch.role !== VIBE_1099_ROLES.adminRole) return 'role';
+  if (patch.email !== undefined && patch.email.trim().toLowerCase() !== target.email.toLowerCase()) return 'email';
+  return null;
+}
+
+/** Self-service password reset (the emailed link) is refused for the break-glass
+ *  account, by rule, and for an account Vibe Auth provisioned that never had a local
+ *  password (users.sso_only_since): a mailbox must not mint a local credential for an
+ *  SSO-created account. An admin can still set one (POST /auth/users/:id/reset-password). */
+export function selfServiceResetRefusal(user: { email: string; ssoOnlySince: Date | null }): 'breakglass' | 'sso_only' | null {
+  if (isBreakglassEmail(user.email)) return 'breakglass';
+  if (user.ssoOnlySince) return 'sso_only';
+  return null;
+}
+
+/** Is there an active admin in the firm other than `exceptUserId`? The break-glass
+ *  account does NOT count: it is a recovery credential, not somebody's daily admin. */
+export async function otherActiveAdminExists(firmId: string, exceptUserId: string): Promise<boolean> {
+  const rows = await getDb()
+    .select({ id: users.id })
+    .from(users)
+    .where(
+      and(
+        eq(users.firmId, firmId),
+        eq(users.role, 'admin'),
+        eq(users.active, true),
+        ne(users.id, exceptUserId),
+        ne(users.email, breakglassEmailFor(BREAKGLASS_USERNAME)),
+      ),
+    )
+    .limit(1);
+  return rows.length > 0;
+}
+
+/** Why a role sync from the identity provider must NOT be applied, or null. */
+export function roleSyncRefusal(
+  target: { email: string; role: string },
+  newRole: string,
+  hasOtherActiveAdmin: boolean,
+): 'breakglass' | 'last_active_admin' | null {
+  if (target.role !== VIBE_1099_ROLES.adminRole || newRole === VIBE_1099_ROLES.adminRole) return null;
+  if (isBreakglassEmail(target.email)) return 'breakglass';
+  return hasOtherActiveAdmin ? null : 'last_active_admin';
+}
+
 let firmIdCache: string | null = null;
 
 /** The deployment's one firm (first row, as bootstrap-firm/seed define it). */
@@ -69,7 +139,9 @@ function toVibeUser(row: UserRow): VibeUser {
   };
 }
 
-/** I7: a JIT user gets a random hash nobody can match; a password reset still works in `both` mode. */
+/** I7: a JIT user gets a random hash nobody can match, and `sso_only_since` marks the row so
+ *  the self-service password reset refuses it (selfServiceResetRefusal): the account signs in
+ *  through the identity provider only, until an admin deliberately sets a local password. */
 async function unusablePasswordHash(): Promise<string> {
   return argonHash(randomBytes(32).toString('base64url'), ARGON_OPTS);
 }
@@ -110,13 +182,34 @@ export function createVibeUsers(): UserAdapter {
           name: (input.name ?? email).slice(0, 120),
           role: input.role as UserRow['role'],
           passwordHash: await unusablePasswordHash(),
+          ssoOnlySince: new Date(),
           lastLoginAt: new Date(),
         })
         .returning();
       return toVibeUser(row!);
     },
 
+    /** Role sync from the IdP groups. Never throws (it would fail the sign-in): a sync that
+     *  would demote the firm's last active admin — or the break-glass account — is skipped
+     *  and audited instead; the session adapter reads the role back from the row. */
     async setRole(userId, role) {
+      const [target] = await db().select().from(users).where(eq(users.id, userId)).limit(1);
+      if (target) {
+        const demotion = target.role === VIBE_1099_ROLES.adminRole && role !== VIBE_1099_ROLES.adminRole;
+        const refusal = roleSyncRefusal(target, role, demotion ? await otherActiveAdminExists(target.firmId, target.id) : true);
+        if (refusal) {
+          await audit(db(), {
+            firmId: target.firmId,
+            actorType: 'system',
+            actorId: target.id,
+            action: 'vibe.auth.role.sync_refused',
+            entityType: 'auth',
+            entityId: target.id,
+            detail: { user_id: target.id, from: target.role, to: role, reason: refusal },
+          });
+          return;
+        }
+      }
       await db().update(users).set({ role: role as UserRow['role'] }).where(eq(users.id, userId));
     },
 
@@ -138,7 +231,10 @@ export function createVibeUsers(): UserAdapter {
     },
 
     async setLocalPassword(userId, password) {
-      await db().update(users).set({ passwordHash: await argonHash(password, ARGON_OPTS) }).where(eq(users.id, userId));
+      await db()
+        .update(users)
+        .set({ passwordHash: await argonHash(password, ARGON_OPTS), ssoOnlySince: null })
+        .where(eq(users.id, userId));
     },
 
     async setActive(userId, active) {

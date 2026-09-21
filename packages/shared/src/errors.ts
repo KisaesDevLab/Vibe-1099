@@ -19,6 +19,7 @@ export const ErrorCodes = {
   E_LOCKED_OUT: 'E_LOCKED_OUT',
   E_RATE_LIMIT: 'E_RATE_LIMIT',
   E_CSRF: 'E_CSRF',
+  E_BREAKGLASS_PROTECTED: 'E_BREAKGLASS_PROTECTED', // SSO break-glass admin: no disable / demote / re-address
 
   // Domain state
   E_STATE: 'E_STATE', // invalid status transition

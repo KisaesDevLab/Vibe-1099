@@ -91,6 +91,10 @@ export const users = pgTable(
     totpEnabled: boolean('totp_enabled').notNull().default(false),
     active: boolean('active').notNull().default(true),
     lastLoginAt: timestamp('last_login_at', { withTimezone: true }),
+    // Set when Vibe Auth JIT-provisions the account (random, unmatchable password
+    // hash); NULL once a local password has been set. Self-service reset is refused
+    // while it is set (migration 0014).
+    ssoOnlySince: timestamp('sso_only_since', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [uniqueIndex('users_email_uq').on(t.firmId, t.email)],
