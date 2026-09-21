@@ -72,11 +72,29 @@ export const zFormRecordInput = z.object({
 });
 export type FormRecordInput = z.infer<typeof zFormRecordInput>;
 
-export const zLoginInput = z.object({
-  email: zEmail,
-  password: z.string().min(1).max(200),
-  totp: z.string().length(6).optional(),
-});
+/** Default username of the Vibe Auth break-glass admin (VIBE_BREAKGLASS_USERNAME overrides it on the API). */
+export const DEFAULT_BREAKGLASS_USERNAME = 'vibe-breakglass';
+
+/**
+ * Staff login payload. `email` is an email address — or, LOGIN ONLY, the literal
+ * break-glass username (case-insensitive, surrounding blanks ignored): the Vibe
+ * Appliance prints just `username: vibe-breakglass` to the operator, never the
+ * address the account is stored under. The API resolves the username to that
+ * address before the lookup. Every other use of zEmail stays a strict email.
+ */
+export function makeLoginInput(breakglassUsername: string = DEFAULT_BREAKGLASS_USERNAME) {
+  const username = breakglassUsername.trim().toLowerCase();
+  return z.object({
+    email: z
+      .string()
+      .max(254)
+      .refine((v) => zEmail.safeParse(v).success || v.trim().toLowerCase() === username, 'Invalid email'),
+    password: z.string().min(1).max(200),
+    totp: z.string().length(6).optional(),
+  });
+}
+
+export const zLoginInput = makeLoginInput();
 
 export const zUserRole = z.enum(['admin', 'preparer', 'reviewer']);
 export type UserRole = z.infer<typeof zUserRole>;

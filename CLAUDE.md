@@ -77,7 +77,9 @@ These deviate from intuition or from the wider Vibe suite; getting them wrong co
   session as a password login, flagged `sso: true`; identity (issuer/subject/IdP sid) lives only in Postgres
   `auth_sessions_oidc`, keyed by HMAC(sid). `/auth/*` is the package's engine, mounted on the app between the
   public zone and the staff router; the back-channel logout POST is exempt from `STAFF_IP_ALLOWLIST`. Only the
-  staff realm gets SSO — never the recipient/client portals. Break-glass admin is `vibe-breakglass@vibe-1099.local`.
+  staff realm gets SSO — never the recipient/client portals. Break-glass admin is `vibe-breakglass@vibe-1099.local`
+  (the login form also accepts the bare `vibe-breakglass`); it cannot be deactivated, demoted or re-addressed, and
+  neither it nor an SSO-only account (`users.sso_only_since`) can use the self-service password reset (`docs/SSO.md`).
 - **Licensing:** MIT (see LICENSE). There is no runtime license gating or activation server — the software is unrestricted. (The former `LICENSE_REQUIRED` flag and per-firm license columns were removed.)
 
 ## Compliance frame

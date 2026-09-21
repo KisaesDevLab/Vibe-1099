@@ -166,8 +166,10 @@ export function Settings() {
   };
 
   const toggleUser = async (u: User) => {
-    await api.patch(`/api/auth/users/${u.id}`, { active: !u.active });
-    loadAll();
+    try {
+      await api.patch(`/api/auth/users/${u.id}`, { active: !u.active });
+      loadAll();
+    } catch (err) { setError(err instanceof ApiError ? err.message : String(err)); }
   };
 
   const saveUser = async () => {

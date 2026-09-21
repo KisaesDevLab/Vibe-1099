@@ -52,6 +52,20 @@ Users provisioned just-in-time join the deployment's one firm (the row `pnpm boo
 unusable random password hash; an existing user with the same verified email is linked instead, and the role is
 re-synced from the IdP groups on every login.
 
+**SSO-only accounts cannot use "Forgot password?".** A just-in-time account is marked `users.sso_only_since`
+and the self-service reset (`POST /api/auth/password-reset/request`) refuses it: a mailbox must not mint a local
+credential for an account the identity provider created. The response is the same `{"ok":true}` an unknown
+address gets (no enumeration); the refusal is an `audit_log` row `password.reset.refused`
+(`detail.reason = sso_only | breakglass`). An admin can still deliberately give such an account a local password
+(Settings → Users → Reset password), which clears the marker. A local account that was later *linked* to an
+identity keeps its self-service reset.
+
+**Role sync never removes the last admin.** If the IdP groups would demote an admin while no *other* active
+admin exists in the firm (the break-glass account does not count), the role is kept, the sign-in proceeds as
+admin and `vibe.auth.role.sync_refused` (`detail.reason = last_active_admin`) is audited. The package still
+writes its own `vibe.auth.role.changed` row for that login — the `sync_refused` row right after it is the truth.
+The same rule stops the only active admin from deactivating or demoting themselves in Settings → Users (`409`).
+
 ## Paths and proxies
 
 The engine is created with `basePath: ""`. The Appliance's Caddy routes `/auth/*` to the api tier (manifest
@@ -71,9 +85,28 @@ public URL comes from `VIBE_OIDC_PUBLIC_URL`, never from a path prefix.
 
 ## Break-glass account
 
-A local admin that works with the identity provider down, addressed as `vibe-breakglass@vibe-1099.local`
-(`users` has no username column; `@localhost` would fail the email validator). It signs in on `/login/local`
-with password only (the CLI cannot enrol TOTP). Every use writes `vibe.auth.breakglass.used` to the audit log.
+A local admin that works with the identity provider down, stored as `vibe-breakglass@vibe-1099.local`
+(`users` has no username column; `@localhost` would fail the email validator). Every use writes
+`vibe.auth.breakglass.used` to the audit log.
+
+- **Signing in:** on `/login/local` (or the normal form in `local`/`both`), type either the bare username
+  **`vibe-breakglass`** — all the Appliance prints — or the full address `vibe-breakglass@vibe-1099.local`, plus
+  the password. The username is case-insensitive and follows `VIBE_BREAKGLASS_USERNAME`; only the login form
+  accepts it, every other email field stays a strict email.
+- **Protected, in every mode:** Settings → Users cannot deactivate it, demote it from admin or change its email
+  (`403 E_BREAKGLASS_PROTECTED`, audited as `user.update.refused`) — `oidc_only` refuses to boot without it and
+  the CLI finds it by that address. Renaming it and an admin "Reset password" are allowed. "Forgot password?"
+  never works for it; rotate the password with `vibe identity rotate-breakglass` on the Appliance
+  (`pnpm vibe-auth breakglass rotate` standalone). Role sync never demotes it either.
+- **Password-only by design.** Local MFA is per-user opt-in TOTP and the CLI cannot enrol one, so a freshly
+  provisioned break-glass account has no second factor. If the firm's policy requires MFA on every admin
+  credential, sign in as break-glass once at provisioning and enrol TOTP (Settings → Firm & printing →
+  "Set up TOTP two-factor"), and keep the authenticator seed with the sealed password. Note that `rotate`
+  changes the password only, not the TOTP seed.
+- **"Break-glass ready" on the Appliance console only means a password is stored** for the account. It does not
+  prove the account is active, that the stored password still matches (an admin reset here changes it without
+  the Appliance knowing) or that anyone has tested the sign-in. `pnpm vibe-auth breakglass status` reports
+  exists / active / role; test a real sign-in after provisioning.
 
 ```bash
 pnpm vibe-auth breakglass ensure    # creates it, prints the password ONCE (or set VIBE_BREAKGLASS_PASSWORD)
@@ -139,11 +172,17 @@ access (Vibe-Auth → Packages → vibe-auth → *Manage Actions access*). Pulli
 - `packages/db/migrations/0013_vibe_auth.sql` creates `auth_identities`, `auth_settings`, `auth_revocations`
   (the package's shipped SQL, verbatim; the revocation list is unused by a Redis-session product) and
   `auth_sessions_oidc`. Applied on boot like every migration.
+- `packages/db/migrations/0014_users_sso_only_since.sql` adds `users.sso_only_since` (NULL = the account has or
+  had a local password; set when Vibe Auth provisions the account, cleared when an admin or the break-glass CLI
+  sets a password). `password_hash` is NOT NULL and a JIT hash is just unmatchable, so nothing else on the row
+  carries that fact. Accounts provisioned before the column existed are backfilled from the append-only
+  `audit_log` (`vibe.auth.user.provisioned` with no later `user.reset-password` / `password.reset.complete`).
 - Every package event is one `audit_log` row: `actor_type = 'system'`, `action = vibe.auth.*`,
   `entity_type = 'auth'`, `entity_id = user id` when the event has one, `detail = the event payload`.
 - `pnpm test:sso-e2e` boots the real API against a scratch database + Redis db 9 and the fake IdP in
-  `test/fake-idp.mjs` and walks the fourteen scenarios of the integration plan (`.github/workflows/sso-e2e.yml`
-  runs it on every PR).
+  `test/fake-idp.mjs` and walks the scenarios of the integration plan plus the hardening ones (break-glass by
+  username, break-glass protection, reset refusal, last-admin role sync, sole-admin self-lockout;
+  `.github/workflows/sso-e2e.yml` runs it on every PR).
 
 ## Deviations from the Vibe-Auth integration plan (`Vibe-Auth/docs/integration-plans/vibe-1099.md`)
 

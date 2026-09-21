@@ -9,6 +9,10 @@
 // /api/auth/login while portal + webhook routes still answer, break-glass
 // CLI + local login + audit, back-channel logout ending the Redis session,
 // fresh login afterwards, RP-initiated logout, boot refusal without break-glass.
+// Hardening: sole-admin self-lockout, break-glass sign-in by bare username, the
+// self-service password reset refused for break-glass + SSO-only accounts (same
+// response as an unknown address), role sync never demoting the last active
+// admin, break-glass protected from disable / demote / re-address.
 //
 //   pnpm test:sso-e2e
 //
@@ -139,6 +143,16 @@ function killTree(child) {
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** The audit middleware writes on `finish`, after the response is out: poll briefly. */
+async function eventually(fn, what, ms = 5000) {
+  const until = Date.now() + ms;
+  for (;;) {
+    if (await fn()) return;
+    if (Date.now() > until) throw new Error(`timed out waiting for ${what}`);
+    await sleep(100);
+  }
+}
 
 // ─────────────────────────────────────────────────────────────── database / redis
 
@@ -393,6 +407,11 @@ async function main() {
   for (const t of ['auth_identities', 'auth_settings', 'auth_revocations', 'auth_sessions_oidc']) {
     assert.equal((await sql(`SELECT to_regclass($1)::text AS t`, [t]))[0].t, t, `migration did not create ${t}`);
   }
+  assert.equal(
+    (await sql(`SELECT count(*)::int AS n FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'sso_only_since'`))[0].n,
+    1,
+    'migration 0014 did not add users.sso_only_since',
+  );
 
   idp = await new FakeIdp({ clientId: CLIENT_ID, clientSecret: CLIENT_SECRET, user: KURT }).start();
   log(`fake IdP at ${idp.issuer}`);
@@ -420,6 +439,22 @@ async function main() {
     assert.equal(me.status, 200, me.text);
     assert.equal(me.json.user.role, 'admin');
     assert.ok(!me.json.user.sso, 'password session must not be flagged sso');
+  });
+
+  await step('12. the only active admin cannot deactivate or demote themselves', async () => {
+    const id = (await api('/api/auth/me', { browser: adminBrowser })).json.user.userId;
+    for (const body of [{ active: false }, { role: 'preparer' }]) {
+      const r = await api(`/api/auth/users/${id}`, { method: 'PATCH', browser: adminBrowser, json: body });
+      assert.equal(r.status, 409, r.text);
+      assert.equal(r.json.error.code, 'E_CONFLICT');
+      assert.equal(r.json.error.details?.lastActiveAdmin, true);
+    }
+    const [u] = await sql('SELECT role, active FROM users WHERE id = $1', [id]);
+    assert.equal(u.role, 'admin');
+    assert.equal(u.active, true);
+    assert.equal((await api('/api/auth/me', { browser: adminBrowser })).status, 200, 'the refused change must not end the session');
+    const rename = await api(`/api/auth/users/${id}`, { method: 'PATCH', browser: adminBrowser, json: { name: 'E2E Admin' } });
+    assert.equal(rename.status, 200, rename.text);
   });
 
   await step('fixtures: create a preparer through the CSRF-protected staff API', async () => {
@@ -643,6 +678,113 @@ async function main() {
     assert.equal(settings.json.breakglass.exists, true);
   });
 
+  // ── Hardening (still Boot C, `both`) ──────────────────────────────────
+  let bgBrowser;
+  let bgId;
+
+  await step('13. the break-glass admin signs in with the bare username the Appliance prints; other non-emails stay a validation error', async () => {
+    [{ id: bgId }] = await sql('SELECT id FROM users WHERE email = $1', [BREAKGLASS_EMAIL]);
+    const used = async () => (await auditActions()).filter((a) => a.action === 'vibe.auth.breakglass.used').length;
+    const before = await used();
+    const login = await localLogin('Vibe-BreakGlass', BREAKGLASS_PASSWORD);
+    assert.equal(login.status, 200, login.text);
+    assert.equal(login.json.user.email, BREAKGLASS_EMAIL);
+    assert.equal(login.json.user.id, bgId);
+    assert.equal(await used(), before + 1, 'a username sign-in must still audit vibe.auth.breakglass.used');
+    bgBrowser = login.browser;
+    const bad = await localLogin('not-an-email', BREAKGLASS_PASSWORD);
+    assert.equal(bad.status, 422, bad.text);
+    assert.equal(bad.json.error.code, 'E_VALIDATION');
+  });
+
+  await step('14. self-service password reset: break-glass and SSO-only accounts are refused exactly like an unknown address, and audited', async () => {
+    const resets = async () => (await sql('SELECT count(*)::int AS n FROM password_resets'))[0].n;
+    const refusedFor = async (userId) =>
+      (await sql(`SELECT detail FROM audit_log WHERE action = 'password.reset.refused' AND entity_type = 'user' AND entity_id = $1`, [userId]));
+    assert.ok((await sql('SELECT sso_only_since FROM users WHERE id = $1', [kurtId]))[0].sso_only_since, 'a JIT user must be marked SSO-only');
+    assert.equal((await sql('SELECT sso_only_since FROM users WHERE id = $1', [patId]))[0].sso_only_since, null, 'a linked LOCAL user keeps a NULL marker');
+    assert.equal((await sql('SELECT sso_only_since FROM users WHERE id = $1', [bgId]))[0].sso_only_since, null);
+    assert.equal((await sql('SELECT count(*)::int AS n FROM auth_identities WHERE user_id = $1', [kurtId]))[0].n, 1);
+
+    const before = await resets();
+    const unknown = await api('/api/auth/password-reset/request', { method: 'POST', json: { email: 'ghost@e2e.firm' } });
+    assert.equal(unknown.status, 200, unknown.text);
+    for (const email of [BREAKGLASS_EMAIL, KURT.email]) {
+      const r = await api('/api/auth/password-reset/request', { method: 'POST', json: { email } });
+      assert.equal(r.status, unknown.status, r.text);
+      assert.equal(r.text, unknown.text, `${email}: the refusal must be byte-identical to the unknown-address response`);
+      assert.equal(r.contentType, unknown.contentType);
+    }
+    assert.equal(await resets(), before, 'a refused request must not mint a reset token');
+    await eventually(async () => (await refusedFor(bgId)).some((a) => a.detail?.reason === 'breakglass'), 'the break-glass refusal audit row');
+    await eventually(async () => (await refusedFor(kurtId)).some((a) => a.detail?.reason === 'sso_only'), 'the SSO-only refusal audit row');
+
+    // A local account that was later LINKED to an identity keeps its self-service reset.
+    const pat = await api('/api/auth/password-reset/request', { method: 'POST', json: { email: PAT_IDP.email } });
+    assert.equal(pat.text, unknown.text);
+    assert.equal(await resets(), before + 1, 'a linked local account must still get a reset token');
+
+    // An admin deliberately setting a password ends the SSO-only state.
+    const set = await api(`/api/auth/users/${kurtId}/reset-password`, { method: 'POST', browser: bgBrowser, json: { password: 'KurtLocal!2026xyz' } });
+    assert.equal(set.status, 200, set.text);
+    assert.equal((await sql('SELECT sso_only_since FROM users WHERE id = $1', [kurtId]))[0].sso_only_since, null);
+    const kurt = await api('/api/auth/password-reset/request', { method: 'POST', json: { email: KURT.email } });
+    assert.equal(kurt.text, unknown.text);
+    assert.equal(await resets(), before + 2);
+  });
+
+  await step('15. role sync never demotes the last active admin (break-glass does not count); with another admin it demotes', async () => {
+    const [{ id: adminId }] = await sql('SELECT id FROM users WHERE email = $1', [ADMIN_EMAIL]);
+    const off = await api(`/api/auth/users/${adminId}`, { method: 'PATCH', browser: bgBrowser, json: { active: false } });
+    assert.equal(off.status, 200, off.text);
+    const admins = await sql(`SELECT email FROM users WHERE role = 'admin' AND active ORDER BY email`);
+    assert.deepEqual(admins.map((a) => a.email).sort(), [KURT.email, BREAKGLASS_EMAIL].sort(), 'fixture: Kurt + break-glass are the only active admins');
+
+    idp.user = { ...KURT, groups: ['vibe-staff'] };
+    const kept = await ssoLogin();
+    assert.equal(kept.status, 302, kept.text);
+    assert.equal((await sql('SELECT role FROM users WHERE id = $1', [kurtId]))[0].role, 'admin', 'the last active admin must keep the role');
+    assert.equal((await api('/api/auth/me', { browser: kept.browser })).json.user.role, 'admin', 'the session must carry the KEPT role');
+    const refused = await sql(`SELECT detail FROM audit_log WHERE action = 'vibe.auth.role.sync_refused' AND entity_id = $1`, [kurtId]);
+    assert.equal(refused.length, 1, 'the refusal must be audited');
+    assert.equal(refused[0].detail.reason, 'last_active_admin');
+    assert.equal(refused[0].detail.from, 'admin');
+    assert.equal(refused[0].detail.to, 'preparer');
+
+    const on = await api(`/api/auth/users/${adminId}`, { method: 'PATCH', browser: bgBrowser, json: { active: true } });
+    assert.equal(on.status, 200, on.text);
+    const demoted = await ssoLogin();
+    assert.equal(demoted.status, 302, demoted.text);
+    assert.equal((await sql('SELECT role FROM users WHERE id = $1', [kurtId]))[0].role, 'preparer', 'with another active admin the sync applies');
+    assert.equal((await api('/api/auth/me', { browser: demoted.browser })).json.user.role, 'preparer');
+    idp.user = KURT;
+  });
+
+  await step('16. the break-glass admin cannot be deactivated, demoted or re-addressed from user admin; a password reset is allowed', async () => {
+    for (const [body, field] of [[{ active: false }, 'active'], [{ role: 'reviewer' }, 'role'], [{ email: 'moved@e2e.firm' }, 'email']]) {
+      const r = await api(`/api/auth/users/${bgId}`, { method: 'PATCH', browser: bgBrowser, json: body });
+      assert.equal(r.status, 403, r.text);
+      assert.equal(r.json.error.code, 'E_BREAKGLASS_PROTECTED');
+      assert.equal(r.json.error.details?.field, field);
+      assert.match(r.json.error.message, /vibe identity rotate-breakglass/);
+    }
+    const [row] = await sql('SELECT email, role, active FROM users WHERE id = $1', [bgId]);
+    assert.deepEqual(row, { email: BREAKGLASS_EMAIL, role: 'admin', active: true });
+    const refusals = await sql(`SELECT detail FROM audit_log WHERE action = 'user.update.refused' AND entity_id = $1 ORDER BY id`, [bgId]);
+    assert.deepEqual(refusals.map((a) => a.detail.field), ['active', 'role', 'email']);
+    assert.equal((await api('/api/auth/me', { browser: bgBrowser })).status, 200, 'a refused change must not end the session');
+    // What the edit dialog sends for a rename: the same address and role round-tripped.
+    const rename = await api(`/api/auth/users/${bgId}`, { method: 'PATCH', browser: bgBrowser, json: { name: 'Break glass', email: BREAKGLASS_EMAIL, role: 'admin' } });
+    assert.equal(rename.status, 200, rename.text);
+    // (that PATCH carried role + email, so it dropped the break-glass sessions) — an admin sets the password:
+    idp.user = { ...KURT, groups: ['vibe-partner'] };
+    const kurt = await ssoLogin();
+    assert.equal((await api('/api/auth/me', { browser: kurt.browser })).json.user.role, 'admin');
+    const reset = await api(`/api/auth/users/${bgId}/reset-password`, { method: 'POST', browser: kurt.browser, json: { password: BREAKGLASS_PASSWORD } });
+    assert.equal(reset.status, 200, reset.text);
+    idp.user = KURT;
+  });
+
   await stopServer();
 
   // ── Boot D: oidc_only with break-glass ────────────────────────────────
@@ -657,6 +799,9 @@ async function main() {
     assert.equal(refused.json.error.details?.localLoginDisabled, true);
     const bg = await localLogin(BREAKGLASS_EMAIL, BREAKGLASS_PASSWORD);
     assert.equal(bg.status, 200, bg.text);
+    const byName = await localLogin('vibe-breakglass', BREAKGLASS_PASSWORD);
+    assert.equal(byName.status, 200, `the bare username must pass the oidc_only guard: ${byName.text}`);
+    assert.equal(byName.json.user.email, BREAKGLASS_EMAIL);
     assert.equal((await api('/auth/oidc/start')).status, 302);
     // Recipient / client / W-9 portals and the provider webhook are untouched (I11 + mount order).
     assert.equal((await api('/api/webhooks/taxbandits')).status, 200);

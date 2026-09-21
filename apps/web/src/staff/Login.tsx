@@ -34,7 +34,7 @@ export function Login({ breakglass = false }: { breakglass?: boolean } = {}) {
   };
 
   const requestReset = async () => {
-    if (!email) return setError('Enter your email first');
+    if (!email.includes('@')) return setError('Enter your email first');
     await api.post('/api/auth/password-reset/request', { email });
     setResetSent(true);
   };
@@ -54,7 +54,18 @@ export function Login({ breakglass = false }: { breakglass?: boolean } = {}) {
         <form onSubmit={submit}>
           <div className="field">
             <label>Email</label>
-            <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoFocus />
+            {/* type="text", not "email": the break-glass admin signs in as plain `vibe-breakglass`
+                (all the Appliance prints), which the browser's email validation would block. */}
+            <input
+              type="text"
+              inputMode="email"
+              autoComplete="username"
+              autoCapitalize="none"
+              spellCheck={false}
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              autoFocus
+            />
           </div>
           <div className="field">
             <label>Password</label>
