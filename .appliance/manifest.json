@@ -109,6 +109,11 @@
         "from": "generated:hex32",
         "secret": true,
         "doc": "First-login password for the staff app, generated on enable and preserved across re-renders. Surfaced in the console's First-login card and /opt/vibe/CREDENTIALS.txt via firstLogin.passwordEnvKey. Applied by the seed (pnpm bootstrap:firm) — which needs a Vibe-1099 release containing upstream PR #5; on older images the seed fails soft and retries at the next enable."
+      },
+      {
+        "name": "ALLOWED_ORIGIN",
+        "from": "subdomain-url",
+        "doc": "The rendered browser origin of this app. Read by nothing inside the app: the appliance identity script derives the base URL it registers with the Vibe Auth broker from this key, and VIBE_OIDC_PUBLIC_URL (hence the OIDC redirect URI) follows from that registration. Rendered with the scheme of the install mode - never hardcode https, Caddy issues no certificate for a bare IP."
       }
     ],
     "optional": [
