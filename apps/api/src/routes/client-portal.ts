@@ -3,7 +3,7 @@
  * scoped to (payer, tax_year). Scope enforcement lives at the query layer here;
  * clients NEVER see other payers/years/staff data, and vault matches are masked.
  */
-import { Router } from 'express';
+import { Router, type Response } from 'express';
 import { and, eq, inArray } from 'drizzle-orm';
 import { z } from 'zod';
 import { randomUUID } from 'node:crypto';
@@ -15,23 +15,102 @@ import { CLIENT_COOKIE, requireClient } from '../middleware/auth.js';
 import { rateLimit } from '../middleware/rate-limit.js';
 import { createRecipient, lookupByTin } from '../services/vault.js';
 import { validateFormRecord } from '../services/forms.js';
-import { isPortalOtpVerified, maskContact, portalOtpRequired, requestPortalOtp, verifyPortalOtp, type OtpChannel } from '../services/portal-otp.js';
+import { isPortalOtpVerified, maskContact, portalOtpRequired, requestPortalOtp, verifyPortalOtp } from '../services/portal-otp.js';
+import type { ClientScope } from '../types.js';
+import { CLIENT_SESSION_TTL, engagementContacts, listClientEngagements, type LoginContact, normalizeLoginContact, readClientSession, requestClientLogin, verifyClientLogin } from '../services/client-login.js';
 import { loadEnv } from '@vibe1099/core';
 
 export const clientPortalRouter = Router();
 clientPortalRouter.use(rateLimit({ key: 'client-portal', limit: 120, windowSec: 60 }));
+
+function setClientCookie(res: Response, sid: string, maxAgeSec: number): void {
+  const secure = loadEnv().NODE_ENV === 'production' && loadEnv().PORTAL_BASE_URL.startsWith('https');
+  res.cookie(CLIENT_COOKIE, sid, { httpOnly: true, sameSite: 'strict', secure, path: '/', maxAge: maxAgeSec * 1000 });
+}
+
+// ── Sign-in without the invite link (see services/client-login.ts) ──────────
+// These three routes are the only ones that run before requireClient().
+
+/** Ask for a sign-in code. Always answers the same, match or not (no enumeration). */
+clientPortalRouter.post(
+  '/login/request',
+  rateLimit({ key: 'client-login', limit: 8, windowSec: 900 }),
+  h(async (req, res) => {
+    const { contact: raw } = z.object({ contact: z.string().max(254) }).parse(req.body);
+    const contact = normalizeLoginContact(raw);
+    if (!contact) throw AppError.validation('Enter a valid email address or 10-digit mobile number.');
+    let sid = (req.cookies as Record<string, string>)[CLIENT_COOKIE];
+    if (!sid) {
+      sid = randomUUID();
+      setClientCookie(res, sid, 60 * 60);
+    }
+    await requestClientLogin(sid, contact);
+    res.json({ ok: true });
+  }),
+);
+
+/** Verify the sign-in code → session cookie + the engagements it can open. */
+clientPortalRouter.post(
+  '/login/verify',
+  rateLimit({ key: 'client-login-verify', limit: 15, windowSec: 300 }),
+  h(async (req, res) => {
+    const { code } = z.object({ code: z.string().regex(/^\d{6}$/) }).parse(req.body);
+    const sid = (req.cookies as Record<string, string>)[CLIENT_COOKIE];
+    const result = sid ? await verifyClientLogin(sid, code) : null;
+    // one message for wrong / expired / locked / no-match — nothing to probe
+    if (!result) throw new AppError(ErrorCodes.E_CHALLENGE_FAILED, 'That code is incorrect or has expired.', 403);
+    setClientCookie(res, result.sid, CLIENT_SESSION_TTL);
+    for (const m of result.matches) {
+      await audit(getDb(), {
+        firmId: m.firmId,
+        actorType: 'client',
+        actorId: m.inviteId,
+        action: 'client.login',
+        entityType: 'client_invite',
+        entityId: m.inviteId,
+        detail: { channel: result.channel },
+        ip: req.ip,
+      });
+    }
+    res.json({ engagements: await listClientEngagements(result.matches.map((m) => m.inviteId)) });
+  }),
+);
+
+/** The signed-in browser's engagements (restores the picker after a reload). */
+clientPortalRouter.get(
+  '/login/engagements',
+  h(async (req, res) => {
+    const sid = (req.cookies as Record<string, string>)[CLIENT_COOKIE];
+    const session = sid ? await readClientSession(sid) : null;
+    const engagements = session ? await listClientEngagements(Object.keys(session)) : [];
+    if (!engagements.length) throw AppError.auth('Not signed in');
+    res.json({ engagements });
+  }),
+);
+
 clientPortalRouter.use(requireClient());
 
 async function touchActivity(inviteId: string): Promise<void> {
   await getDb().update(clientInvites).set({ lastActivityAt: new Date() }).where(eq(clientInvites.id, inviteId));
 }
 
-/** The client's reachable contact (from the payer record) for OTP delivery. */
-async function clientContact(payerId: string): Promise<{ channel: OtpChannel; to: string } | null> {
-  const payer = await getDb().query.payers.findFirst({ where: eq(payers.id, payerId) });
-  if (payer?.contactEmail) return { channel: 'email', to: payer.contactEmail };
-  if (payer?.contactMobile) return { channel: 'sms', to: payer.contactMobile };
-  return null;
+/**
+ * Where this engagement's verification code may go: the payer's contacts and the
+ * destinations the invite was sent to. The client picks one (defaulting to the
+ * channel their link arrived on) — a texted link must not demand an emailed code.
+ */
+async function clientContacts(scope: ClientScope): Promise<LoginContact[]> {
+  const db = getDb();
+  const [payer, invite] = await Promise.all([
+    db.query.payers.findFirst({ where: eq(payers.id, scope.payerId) }),
+    db.query.clientInvites.findFirst({ where: eq(clientInvites.id, scope.inviteId) }),
+  ]);
+  return engagementContacts({
+    payerEmail: payer?.contactEmail ?? null,
+    payerMobile: payer?.contactMobile ?? null,
+    inviteEmail: invite?.email ?? null,
+    inviteMobile: invite?.mobile ?? null,
+  });
 }
 const clientOtpKey = (inviteId: string, sid: string) => `client:${inviteId}:${sid}`;
 
@@ -39,28 +118,30 @@ const clientOtpKey = (inviteId: string, sid: string) => `client:${inviteId}:${si
 function requireClientOtp() {
   return h(async (req, res, next) => {
     const scope = req.clientScope!;
+    if (scope.otpSatisfied) return next(); // signed in with a code to one of these contacts
     if (!(await portalOtpRequired())) return next();
-    const contact = await clientContact(scope.payerId);
-    if (!contact) return next(); // no way to send a code — token-only fallback
+    if (!(await clientContacts(scope)).length) return next(); // no way to send a code — token-only fallback
     const sid = (req.cookies as Record<string, string>)[CLIENT_COOKIE];
     if (sid && (await isPortalOtpVerified(clientOtpKey(scope.inviteId, sid)))) return next();
     throw new AppError(ErrorCodes.E_CHALLENGE_FAILED, 'Verification code required', 403);
   });
 }
 
-/** Send a one-time code to the client's contact on file (binds to a browser cookie). */
+/** Send a one-time code to the contact the client chose (binds to a browser cookie). */
 clientPortalRouter.post(
   '/request-otp',
   rateLimit({ key: 'client-otp', limit: 6, windowSec: 300 }),
   h(async (req, res) => {
     const scope = req.clientScope!;
-    const contact = await clientContact(scope.payerId);
-    if (!contact) throw AppError.validation('No contact on file to send a code — ask your accountant.');
+    // index into the list /session returned — the client never names an address itself
+    const { contact: index } = z.object({ contact: z.number().int().min(0).default(0) }).parse(req.body ?? {});
+    const picked = (await clientContacts(scope))[index];
+    if (!picked) throw AppError.validation('No contact on file to send a code — ask your accountant.');
+    const contact = { channel: picked.channel, to: picked.value };
     let sid = (req.cookies as Record<string, string>)[CLIENT_COOKIE];
     if (!sid) {
       sid = randomUUID();
-      const secure = loadEnv().NODE_ENV === 'production' && loadEnv().PORTAL_BASE_URL.startsWith('https');
-      res.cookie(CLIENT_COOKIE, sid, { httpOnly: true, sameSite: 'strict', secure, path: '/', maxAge: 60 * 60 * 1000 });
+      setClientCookie(res, sid, 60 * 60);
     }
     const firm = await getDb().query.firms.findFirst({ where: eq(firms.id, scope.firmId) });
     const r = await requestPortalOtp(scope.firmId, firm?.name ?? 'your accountant', clientOtpKey(scope.inviteId, sid), contact);
@@ -97,10 +178,10 @@ clientPortalRouter.get(
     if (!payer || !invite) throw AppError.notFound('Engagement');
     await touchActivity(scope.inviteId);
     // OTP gate status for the client (so the portal shows the code step first)
-    const contact = await clientContact(scope.payerId);
-    const otpRequired = (await portalOtpRequired()) && !!contact;
+    const contacts = await clientContacts(scope);
+    const otpRequired = (await portalOtpRequired()) && contacts.length > 0;
     const sid = (req.cookies as Record<string, string>)[CLIENT_COOKIE];
-    const otpVerified = otpRequired && !!sid && (await isPortalOtpVerified(clientOtpKey(scope.inviteId, sid)));
+    const otpVerified = otpRequired && (!!scope.otpSatisfied || (!!sid && (await isPortalOtpVerified(clientOtpKey(scope.inviteId, sid)))));
     res.json({
       firmName: firm?.name ?? '',
       payerName: payer.legalName,
@@ -108,7 +189,7 @@ clientPortalRouter.get(
       formTypes: scope.formTypes,
       otpRequired,
       otpVerified,
-      otpContact: contact ? maskContact(contact.channel, contact.to) : null,
+      otpContacts: contacts.map((c) => ({ channel: c.channel, masked: maskContact(c.channel, c.value) })),
       submitted: !!invite.submittedAt,
       draftState: invite.draftState ?? null,
       registry: scope.formTypes.map((ft) => {

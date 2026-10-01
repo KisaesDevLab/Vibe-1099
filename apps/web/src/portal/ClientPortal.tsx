@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { api, ApiError, downloadBlob, formatCents, parseCentsInput } from '../api';
 import { useDialogs } from '../components/Dialogs';
+import { ClientLogin, type Engagement } from './ClientLogin';
 
 interface Session {
   firmName: string;
@@ -13,7 +14,8 @@ interface Session {
   formTypes: string[];
   otpRequired: boolean;
   otpVerified: boolean;
-  otpContact: string | null;
+  /** Where a verification code can go; request-otp takes the index. */
+  otpContacts: Array<{ channel: 'email' | 'sms'; masked: string }>;
   submitted: boolean;
   draftState: { entries?: Entry[] } | null;
   registry: Array<{ formType: string; title: string; boxes: Array<{ id: string; boxNumber: string; label: string; kind: string }> }>;
@@ -29,10 +31,40 @@ interface Contractor {
 interface Entry { recipientId: string; formType: string; boxValues: Record<string, number | boolean | string | null> }
 interface ServerEntry { formId: string; recipientId: string; formType: string; boxValues: Record<string, number | boolean | string | null>; status: string; filed: boolean }
 
+/**
+ * Entry point: an invite link (?token=…) opens its engagement directly; without
+ * one the client signs in with a one-time code and picks from their engagements.
+ */
 export function ClientPortal() {
-  const dialogs = useDialogs();
   const [params] = useSearchParams();
-  const token = params.get('token') ?? '';
+  const linkToken = params.get('token') ?? '';
+  const [engagements, setEngagements] = useState<Engagement[] | null>(null);
+  const [picked, setPicked] = useState('');
+
+  // a texted link carries via=sms so the code is offered by text first
+  if (linkToken) return <ClientEngagement token={linkToken} via={params.get('via') === 'sms' ? 'sms' : 'email'} />;
+  if (!engagements) return <ClientLogin onSignedIn={setEngagements} />;
+  const active = picked || (engagements.length === 1 ? engagements[0]!.inviteId : '');
+  if (active) {
+    return <ClientEngagement key={active} token={`session:${active}`} onSwitch={engagements.length > 1 ? () => setPicked('') : undefined} />;
+  }
+  return (
+    <div className="portal-shell">
+      <div className="portal-card">
+        <div className="portal-brand">{engagements[0]?.firmName}</div>
+        <p>Which one would you like to open?</p>
+        {engagements.map((e) => (
+          <button key={e.inviteId} className="secondary" style={{ width: '100%', marginBottom: 8, textAlign: 'left' }} onClick={() => setPicked(e.inviteId)}>
+            <strong>{e.payerName}</strong> — {e.taxYear}{e.submitted && <span className="badge ok" style={{ marginLeft: 6 }}>submitted</span>}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ClientEngagement({ token, onSwitch, via = 'email' }: { token: string; onSwitch?: () => void; via?: 'email' | 'sms' }) {
+  const dialogs = useDialogs();
   const opts = useMemo(() => ({ token }), [token]);
 
   const [session, setSession] = useState<Session | null>(null);
@@ -53,11 +85,10 @@ export function ClientPortal() {
   const [detail, setDetail] = useState<Contractor | null>(null);
   const [otpVerified, setOtpVerified] = useState(false);
   const [code, setCode] = useState('');
-  const [codeSent, setCodeSent] = useState(false);
+  const [codeSent, setCodeSent] = useState('');
   const otpOk = !session?.otpRequired || session.otpVerified || otpVerified;
 
   useEffect(() => {
-    if (!token) { setError('Missing invite token — use the link from your accountant.'); return; }
     api.get<Session>('/api/client-portal/session', opts)
       .then((s) => {
         setSession(s);
@@ -68,11 +99,11 @@ export function ClientPortal() {
 
   // Always load contractors + entries — even after submit — so the review/thank-you
   // screen can show the full picture of who was reported and how much.
-  const sendCode = async () => {
+  const sendCode = async (contact: number) => {
     setError('');
     try {
-      const r = await api.post<{ throttled: boolean; sentTo: string }>('/api/client-portal/request-otp', {}, opts);
-      setCodeSent(true);
+      const r = await api.post<{ throttled: boolean; sentTo: string }>('/api/client-portal/request-otp', { contact }, opts);
+      setCodeSent(r.sentTo);
       if (r.throttled) setError('A code was just sent — check your messages (resend in a moment).');
     } catch (err) { setError(err instanceof ApiError ? err.message : 'Could not send a code'); }
   };
@@ -256,9 +287,17 @@ export function ClientPortal() {
         <div className="portal-card">
           <div className="portal-brand">{session.firmName}</div>
           <p>Before you can enter {session.payerName}'s {session.taxYear} information, verify it's you.</p>
-          <p className="muted">We'll send a one-time code to {session.otpContact ?? 'your contact on file'}.</p>
+          <p className="muted">{codeSent ? `We sent a one-time code to ${codeSent}.` : 'Choose where to receive a one-time code.'}</p>
           {error && <div className="error-box">{error}</div>}
-          <button className="secondary" style={{ width: '100%', marginBottom: 8 }} onClick={sendCode}>{codeSent ? 'Resend code' : 'Send code'}</button>
+          {/* the channel the link arrived on is offered first */}
+          {session.otpContacts
+            .map((c, index) => ({ ...c, index }))
+            .sort((a, b) => Number(b.channel === via) - Number(a.channel === via))
+            .map((c, i) => (
+              <button key={c.index} className={i === 0 && !codeSent ? '' : 'secondary'} style={{ width: '100%', marginBottom: 8 }} onClick={() => void sendCode(c.index)}>
+                {c.channel === 'sms' ? 'Text' : 'Email'} {codeSent ? 'a new' : 'a'} code to {c.masked}
+              </button>
+            ))}
           {codeSent && (
             <>
               <div className="field">
@@ -273,11 +312,19 @@ export function ClientPortal() {
     );
   }
 
+  // Signed in with several engagements → a way back to the picker.
+  const brand = (
+    <div className="portal-brand">
+      {session.firmName}
+      {onSwitch && <div style={{ fontSize: 13, fontWeight: 400 }}><a style={{ cursor: 'pointer' }} onClick={onSwitch}>← Switch client or year</a></div>}
+    </div>
+  );
+
   if (session.submitted || done) {
     return (
       <div className="portal-shell" style={{ maxWidth: 780 }}>
         <div className="portal-card">
-          <div className="portal-brand">{session.firmName}</div>
+          {brand}
           <div className="ok-box">
             <strong>Thank you — your {session.taxYear} information for {session.payerName} has been submitted.</strong><br />
             You reported {reportedRows.length} payment(s), total ${formatCents(total)}.<br />
@@ -313,7 +360,7 @@ export function ClientPortal() {
   return (
     <div className="portal-shell" style={{ maxWidth: 780 }}>
       <div className="portal-card">
-        <div className="portal-brand">{session.firmName}</div>
+        {brand}
         {error && <div className="error-box">{error}</div>}
 
         {step === 'landing' && (

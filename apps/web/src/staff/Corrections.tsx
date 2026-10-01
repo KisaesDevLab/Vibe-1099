@@ -9,7 +9,8 @@ import { useSearchParams } from 'react-router-dom';
 import { api, ApiError, formatCents, parseCentsInput } from '../api';
 import { MO_FILING_ENABLED } from '../config';
 import { Combobox } from '../components/Combobox';
-import { Paginator } from '../components/Paginator';
+import { Paginator, usePageSize } from '../components/Paginator';
+import { usePreparerFilter } from '../components/PreparerFilter';
 import { RecipientPicker } from '../components/RecipientPicker';
 import { Modal } from '../components/Modal';
 import { useDialogs } from '../components/Dialogs';
@@ -56,11 +57,13 @@ export function Corrections() {
   const [reason, setReason] = useState('');
   const [diff, setDiff] = useState<{ classification: string; diff: DiffEntry[] } | null>(null);
   const [error, setError] = useState('');
-  const LIMIT = 100;
+  const [limit, setLimit] = usePageSize('corrections', 100);
+  const preparers = usePreparerFilter();
   const payerName = (id: string) => payers.find((p) => p.id === id)?.legalName ?? id.slice(0, 8);
 
   const loadList = (off = 0) => {
-    const qs = new URLSearchParams({ status: 'accepted,accepted_with_errors', limit: String(LIMIT), offset: String(off) });
+    const qs = new URLSearchParams({ status: 'accepted,accepted_with_errors', limit: String(limit), offset: String(off) });
+    if (preparers.filter) qs.set('preparerId', preparers.filter);
     if (payerFilter) qs.set('payerId', payerFilter);
     if (formType) qs.set('formType', formType);
     if (yearFilter) qs.set('taxYear', yearFilter);
@@ -69,14 +72,14 @@ export function Corrections() {
   };
   const loadOutstanding = (off = 0) =>
     api.get<{ outstanding: Outstanding[]; total: number }>(
-      `/api/corrections/outstanding?limit=${LIMIT}&offset=${off}${payerFilter ? `&payerId=${payerFilter}` : ''}${yearFilter ? `&taxYear=${yearFilter}` : ''}`,
+      `/api/corrections/outstanding?limit=${limit}&offset=${off}${preparers.query}${payerFilter ? `&payerId=${payerFilter}` : ''}${yearFilter ? `&taxYear=${yearFilter}` : ''}`,
     ).then((r) => { setOutstanding(r.outstanding); setOutTotal(r.total); setOutOffset(off); });
 
   useEffect(() => {
     api.get<{ payers: Payer[] }>('/api/payers?limit=1000').then((r) => setPayers(r.payers));
     api.get<{ years: number[] }>('/api/admin/tax-years').then((r) => setTaxYears(r.years)).catch(() => {});
   }, []);
-  useEffect(() => { void loadList(0); void loadOutstanding(0); }, [payerFilter, formType, yearFilter]);
+  useEffect(() => { void loadList(0); void loadOutstanding(0); }, [payerFilter, formType, yearFilter, limit, preparers.query]);
 
   // deep-link: /corrections?formId=… opens the correction flow for that record
   useEffect(() => {
@@ -141,7 +144,7 @@ export function Corrections() {
       <div className="panel">
         <div className="row">
           <div className="field grow"><label>Payer</label>
-            <Combobox options={payers.map((p) => ({ value: p.id, label: p.legalName }))} value={payerFilter} onChange={setPayerFilter} placeholder="All payers — type to filter…" allowEmpty />
+            <Combobox options={payers.filter((p) => preparers.matches(p.id) || p.id === payerFilter).map((p) => ({ value: p.id, label: p.legalName }))} value={payerFilter} onChange={setPayerFilter} placeholder="All payers — type to filter…" allowEmpty />
           </div>
           <div className="field"><label>Form type</label>
             <select value={formType} onChange={(e) => setFormType(e.target.value)}>
@@ -177,7 +180,7 @@ export function Corrections() {
           {!accepted.length && <tr><td colSpan={6} className="muted">No accepted records match. Adjust the filters.</td></tr>}
         </tbody>
       </table>
-      <Paginator total={total} limit={LIMIT} offset={offset} onChange={(o) => loadList(o)} unit="records" />
+      <Paginator total={total} limit={limit} offset={offset} onChange={(o) => loadList(o)} onLimitChange={setLimit} unit="records" />
 
       {/* outstanding corrections — a real queue with payer + recipient */}
       <h2 style={{ marginTop: 20 }}>Outstanding corrections</h2>
@@ -197,7 +200,7 @@ export function Corrections() {
           {!outstanding.length && <tr><td colSpan={6} className="muted">No corrections in flight.</td></tr>}
         </tbody>
       </table>
-      <Paginator total={outTotal} limit={LIMIT} offset={outOffset} onChange={(o) => loadOutstanding(o)} unit="corrections" />
+      <Paginator total={outTotal} limit={limit} offset={outOffset} onChange={(o) => loadOutstanding(o)} onLimitChange={setLimit} unit="corrections" />
 
       {/* --- guided correction modal --- */}
       {target && (

@@ -22,6 +22,10 @@ Let the businesses you file for enter their own contractor amounts through a sec
 ## The client portal (what your client sees)
 **URL:** `/client?token=…` (from the invite)
 
+**Verification code:** before any data shows, the client receives a 6-digit code. They choose where it goes — any email or mobile on the payer or the invite — and a link that arrived by text offers the text option first.
+
+**Lost the link?** A client can go to plain `/client`, enter the **email or mobile number you have on file** (the invite's contact or the payer's contact), and receive a 6-digit sign-in code. After entering it they see only the engagements tied to that contact — if there are several (two entities, or more than one year) they pick one and can switch between them. Sign-in lasts two hours per browser. The page never says whether a contact matched, and it keeps working **after the invite link expires** (so a client can come back later to print filed 1099s) — expiry only retires the emailed link. To shut a client out completely, **revoke** the invite.
+
 A simple, **mobile-friendly** three-step flow:
 
 **1. Landing** — confirms the firm, the entity name, the tax year, and plain-language instructions. If more than one form type is enabled, they pick what they're reporting.

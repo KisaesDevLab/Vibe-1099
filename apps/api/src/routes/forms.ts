@@ -32,6 +32,7 @@ import {
   transitionStatus,
   validateFormRecord,
 } from '../services/forms.js';
+import { preparerCond, zPreparerFilter } from '../services/preparers.js';
 import { getSetting, thresholdOverride } from '../services/settings.js';
 import { lookupByTin, toPublicRecipient } from '../services/vault.js';
 
@@ -101,11 +102,13 @@ formsRouter.get(
         status: z.string().optional(),
         clientSubmitted: z.coerce.boolean().optional(),
         search: z.string().optional(),
+        preparerId: zPreparerFilter,
         limit: z.coerce.number().int().min(1).max(1000).default(500),
         offset: z.coerce.number().int().min(0).default(0),
       })
       .parse(req.query);
     const conds = [eq(formRecords.firmId, req.staff!.firmId)];
+    if (q.preparerId) conds.push(preparerCond(req.staff!.firmId, q.preparerId, formRecords.payerId));
     if (q.payerId) conds.push(eq(formRecords.payerId, q.payerId));
     if (q.recipientId) conds.push(eq(formRecords.recipientId, q.recipientId));
     if (q.taxYear) conds.push(eq(formRecords.taxYear, q.taxYear));

@@ -3,6 +3,7 @@ import { api, ApiError } from '../api';
 import { Combobox } from '../components/Combobox';
 import { useDialogs } from '../components/Dialogs';
 import { useTaxYears } from '../components/useTaxYears';
+import { usePreparerFilter } from '../components/PreparerFilter';
 
 interface Invite {
   id: string;
@@ -22,7 +23,9 @@ interface Payer { id: string; legalName: string; contactEmail: string | null; co
 
 export function Invites() {
   const dialogs = useDialogs();
-  const [invites, setInvites] = useState<Invite[]>([]);
+  const preparers = usePreparerFilter();
+  const [allInvites, setInvites] = useState<Invite[]>([]);
+  const invites = allInvites.filter((i) => preparers.matches(i.payerId));
   const [payers, setPayers] = useState<Payer[]>([]);
   const [payerId, setPayerId] = useState('');
   const [taxYear, setTaxYear] = useState(2026);
@@ -136,7 +139,7 @@ export function Invites() {
       <form className="panel" onSubmit={create}>
         <div className="row">
           <div className="field grow"><label>Payer</label>
-            <Combobox options={payers.map((p) => ({ value: p.id, label: p.legalName }))} value={payerId} onChange={onPayerChange} placeholder="Search payers…" /></div>
+            <Combobox options={payers.filter((p) => preparers.matches(p.id) || p.id === payerId).map((p) => ({ value: p.id, label: p.legalName }))} value={payerId} onChange={onPayerChange} placeholder="Search payers…" /></div>
           <div className="field"><label>Tax year</label>
             <select value={taxYear} onChange={(e) => setTaxYear(Number(e.target.value))}>
               {taxYears.map((y) => <option key={y} value={y}>{y}</option>)}

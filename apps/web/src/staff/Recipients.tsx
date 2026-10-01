@@ -1,6 +1,6 @@
 import { FormEvent, useEffect, useState } from 'react';
 import { api, ApiError } from '../api';
-import { Paginator } from '../components/Paginator';
+import { Paginator, usePageSize } from '../components/Paginator';
 import { Modal } from '../components/Modal';
 import { PdfImportWizard } from '../components/PdfImportWizard';
 import { RecipientPicker } from '../components/RecipientPicker';
@@ -55,16 +55,16 @@ export function Recipients() {
   const dialogs = useDialogs();
   const [total, setTotal] = useState(0);
   const [offset, setOffset] = useState(0);
-  const LIMIT = 100;
+  const [limit, setLimit] = usePageSize('recipients', 100);
 
   const load = (off = offset) =>
     api
       .get<{ recipients: Recipient[]; total: number }>(
-        `/api/recipients?filter=${filter}&limit=${LIMIT}&offset=${off}${search ? `&search=${encodeURIComponent(search)}` : ''}`,
+        `/api/recipients?filter=${filter}&limit=${limit}&offset=${off}${search ? `&search=${encodeURIComponent(search)}` : ''}`,
       )
       .then((r) => { setRecipients(r.recipients); setTotal(r.total); setOffset(off); });
   // reload on filter change; search triggers explicitly
-  useEffect(() => { setOffset(0); void load(0); }, [filter]);
+  useEffect(() => { setOffset(0); void load(0); }, [filter, limit]);
 
   const set = (k: keyof typeof emptyForm) => (e: { target: { value: string } }) => setForm((f) => ({ ...f, [k]: e.target.value }));
 
@@ -269,7 +269,7 @@ export function Recipients() {
           {!recipients.length && <tr><td colSpan={6} className="muted">No recipients match. Add one, import a CSV, or clear the filter.</td></tr>}
         </tbody>
       </table>
-      <Paginator total={total} limit={LIMIT} offset={offset} onChange={(o) => load(o)} unit="recipients" />
+      <Paginator total={total} limit={limit} offset={offset} onChange={(o) => load(o)} onLimitChange={setLimit} unit="recipients" />
 
       {/* --- Add / edit recipient modal --- */}
       {showForm && (

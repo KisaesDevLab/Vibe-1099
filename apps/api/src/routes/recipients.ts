@@ -32,7 +32,7 @@ recipientsRouter.get(
         payerId: z.string().uuid().optional(),
         taxYear: z.coerce.number().int().optional(),
         filter: z.enum(['all', 'missing_address', 'missing_contact', 'missing_w9', 'stale_w9', 'backup_wh']).default('all'),
-        limit: z.coerce.number().int().min(1).max(500).default(100),
+        limit: z.coerce.number().int().min(1).max(1000).default(100),
         offset: z.coerce.number().int().min(0).default(0),
       })
       .parse(req.query);

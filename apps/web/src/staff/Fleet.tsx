@@ -8,8 +8,9 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api, ApiError, downloadBlob } from '../api';
 import { EntityPicker } from '../components/EntityPicker';
+import { usePreparerFilter } from '../components/PreparerFilter';
 import { useTaxYears } from '../components/useTaxYears';
-import { Paginator } from '../components/Paginator';
+import { Paginator, usePageSize } from '../components/Paginator';
 import { Modal } from '../components/Modal';
 import { useDialogs } from '../components/Dialogs';
 
@@ -20,6 +21,7 @@ interface Run { id: string; kind: string; taxYear: number; status: string; total
 interface Eligibility { transmit: { payers: number; records: number }; summaries: { payers: number }; invite: { uninvited: number }; w9: { missing: number } }
 
 export function Fleet() {
+  const preparers = usePreparerFilter();
   const dialogs = useDialogs();
   const [payers, setPayers] = useState<Payer[]>([]);
   const [payerIds, setPayerIds] = useState<string[]>([]);
@@ -35,23 +37,23 @@ export function Fleet() {
   const [pending, setPending] = useState<Pending | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const RLIMIT = 25;
+  const [rlimit, setRlimit] = usePageSize('fleet-runs', 10);
 
-  const loadRuns = (off = 0) => api.get<{ runs: Run[]; total: number }>(`/api/runs?limit=${RLIMIT}&offset=${off}`).then((r) => { setRuns(r.runs); setRunsTotal(r.total); setRunsOffset(off); });
+  const loadRuns = (off = 0) => api.get<{ runs: Run[]; total: number }>(`/api/runs?limit=${rlimit}&offset=${off}`).then((r) => { setRuns(r.runs); setRunsTotal(r.total); setRunsOffset(off); });
   const loadElig = useCallback(() => {
     api.post<Eligibility>('/api/runs/eligibility', { payerIds, taxYear }).then(setElig).catch(() => {});
   }, [payerIds, taxYear]);
   const loadPending = useCallback(() => { api.get<Pending>(`/api/payers/pending/${taxYear}`).then(setPending).catch(() => {}); }, [taxYear]);
   useEffect(() => {
     api.get<{ payers: Payer[] }>('/api/payers?limit=1000').then((r) => setPayers(r.payers));
-    void loadRuns(0);
   }, []);
+  useEffect(() => { void loadRuns(0); }, [rlimit]);
   // Poll the page currently in view. Re-arm on page change — a mount-scoped
   // interval would capture runsOffset=0 forever and snap pagination back to page 1.
   useEffect(() => {
     const t = setInterval(() => void loadRuns(runsOffset), 8000);
     return () => clearInterval(t);
-  }, [runsOffset]);
+  }, [runsOffset, rlimit]);
   useEffect(() => { loadElig(); loadPending(); }, [loadElig, loadPending]);
 
   const scope = () => ({ payerIds, taxYear });
@@ -139,6 +141,7 @@ export function Fleet() {
           selected={payerIds}
           onChange={setPayerIds}
           unit="payers"
+          visible={preparers.matches}
           quickAdds={pending ? [
             { label: 'Ready to transmit', ids: pending.readyToTransmit, title: 'Payers with queued records' },
             { label: 'Uninvited', ids: pending.uninvited },
@@ -206,7 +209,7 @@ export function Fleet() {
           {!runs.length && <tr><td colSpan={7} className="muted">No runs yet.</td></tr>}
         </tbody>
       </table>
-      <Paginator total={runsTotal} limit={RLIMIT} offset={runsOffset} onChange={(o) => loadRuns(o)} unit="runs" />
+      <Paginator total={runsTotal} limit={rlimit} offset={runsOffset} onChange={(o) => loadRuns(o)} onLimitChange={setRlimit} unit="runs" />
 
       {drill && (
         <Modal title={`${drill.kind.replace('_', ' ')} — ${drill.succeeded} ok / ${drill.failed} failed`} width={640} onClose={() => setDrill(null)}>

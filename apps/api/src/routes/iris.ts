@@ -302,6 +302,7 @@ irisRouter.get(
     res.json({
       transmissions: rows.map(({ t, payerName }) => ({
         id: t.id,
+        payerId: t.payerId,
         payerName: payerName ?? null,
         taxYear: t.taxYear,
         environment: t.environment,

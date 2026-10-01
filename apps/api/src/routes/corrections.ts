@@ -11,6 +11,7 @@ import { firms, formRecords, getDb, payers, recipients, stateFiles } from '@vibe
 import { h } from '../middleware/error.js';
 import { requireStaff } from '../middleware/auth.js';
 import { correctionChain, correctionDiff, createCorrection } from '../services/corrections.js';
+import { preparerCond, zPreparerFilter } from '../services/preparers.js';
 import { getSetting } from '../services/settings.js';
 import { createPortalDelivery } from './deliveries.js';
 
@@ -110,7 +111,8 @@ correctionsRouter.get(
       .object({
         payerId: z.string().uuid().optional(),
         taxYear: z.coerce.number().int().optional(),
-        limit: z.coerce.number().int().min(1).max(500).default(100),
+        preparerId: zPreparerFilter,
+        limit: z.coerce.number().int().min(1).max(1000).default(100),
         offset: z.coerce.number().int().min(0).default(0),
       })
       .parse(req.query);
@@ -122,6 +124,7 @@ correctionsRouter.get(
     ];
     if (q.payerId) conds.push(eq(formRecords.payerId, q.payerId));
     if (q.taxYear) conds.push(eq(formRecords.taxYear, q.taxYear));
+    if (q.preparerId) conds.push(preparerCond(req.staff!.firmId, q.preparerId, formRecords.payerId));
     const [rows, [countRow]] = await Promise.all([
       db
         .select({ f: formRecords, payerName: payers.legalName, recipientName: recipients.name1, recipientTin: recipients.tinLast4 })

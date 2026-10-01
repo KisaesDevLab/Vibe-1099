@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useState } from 'react';
 import { api, ApiError, downloadBlob } from '../api';
 import { EntityPicker } from '../components/EntityPicker';
+import { usePreparerFilter } from '../components/PreparerFilter';
 import { useTaxYears } from '../components/useTaxYears';
 import { useDialogs } from '../components/Dialogs';
 
@@ -29,6 +30,7 @@ interface PreviewRow {
 interface Payer { id: string; legalName: string }
 
 export function MoFiles() {
+  const preparers = usePreparerFilter();
   const dialogs = useDialogs();
   const [files, setFiles] = useState<StateFile[]>([]);
   const [payers, setPayers] = useState<Payer[]>([]);
@@ -118,6 +120,7 @@ export function MoFiles() {
               selected={payerIds}
               onChange={setPayerIds}
               unit="payers"
+              visible={preparers.matches}
               quickAdds={pending ? [{ label: 'All MO-source', ids: pending.moSource }] : []}
             />
           </div>

@@ -4,6 +4,7 @@ import { api, ApiError } from '../api';
 import { MO_FILING_ENABLED } from '../config';
 import { NotificationBell } from '../components/NotificationBell';
 import { CommandPalette } from '../components/CommandPalette';
+import { PreparerFilterSelect, PreparerProvider } from '../components/PreparerFilter';
 
 export interface Me {
   userId: string;
@@ -44,6 +45,7 @@ export function StaffShell() {
   };
 
   return (
+    <PreparerProvider>
     <div className="layout">
       <nav className="sidebar">
         <div className="brand">Vibe 1099</div>
@@ -74,6 +76,7 @@ export function StaffShell() {
       </nav>
       <main className="main">
         <div className="row" style={{ justifyContent: 'flex-end', alignItems: 'center', gap: 10, marginBottom: 4 }}>
+          <PreparerFilterSelect meId={me.userId} />
           <span className="muted" style={{ fontSize: 12 }}>Press <kbd>Ctrl/⌘-K</kbd> to search</span>
           <NotificationBell />
         </div>
@@ -81,5 +84,6 @@ export function StaffShell() {
       </main>
       <CommandPalette />
     </div>
+    </PreparerProvider>
   );
 }

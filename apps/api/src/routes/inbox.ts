@@ -10,6 +10,7 @@ import { zTaxYear } from '@vibe1099/shared';
 import { formRecords, getDb, payers, recipients } from '@vibe1099/db';
 import { h } from '../middleware/error.js';
 import { requireStaff } from '../middleware/auth.js';
+import { preparerCond, zPreparerFilter } from '../services/preparers.js';
 
 export const inboxRouter = Router();
 inboxRouter.use(requireStaff());
@@ -34,7 +35,8 @@ inboxRouter.get(
       .object({
         kinds: z.string().optional(), // csv filter
         payerId: z.string().uuid().optional(),
-        limit: z.coerce.number().int().min(1).max(500).default(100),
+        preparerId: zPreparerFilter,
+        limit: z.coerce.number().int().min(1).max(1000).default(100),
         offset: z.coerce.number().int().min(0).default(0),
       })
       .parse(req.query);
@@ -44,6 +46,7 @@ inboxRouter.get(
     const items: InboxItem[] = [];
 
     const payerFilter = q.payerId ? [eq(formRecords.payerId, q.payerId)] : [];
+    if (q.preparerId) payerFilter.push(preparerCond(firmId, q.preparerId, formRecords.payerId));
 
     // Build ALL kinds unconditionally so the count tiles stay accurate even when
     // the caller filters to one kind; the `kinds` filter is applied to the

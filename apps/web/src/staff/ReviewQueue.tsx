@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { api, formatCents } from '../api';
-import { Paginator } from '../components/Paginator';
+import { ALL_ROWS, Paginator, usePageSize } from '../components/Paginator';
+import { usePreparerFilter } from '../components/PreparerFilter';
 import { useDialogs } from '../components/Dialogs';
 
 interface QueueRow {
@@ -21,13 +22,15 @@ export function ReviewQueue() {
   const [payers, setPayers] = useState<Record<string, string>>({});
   const [total, setTotal] = useState(0);
   const [offset, setOffset] = useState(0);
-  const LIMIT = 200;
+  // default All: paging splits an engagement's rows across pages
+  const [limit, setLimit] = usePageSize('review-queue', ALL_ROWS);
+  const preparers = usePreparerFilter();
 
   const load = (off = 0) =>
-    api.get<{ queue: QueueRow[]; total: number }>(`/api/invites/review-queue?limit=${LIMIT}&offset=${off}`)
+    api.get<{ queue: QueueRow[]; total: number }>(`/api/invites/review-queue?limit=${limit}&offset=${off}${preparers.query}`)
       .then((r) => { setQueue(r.queue); setTotal(r.total); setOffset(off); });
+  useEffect(() => { void load(0); }, [limit, preparers.query]);
   useEffect(() => {
-    void load(0);
     api.get<{ payers: Payer[] }>('/api/payers?limit=1000').then((r) => setPayers(Object.fromEntries(r.payers.map((p) => [p.id, p.legalName]))));
   }, []);
 
@@ -75,7 +78,7 @@ export function ReviewQueue() {
         </div>
       ))}
       {!queue.length && <div className="panel muted">Nothing waiting for review.</div>}
-      <Paginator total={total} limit={LIMIT} offset={offset} onChange={(o) => load(o)} unit="submitted forms" />
+      <Paginator total={total} limit={limit} offset={offset} onChange={(o) => load(o)} onLimitChange={setLimit} unit="submitted forms" />
     </div>
   );
 }

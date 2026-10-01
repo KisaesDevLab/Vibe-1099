@@ -21,6 +21,8 @@ export interface ClientScope {
   payerId: string;
   taxYear: number;
   formTypes: string[];
+  /** Signed in with a one-time code — already verified one of the engagement's contacts. */
+  otpSatisfied?: boolean;
 }
 
 export interface RecipientScope {

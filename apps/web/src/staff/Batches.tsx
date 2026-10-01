@@ -7,8 +7,9 @@
 import { FormEvent, useEffect, useState } from 'react';
 import { api, ApiError, downloadBlob } from '../api';
 import { EntityPicker } from '../components/EntityPicker';
+import { usePreparerFilter } from '../components/PreparerFilter';
 import { useTaxYears } from '../components/useTaxYears';
-import { Paginator } from '../components/Paginator';
+import { Paginator, usePageSize } from '../components/Paginator';
 import { Modal } from '../components/Modal';
 import { useDialogs } from '../components/Dialogs';
 
@@ -22,6 +23,7 @@ interface PerPayer { payerId: string; payerName: string; n: number }
 interface BatchForm { id: string; formType: string; recipientName: string; payerName: string }
 
 export function Batches() {
+  const preparers = usePreparerFilter();
   const dialogs = useDialogs();
   const [batches, setBatches] = useState<Batch[]>([]);
   const [total, setTotal] = useState(0);
@@ -41,19 +43,17 @@ export function Batches() {
   const [pending, setPending] = useState<Pending | null>(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
-  const LIMIT = 50;
+  const [limit, setLimit] = usePageSize('batches', 50);
 
-  const load = (off = 0) => api.get<{ batches: Batch[]; total: number }>(`/api/batches?limit=${LIMIT}&offset=${off}`).then((r) => { setBatches(r.batches); setTotal(r.total); setOffset(off); });
-  useEffect(() => {
-    void load(0);
-    api.get<{ payers: Payer[] }>('/api/payers?limit=1000').then((r) => setPayers(r.payers));
-  }, []);
+  const load = (off = 0) => api.get<{ batches: Batch[]; total: number }>(`/api/batches?limit=${limit}&offset=${off}`).then((r) => { setBatches(r.batches); setTotal(r.total); setOffset(off); });
+  useEffect(() => { api.get<{ payers: Payer[] }>('/api/payers?limit=1000').then((r) => setPayers(r.payers)); }, []);
+  useEffect(() => { void load(0); }, [limit]);
   // Poll the page currently in view. Re-arm on page change — a mount-scoped
   // interval would capture offset=0 forever and snap pagination back to page 1.
   useEffect(() => {
     const t = setInterval(() => void load(offset), 5000);
     return () => clearInterval(t);
-  }, [offset]);
+  }, [offset, limit]);
   useEffect(() => { api.get<Pending>(`/api/payers/pending/${taxYear}`).then(setPending).catch(() => {}); }, [taxYear]);
 
   const toggle = (list: string[], setList: (v: string[]) => void, v: string) => setList(list.includes(v) ? list.filter((x) => x !== v) : [...list, v]);
@@ -134,6 +134,7 @@ export function Batches() {
             selected={payerIds}
             onChange={(v) => { setPayerIds(v); setPreview(null); }}
             unit="payers"
+            visible={preparers.matches}
             quickAdds={pending ? [
               { label: 'Unmailed (accepted, no paper sent)', ids: pending.unmailedPaper },
               { label: 'All with accepted forms', ids: pending.accepted },
@@ -194,7 +195,7 @@ export function Batches() {
           {!batches.length && <tr><td colSpan={7} className="muted">No batches yet.</td></tr>}
         </tbody>
       </table>
-      <Paginator total={total} limit={LIMIT} offset={offset} onChange={(o) => load(o)} unit="batches" />
+      <Paginator total={total} limit={limit} offset={offset} onChange={(o) => load(o)} onLimitChange={setLimit} unit="batches" />
 
       {drill && (
         <Modal title={`${drill.batch.label} — ${drill.forms.length} form(s)`} width={640} onClose={() => setDrill(null)}>

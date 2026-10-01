@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useOutletContext } from 'react-router-dom';
 import { api, ApiError, downloadBlob } from '../api';
 import { useDialogs } from '../components/Dialogs';
+import { usePreparerFilter } from '../components/PreparerFilter';
 import type { Me } from './Shell';
 
 interface StatusCheck {
@@ -18,6 +19,7 @@ interface StatusCheck {
 
 interface Tx {
   id: string;
+  payerId: string | null;
   payerName: string | null;
   taxYear: number;
   environment: 'ATS' | 'PROD';
@@ -43,7 +45,9 @@ interface Tx {
 export function Transmissions() {
   const me = useOutletContext<Me>();
   const dialogs = useDialogs();
-  const [rows, setRows] = useState<Tx[]>([]);
+  const preparers = usePreparerFilter();
+  const [allRows, setRows] = useState<Tx[]>([]);
+  const rows = allRows.filter((t) => preparers.matches(t.payerId));
   const [expanded, setExpanded] = useState<string | null>(null);
   const [error, setError] = useState('');
 

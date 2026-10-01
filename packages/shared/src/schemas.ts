@@ -56,6 +56,8 @@ export const zPayerInput = z.object({
   // to a provider missing here cannot be edited at all, because the UI round-
   // trips the current value back and validation rejects it.
   filingProviderOverride: z.enum(['iris', 'tax1099', 'taxbandits']).nullable().optional(),
+  // assigned staff preparer (null = unassigned)
+  preparerId: z.string().uuid().nullable().optional(),
 });
 export type PayerInput = z.infer<typeof zPayerInput>;
 

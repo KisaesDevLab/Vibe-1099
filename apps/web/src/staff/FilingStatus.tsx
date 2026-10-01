@@ -5,6 +5,7 @@
 import { Fragment, useEffect, useState } from 'react';
 import { api } from '../api';
 import { useTaxYears } from '../components/useTaxYears';
+import { usePreparerFilter } from '../components/PreparerFilter';
 
 interface Reject { recipientName: string; formType: string; reasons: string[] }
 interface PayerFiling {
@@ -32,7 +33,9 @@ const statusBadge = (s: string) =>
 export function FilingStatus() {
   const { years, current } = useTaxYears();
   const [taxYear, setTaxYear] = useState(current);
-  const [rows, setRows] = useState<PayerFiling[]>([]);
+  const preparers = usePreparerFilter();
+  const [allRows, setRows] = useState<PayerFiling[]>([]);
+  const rows = allRows.filter((r) => preparers.matches(r.payerId));
   const [expanded, setExpanded] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(false);

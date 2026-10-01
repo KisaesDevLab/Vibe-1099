@@ -10,11 +10,15 @@ import { getCrypto, getQueue, loadEnv, notify, QUEUE_NAMES, type DeliveryJob } f
 import { clientInvites, firms, formRecords, getDb, payers } from '@vibe1099/db';
 import { h } from '../middleware/error.js';
 import { requireStaff } from '../middleware/auth.js';
+import { preparerCond, zPreparerFilter } from '../services/preparers.js';
 import { getSetting } from '../services/settings.js';
 import { transitionStatus } from '../services/forms.js';
 
 export const invitesRouter = Router();
 invitesRouter.use(requireStaff());
+
+/** A texted link carries a hint so the portal offers the verification code by text first. */
+const viaSms = <T extends { link: string }>(vars: T): T => ({ ...vars, link: `${vars.link}&via=sms` });
 
 async function issueInviteToken(inviteId: string, expiresAt: Date): Promise<string> {
   const crypto = getCrypto();
@@ -106,7 +110,7 @@ async function createAndSendInvite(opts: {
   const to = (opts.sendEmail ?? true) ? (opts.email ?? payer.contactEmail) : null;
   const toMobile = (opts.sendSms ?? true) ? (opts.mobile ?? payer.contactMobile) : null;
   if (to) await getQueue(QUEUE_NAMES.delivery).add('client_invite', { kind: 'client_invite', channel: 'email', firmId: opts.firmId, to, templateKey: 'client_invite', vars } as DeliveryJob);
-  if (toMobile) await getQueue(QUEUE_NAMES.delivery).add('client_invite', { kind: 'client_invite', channel: 'sms', firmId: opts.firmId, to: toMobile, templateKey: 'client_invite', vars } as DeliveryJob);
+  if (toMobile) await getQueue(QUEUE_NAMES.delivery).add('client_invite', { kind: 'client_invite', channel: 'sms', firmId: opts.firmId, to: toMobile, templateKey: 'client_invite', vars: viaSms(vars) } as DeliveryJob);
   return { id: created.id, link, expiresAt, sentEmail: !!to, sentSms: !!toMobile };
 }
 
@@ -229,7 +233,7 @@ invitesRouter.post(
         const toMobile = invite.mobile ?? payer.contactMobile;
         // bulk resend is also a nudge, not a first invitation
         if (to) await getQueue(QUEUE_NAMES.delivery).add('client_invite', { kind: 'client_invite', channel: 'email', firmId, to, templateKey: 'client_invite_reminder', vars } as DeliveryJob);
-        if (toMobile) await getQueue(QUEUE_NAMES.delivery).add('client_invite', { kind: 'client_invite', channel: 'sms', firmId, to: toMobile, templateKey: 'client_invite_reminder', vars } as DeliveryJob);
+        if (toMobile) await getQueue(QUEUE_NAMES.delivery).add('client_invite', { kind: 'client_invite', channel: 'sms', firmId, to: toMobile, templateKey: 'client_invite_reminder', vars: viaSms(vars) } as DeliveryJob);
         if (to || toMobile) resent++;
       } catch (err) {
         failed.push(invite.id);
@@ -311,7 +315,7 @@ invitesRouter.post(
     // Reminder wording — the first-time "has invited you" copy reads wrong on a resend.
     const templateKey = 'client_invite_reminder';
     if (to) await getQueue(QUEUE_NAMES.delivery).add('client_invite', { kind: 'client_invite', channel: 'email', firmId: req.staff!.firmId, to, templateKey, vars } as DeliveryJob);
-    if (toMobile) await getQueue(QUEUE_NAMES.delivery).add('client_invite', { kind: 'client_invite', channel: 'sms', firmId: req.staff!.firmId, to: toMobile, templateKey, vars } as DeliveryJob);
+    if (toMobile) await getQueue(QUEUE_NAMES.delivery).add('client_invite', { kind: 'client_invite', channel: 'sms', firmId: req.staff!.firmId, to: toMobile, templateKey, vars: viaSms(vars) } as DeliveryJob);
     res.locals['audit'] = { action: 'invite.resend', entityType: 'client_invite', entityId: id, detail: { sentEmail: !!to, sentSms: !!toMobile } };
     res.json({ link, expiresAt, sentEmail: !!to, sentSms: !!toMobile });
   }),
@@ -339,7 +343,8 @@ invitesRouter.get(
       .object({
         taxYear: z.coerce.number().int().optional(),
         payerId: z.string().uuid().optional(),
-        limit: z.coerce.number().int().min(1).max(500).default(200),
+        preparerId: zPreparerFilter,
+        limit: z.coerce.number().int().min(1).max(1000).default(200),
         offset: z.coerce.number().int().min(0).default(0),
       })
       .parse(req.query);
@@ -348,6 +353,7 @@ invitesRouter.get(
       eq(formRecords.clientSubmitted, true),
       eq(formRecords.status, 'draft'),
     ];
+    if (q.preparerId) conds.push(preparerCond(req.staff!.firmId, q.preparerId, formRecords.payerId));
     if (q.taxYear) conds.push(eq(formRecords.taxYear, q.taxYear));
     if (q.payerId) conds.push(eq(formRecords.payerId, q.payerId));
     const db = getDb();

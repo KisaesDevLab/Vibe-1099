@@ -157,6 +157,8 @@ export const payers = pgTable('payers', {
   filingProviderOverride: text('filing_provider_override').$type<'iris' | 'tax1099' | 'taxbandits'>(),
   moSourceDefault: boolean('mo_source_default').notNull().default(false),
   defaultFormTypes: jsonb('default_form_types').notNull().default(['NEC']).$type<string[]>(),
+  // staff user responsible for this payer (null = unassigned); a filter axis app-wide
+  preparerId: uuid('preparer_id').references(() => users.id),
   active: boolean('active').notNull().default(true),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),

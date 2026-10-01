@@ -9,6 +9,7 @@ import { api } from '../api';
 import { MO_FILING_ENABLED } from '../config';
 import { useDialogs } from '../components/Dialogs';
 import { useTaxYears } from '../components/useTaxYears';
+import { usePreparerFilter } from '../components/PreparerFilter';
 
 interface SavedView { id: string; name: string; config: { sort?: string; dir?: number; filter?: string; search?: string } }
 
@@ -43,6 +44,9 @@ export function Dashboard() {
   const [search, setSearch] = useState('');
   const [views, setViews] = useState<SavedView[]>([]);
   const dialogs = useDialogs();
+  const preparers = usePreparerFilter();
+  // every roll-up + the table below honor the app-wide preparer filter
+  const progress = useMemo(() => (season?.progress ?? []).filter((p) => preparers.matches(p.payerId)), [season, preparers]);
 
   const loadViews = () => api.get<{ views: SavedView[] }>('/api/views/dashboard').then((r) => setViews(r.views)).catch(() => {});
   useEffect(() => { void loadViews(); }, []);
@@ -65,15 +69,15 @@ export function Dashboard() {
   useEffect(() => {
     api.get<{ progress: Progress[]; deadlines: Record<string, string>; yearLocked: boolean }>(`/api/dashboard/season/${taxYear}`).then(setSeason).catch(() => {});
     api.get<{ deadlines: Record<string, { date: string; note: string }>; counts: Record<string, number> }>(`/api/iris/deadlines/${taxYear}`).then(setDeadlines).catch(() => {});
-    api.get<{ total: number; counts: Record<string, number> }>(`/api/inbox/${taxYear}?limit=1`).then(setInbox).catch(() => {});
+    api.get<{ total: number; counts: Record<string, number> }>(`/api/inbox/${taxYear}?limit=1${preparers.query}`).then(setInbox).catch(() => {});
     api.get<{ stats: Record<string, number> }>('/api/recipients/stats').then((r) => setVault(r.stats)).catch(() => {});
-  }, [taxYear]);
+  }, [taxYear, preparers.query]);
 
   const daysUntil = (date: string) => Math.ceil((new Date(date + 'T23:59:59').getTime() - Date.now()) / 86_400_000);
   const unfiledOf = (p: Progress) => p.entered + p.ready; // draft+ready+queued not yet transmitted
 
   const rows = useMemo(() => {
-    let list = season?.progress ?? [];
+    let list = progress;
     if (search) list = list.filter((p) => p.payerName.toLowerCase().includes(search.toLowerCase()));
     if (filter === 'rejects') list = list.filter((p) => p.rejected > 0);
     if (filter === 'unfiled') list = list.filter((p) => unfiledOf(p) > 0);
@@ -84,10 +88,10 @@ export function Dashboard() {
       const av = val(a), bv = val(b);
       return (typeof av === 'string' ? av.localeCompare(bv as string) : (av as number) - (bv as number)) * dir;
     });
-  }, [season, search, filter, sort, dir]);
+  }, [progress, search, filter, sort, dir]);
 
   const rollup = useMemo(() => {
-    const p = season?.progress ?? [];
+    const p = progress;
     return {
       payers: p.length,
       total: p.reduce((n, x) => n + x.total, 0),
@@ -96,7 +100,7 @@ export function Dashboard() {
       rejected: p.reduce((n, x) => n + x.rejected, 0),
       delivered: p.reduce((n, x) => n + x.delivered, 0),
     };
-  }, [season]);
+  }, [progress]);
 
   const sortBy = (k: SortKey) => { if (sort === k) setDir((d) => (d === 1 ? -1 : 1)); else { setSort(k); setDir(-1); } };
   const Th = ({ k, label }: { k: SortKey; label: string }) => (

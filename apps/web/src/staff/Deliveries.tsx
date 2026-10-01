@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useState } from 'react';
 import { api, ApiError } from '../api';
 import { EntityPicker } from '../components/EntityPicker';
+import { usePreparerFilter } from '../components/PreparerFilter';
 import { useTaxYears } from '../components/useTaxYears';
 
 interface Pending { undeliveredElectronic: string[]; accepted: string[] }
@@ -23,6 +24,7 @@ interface Delivery {
 interface Payer { id: string; legalName: string }
 
 export function Deliveries() {
+  const preparers = usePreparerFilter();
   const [rows, setRows] = useState<Delivery[]>([]);
   const [payers, setPayers] = useState<Payer[]>([]);
   const [payerIds, setPayerIds] = useState<string[]>([]);
@@ -91,6 +93,7 @@ export function Deliveries() {
               selected={payerIds}
               onChange={setPayerIds}
               unit="payers"
+              visible={preparers.matches}
               quickAdds={pending ? [
                 { label: 'Undelivered (accepted, no link sent)', ids: pending.undeliveredElectronic },
                 { label: 'All with accepted forms', ids: pending.accepted },

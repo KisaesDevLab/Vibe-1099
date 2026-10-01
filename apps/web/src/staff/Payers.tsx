@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useState } from 'react';
 import { api, ApiError } from '../api';
-import { Paginator } from '../components/Paginator';
+import { Paginator, usePageSize } from '../components/Paginator';
+import { usePreparerFilter } from '../components/PreparerFilter';
 import { useDialogs } from '../components/Dialogs';
 
 interface Payer {
@@ -20,6 +21,7 @@ interface Payer {
   moSourceDefault: boolean;
   filingProviderOverride: 'iris' | 'tax1099' | 'taxbandits' | null;
   defaultFormTypes: string[];
+  preparerId: string | null;
 }
 
 const emptyForm = {
@@ -28,6 +30,7 @@ const emptyForm = {
   phone: '', contactEmail: '', contactMobile: '', moWithholdingId: '', moSourceDefault: true,
   filingProviderOverride: '' as '' | 'iris' | 'tax1099' | 'taxbandits',
   defaultFormTypes: ['NEC'] as string[],
+  preparerId: '',
 };
 
 export function Payers() {
@@ -43,12 +46,31 @@ export function Payers() {
   const [showImport, setShowImport] = useState(false);
   const [importText, setImportText] = useState('');
   const [importPreview, setImportPreview] = useState<Array<{ row: number; status: string; name?: string; reason?: string }> | null>(null);
-  const LIMIT = 100;
+  const [limit, setLimit] = usePageSize('payers', 100);
+  const preparers = usePreparerFilter();
+  // bulk preparer assignment: rows ticked on this page + the chosen assignee
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [assignTo, setAssignTo] = useState('');
 
   const load = (off = offset, s = search) =>
-    api.get<{ payers: Payer[]; total: number }>(`/api/payers?limit=${LIMIT}&offset=${off}${s ? `&search=${encodeURIComponent(s)}` : ''}`)
-      .then((r) => { setPayers(r.payers); setTotal(r.total); setOffset(off); });
-  useEffect(() => { void load(0); }, []);
+    api.get<{ payers: Payer[]; total: number }>(`/api/payers?limit=${limit}&offset=${off}${s ? `&search=${encodeURIComponent(s)}` : ''}${preparers.query}`)
+      .then((r) => { setPayers(r.payers); setTotal(r.total); setOffset(off); setSelected(new Set()); });
+  useEffect(() => { void load(0); }, [limit, preparers.query]);
+
+  const bulkAssign = async () => {
+    if (!selected.size || !assignTo) return;
+    try {
+      const r = await api.post<{ updated: number }>('/api/payers/bulk-assign', { payerIds: [...selected], preparerId: assignTo === 'none' ? null : assignTo });
+      const who = assignTo === 'none' ? 'unassigned' : `assigned to ${preparers.staff.find((s) => s.id === assignTo)?.name ?? 'preparer'}`;
+      dialogs.toast(`${r.updated} payer(s) ${who}.`, 'success');
+      preparers.reload();
+      await load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : String(err));
+    }
+  };
+  const toggleSelected = (id: string) =>
+    setSelected((cur) => { const next = new Set(cur); if (next.has(id)) next.delete(id); else next.add(id); return next; });
 
   const parseCsv = (text: string): Array<Record<string, string>> => {
     const lines = text.trim().split(/\r?\n/);
@@ -89,6 +111,7 @@ export function Payers() {
       moSourceDefault: form.moSourceDefault,
       filingProviderOverride: form.filingProviderOverride || null,
       defaultFormTypes: form.defaultFormTypes.length ? form.defaultFormTypes : ['NEC'],
+      preparerId: form.preparerId || null,
     };
     try {
       if (editing) await api.patch(`/api/payers/${editing}`, body);
@@ -96,6 +119,7 @@ export function Payers() {
       setForm(emptyForm);
       setShowForm(false);
       setEditing(null);
+      preparers.reload();
       await load();
     } catch (err) {
       setError(err instanceof ApiError ? `${err.message}${err.details ? ' — ' + JSON.stringify(err.details) : ''}` : String(err));
@@ -114,6 +138,7 @@ export function Payers() {
       moWithholdingId: p.moWithholdingId ?? '', moSourceDefault: p.moSourceDefault,
       filingProviderOverride: p.filingProviderOverride ?? '',
       defaultFormTypes: p.defaultFormTypes ?? ['NEC'],
+      preparerId: p.preparerId ?? '',
     });
   };
 
@@ -224,27 +249,58 @@ export function Payers() {
           <div className="row">
             <div className="field grow"><label>Contact email (client invites)</label><input value={form.contactEmail} onChange={set('contactEmail')} type="email" /></div>
             <div className="field grow"><label>Contact mobile</label><input value={form.contactMobile} onChange={set('contactMobile')} /></div>
+            <div className="field"><label>Assigned preparer</label>
+              <select value={form.preparerId} onChange={set('preparerId')}>
+                <option value="">Unassigned</option>
+                {/* keep a since-deactivated assignee selectable so the edit round-trips */}
+                {preparers.staff.filter((s) => s.active || s.id === form.preparerId).map((s) => <option key={s.id} value={s.id}>{s.name}{s.active ? '' : ' (inactive)'}</option>)}
+              </select>
+            </div>
           </div>
           <button type="submit">{editing ? 'Save changes' : 'Create payer'}</button>
         </form>
       )}
 
+      {selected.size > 0 && (
+        <div className="panel" style={{ padding: '8px 14px' }}>
+          <div className="row" style={{ alignItems: 'center', gap: 10 }}>
+            <strong>{selected.size} selected</strong>
+            <span className="muted">Assign preparer:</span>
+            <select value={assignTo} onChange={(e) => setAssignTo(e.target.value)} style={{ width: 'auto' }}>
+              <option value="">Choose…</option>
+              {preparers.staff.filter((s) => s.active).map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+              <option value="none">Unassigned (clear)</option>
+            </select>
+            <button disabled={!assignTo} onClick={() => void bulkAssign()}>Apply</button>
+            <button className="secondary" onClick={() => setSelected(new Set())}>Clear selection</button>
+          </div>
+        </div>
+      )}
+
       <table className="grid">
-        <thead><tr><th>Client ID</th><th>Name</th><th>TIN</th><th>City</th><th>Contact</th><th></th></tr></thead>
+        <thead><tr>
+          <th style={{ width: 28 }}>
+            <input type="checkbox" title="Select all on this page" checked={payers.length > 0 && selected.size === payers.length}
+              onChange={(e) => setSelected(e.target.checked ? new Set(payers.map((p) => p.id)) : new Set())} />
+          </th>
+          <th>Client ID</th><th>Name</th><th>TIN</th><th>City</th><th>Contact</th><th>Preparer</th><th></th>
+        </tr></thead>
         <tbody>
           {payers.map((p) => (
             <tr key={p.id}>
+              <td><input type="checkbox" checked={selected.has(p.id)} onChange={() => toggleSelected(p.id)} /></td>
               <td className="mono">{p.clientId ?? <span className="muted">—</span>}</td>
               <td>{p.legalName}{p.dbaName && <span className="muted"> dba {p.dbaName}</span>}</td>
               <td className="mono">{p.tinMasked} <button className="small secondary" onClick={() => revealTin(p.id)}>reveal</button></td>
               <td>{p.address['city']}, {p.address['state']}</td>
               <td>{p.contactEmail ?? p.contactMobile ?? <span className="muted">—</span>}</td>
+              <td>{preparers.staff.find((s) => s.id === p.preparerId)?.name ?? <span className="muted">—</span>}</td>
               <td><button className="small secondary" onClick={() => edit(p)}>Edit</button></td>
             </tr>
           ))}
         </tbody>
       </table>
-      <Paginator total={total} limit={LIMIT} offset={offset} onChange={(o) => load(o, search)} unit="payers" />
+      <Paginator total={total} limit={limit} offset={offset} onChange={(o) => load(o, search)} onLimitChange={setLimit} unit="payers" />
     </div>
   );
 }

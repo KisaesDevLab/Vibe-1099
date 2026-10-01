@@ -6,7 +6,8 @@ import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useTaxYears } from '../components/useTaxYears';
 import { api } from '../api';
-import { Paginator } from '../components/Paginator';
+import { Paginator, usePageSize } from '../components/Paginator';
+import { usePreparerFilter } from '../components/PreparerFilter';
 
 interface Item {
   kind: 'review' | 'rejected' | 'missing_w9' | 'missing_address';
@@ -34,15 +35,16 @@ export function Inbox() {
   const [filter, setFilter] = useState<string[]>([]);
   const [notice, setNotice] = useState('');
   const navigate = useNavigate();
-  const LIMIT = 100;
+  const [limit, setLimit] = usePageSize('inbox', 100);
+  const preparers = usePreparerFilter();
 
   const load = (off = 0) => {
     const kinds = filter.length ? `&kinds=${filter.join(',')}` : '';
     return api
-      .get<{ items: Item[]; total: number; counts: Record<string, number> }>(`/api/inbox/${taxYear}?limit=${LIMIT}&offset=${off}${kinds}`)
+      .get<{ items: Item[]; total: number; counts: Record<string, number> }>(`/api/inbox/${taxYear}?limit=${limit}&offset=${off}${kinds}${preparers.query}`)
       .then((r) => { setItems(r.items); setTotal(r.total); setCounts(r.counts); setOffset(off); });
   };
-  useEffect(() => { void load(0); }, [taxYear, filter]);
+  useEffect(() => { void load(0); }, [taxYear, filter, limit, preparers.query]);
 
   const toggle = (k: string) => setFilter((f) => (f.includes(k) ? f.filter((x) => x !== k) : [...f, k]));
 
@@ -96,7 +98,7 @@ export function Inbox() {
           {!items.length && <tr><td colSpan={4} className="muted">Nothing needs attention. Clean queue.</td></tr>}
         </tbody>
       </table>
-      <Paginator total={total} limit={LIMIT} offset={offset} onChange={(o) => load(o)} unit="items" />
+      <Paginator total={total} limit={limit} offset={offset} onChange={(o) => load(o)} onLimitChange={setLimit} unit="items" />
       <p className="muted"><Link to="/">Back to dashboard</Link></p>
     </div>
   );

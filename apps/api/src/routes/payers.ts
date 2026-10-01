@@ -2,13 +2,15 @@
  * Payers (the firm's clients issuing 1099s).
  */
 import { Router } from 'express';
-import { and, eq, ilike, inArray, isNull, or, sql } from 'drizzle-orm';
+import { and, eq, ilike, inArray, isNotNull, isNull, or, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { AppError, formatTin, maskTin, normalizeTin, zPayerInput, zTaxYear } from '@vibe1099/shared';
 import { audit, getCrypto } from '@vibe1099/core';
-import { clientInvites, formRecords, getDb, payers, recipients } from '@vibe1099/db';
+import { clientInvites, formRecords, getDb, payers, recipients, users } from '@vibe1099/db';
 import { h } from '../middleware/error.js';
 import { requireStaff } from '../middleware/auth.js';
+import { BREAKGLASS_USERNAME, breakglassEmailFor } from '../lib/vibeAuthUsers.js';
+import { assertPreparer, zPreparerFilter } from '../services/preparers.js';
 import { checkTin } from '../services/vault.js';
 
 export const payersRouter = Router();
@@ -39,6 +41,7 @@ function toPublicPayer(p: typeof payers.$inferSelect) {
     moSourceDefault: p.moSourceDefault,
     filingProviderOverride: p.filingProviderOverride,
     defaultFormTypes: p.defaultFormTypes,
+    preparerId: p.preparerId,
     active: p.active,
     createdAt: p.createdAt,
   };
@@ -50,11 +53,13 @@ payersRouter.get(
     const q = z
       .object({
         search: z.string().optional(),
+        preparerId: zPreparerFilter,
         limit: z.coerce.number().int().min(1).max(1000).default(1000),
         offset: z.coerce.number().int().min(0).default(0),
       })
       .parse(req.query);
     const conds = [eq(payers.firmId, req.staff!.firmId)];
+    if (q.preparerId) conds.push(q.preparerId === 'none' ? isNull(payers.preparerId) : eq(payers.preparerId, q.preparerId));
     if (q.search) {
       const t = `%${q.search}%`;
       conds.push(
@@ -89,6 +94,7 @@ payersRouter.post(
     const legalName = deriveLegalName(input.legalName, input.firstName, input.lastName);
     if (!legalName) throw AppError.validation('Provide a legal name, or a first and last name.');
     const { tin } = checkTin(input.tin, input.tinType);
+    if (input.preparerId) await assertPreparer(req.staff!.firmId, input.preparerId);
     const crypto = getCrypto();
     const [created] = await getDb()
       .insert(payers)
@@ -110,10 +116,51 @@ payersRouter.post(
         moSourceDefault: input.moSourceDefault ?? false,
         filingProviderOverride: input.filingProviderOverride ?? null,
         defaultFormTypes: input.defaultFormTypes?.length ? input.defaultFormTypes : ['NEC'],
+        preparerId: input.preparerId ?? null,
       })
       .returning({ id: payers.id });
     res.locals['audit'] = { action: 'payer.create', entityType: 'payer', entityId: created?.id };
     res.status(201).json({ id: created?.id });
+  }),
+);
+
+/**
+ * Staff who can be assigned as preparer + the current payer → preparer map. One
+ * call feeds the app-wide preparer filter (it filters payer-keyed lists client-side).
+ */
+payersRouter.get(
+  '/preparers',
+  h(async (req, res) => {
+    const db = getDb();
+    const firmId = req.staff!.firmId;
+    const [staff, assigned] = await Promise.all([
+      db.select({ id: users.id, name: users.name, email: users.email, active: users.active }).from(users).where(eq(users.firmId, firmId)).orderBy(users.name),
+      db.select({ id: payers.id, preparerId: payers.preparerId }).from(payers).where(and(eq(payers.firmId, firmId), isNotNull(payers.preparerId))),
+    ]);
+    const breakglass = breakglassEmailFor(BREAKGLASS_USERNAME);
+    res.json({
+      staff: staff.filter((u) => u.email !== breakglass).map((u) => ({ id: u.id, name: u.name, active: u.active })),
+      assignments: Object.fromEntries(assigned.map((p) => [p.id, p.preparerId])),
+    });
+  }),
+);
+
+/** Assign (or clear, with null) the preparer on many payers at once. */
+payersRouter.post(
+  '/bulk-assign',
+  h(async (req, res) => {
+    const { payerIds, preparerId } = z
+      .object({ payerIds: z.array(z.string().uuid()).min(1).max(2000), preparerId: z.string().uuid().nullable() })
+      .parse(req.body);
+    const firmId = req.staff!.firmId;
+    if (preparerId) await assertPreparer(firmId, preparerId);
+    const updated = await getDb()
+      .update(payers)
+      .set({ preparerId, updatedAt: new Date() })
+      .where(and(eq(payers.firmId, firmId), inArray(payers.id, payerIds)))
+      .returning({ id: payers.id });
+    res.locals['audit'] = { action: 'payer.assign-preparer', entityType: 'payer', detail: { preparerId, count: updated.length, payerIds: updated.map((u) => u.id) } };
+    res.json({ updated: updated.length });
   }),
 );
 
@@ -312,6 +359,12 @@ payersRouter.patch(
     if (input.moSourceDefault !== undefined) patch.moSourceDefault = input.moSourceDefault;
     if (input.filingProviderOverride !== undefined) patch.filingProviderOverride = input.filingProviderOverride;
     if (input.defaultFormTypes !== undefined) patch.defaultFormTypes = input.defaultFormTypes.length ? input.defaultFormTypes : ['NEC'];
+    if (input.preparerId !== undefined) {
+      // unchanged value round-trips from the edit form — only vet a NEW assignee,
+      // so a payer whose preparer was later deactivated stays editable
+      if (input.preparerId && input.preparerId !== row.preparerId) await assertPreparer(req.staff!.firmId, input.preparerId);
+      patch.preparerId = input.preparerId;
+    }
     if (input.tin !== undefined) {
       const { tin } = checkTin(input.tin, input.tinType ?? row.tinType);
       patch.tinEncrypted = getCrypto().encrypt(tin);

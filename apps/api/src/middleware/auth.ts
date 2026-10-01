@@ -9,6 +9,7 @@ import { eq } from 'drizzle-orm';
 import { AppError, ErrorCodes, type UserRole } from '@vibe1099/shared';
 import { getCrypto, getRedis, loadEnv, safeHexEqual } from '@vibe1099/core';
 import { clientInvites, deliveries, getDb } from '@vibe1099/db';
+import { CLIENT_SESSION_PREFIX, readClientSession } from '../services/client-login.js';
 import type { StaffSession } from '../types.js';
 
 export const SESSION_COOKIE = 'v1099_sid';
@@ -133,7 +134,7 @@ export function staffIpAllowlist() {
   };
 }
 
-/** Client zone: bearer token from magic link → invite scope (payer + tax year ONLY). */
+/** Client zone: bearer token from magic link, or a code-sign-in session → invite scope (payer + tax year ONLY). */
 export function requireClient() {
   return async (req: Request, _res: Response, next: NextFunction): Promise<void> => {
     try {
@@ -141,17 +142,36 @@ export function requireClient() {
       const token = auth?.startsWith('Bearer ') ? auth.slice(7) : (req.query['token'] as string | undefined);
       if (!token) throw AppError.auth('Invite link token required');
       const crypto = getCrypto();
-      const verified = crypto.verifyScopedToken(token, 'client');
-      if (!verified) throw new AppError(ErrorCodes.E_TOKEN_EXPIRED, 'This link has expired or is invalid', 401);
-
       const db = getDb();
-      const invite = await db.query.clientInvites.findFirst({ where: eq(clientInvites.id, verified.id) });
+
+      // Signed in with a one-time code instead of a link: the browser's session
+      // cookie (SameSite=strict, so not CSRF-able) names the invites it may open;
+      // the bearer picks one of them.
+      let inviteId: string;
+      let otpSatisfied = false;
+      const viaSession = token.startsWith(CLIENT_SESSION_PREFIX);
+      if (viaSession) {
+        inviteId = token.slice(CLIENT_SESSION_PREFIX.length);
+        const sid = (req.cookies as Record<string, string> | undefined)?.[CLIENT_COOKIE];
+        const session = sid ? await readClientSession(sid) : null;
+        if (!session || !Object.hasOwn(session, inviteId)) {
+          throw new AppError(ErrorCodes.E_TOKEN_EXPIRED, 'Your session has expired — sign in again', 401);
+        }
+        otpSatisfied = session[inviteId] === true;
+      } else {
+        const verified = crypto.verifyScopedToken(token, 'client');
+        if (!verified) throw new AppError(ErrorCodes.E_TOKEN_EXPIRED, 'This link has expired or is invalid', 401);
+        inviteId = verified.id;
+      }
+
+      const invite = await db.query.clientInvites.findFirst({ where: eq(clientInvites.id, inviteId) });
       if (!invite) throw AppError.auth('Invite not found');
       if (invite.revokedAt) throw new AppError(ErrorCodes.E_TOKEN_REVOKED, 'This link has been revoked', 401);
-      if (invite.expiresAt.getTime() < Date.now()) {
+      // expiry bounds the emailed link only; a code sign-in re-proves the contact each time
+      if (!viaSession && invite.expiresAt.getTime() < Date.now()) {
         throw new AppError(ErrorCodes.E_TOKEN_EXPIRED, 'This link has expired — ask your accountant to reissue it', 401);
       }
-      if (!safeHexEqual(crypto.tokenHash(token), invite.tokenHash)) {
+      if (!viaSession && !safeHexEqual(crypto.tokenHash(token), invite.tokenHash)) {
         // token was reissued; old signed tokens must die even if unexpired
         throw new AppError(ErrorCodes.E_TOKEN_REVOKED, 'This link has been replaced — use the newest link', 401);
       }
@@ -162,6 +182,7 @@ export function requireClient() {
         payerId: invite.payerId,
         taxYear: invite.taxYear,
         formTypes: invite.formTypes,
+        otpSatisfied,
       };
       next();
     } catch (err) {

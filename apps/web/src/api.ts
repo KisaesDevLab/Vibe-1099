@@ -65,6 +65,18 @@ export function parseCentsInput(input: string): number {
   return parseInt(whole || '0', 10) * 100 + parseInt((frac + '00').slice(0, 2), 10);
 }
 
+/**
+ * Filename for a PDF downloaded for a payer: PayersName-Year-FormType-ClientID.pdf.
+ * Name/ID are reduced to filename-safe characters (same rule as the archive ZIP's
+ * per-payer files); a payer with no client ID gets "NoID". `suffix` tells apart
+ * variants of the same payer/year/form (e.g. the Z-fold vs client-copy layout).
+ */
+export function payerPdfName(payerName: string, taxYear: number, formType: string, clientId: string | null | undefined, suffix = ''): string {
+  const name = payerName.replace(/[^A-Za-z0-9]+/g, '') || 'Payer';
+  const id = (clientId ?? '').replace(/[^A-Za-z0-9-]+/g, '') || 'NoID';
+  return `${name}-${taxYear}-${formType}-${id}${suffix ? `-${suffix}` : ''}.pdf`;
+}
+
 export function downloadBlob(blob: Blob, filename: string): void {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');

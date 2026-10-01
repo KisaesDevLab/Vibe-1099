@@ -5,16 +5,17 @@
  */
 import { useCallback, useEffect, useMemo, useState, KeyboardEvent } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { api, ApiError, downloadBlob, formatCents, parseCentsInput } from '../api';
+import { api, ApiError, downloadBlob, formatCents, parseCentsInput, payerPdfName } from '../api';
 import { Combobox } from '../components/Combobox';
 import { RecipientPicker } from '../components/RecipientPicker';
 import { useTaxYears } from '../components/useTaxYears';
-import { Paginator } from '../components/Paginator';
+import { ALL_ROWS, Paginator, usePageSize } from '../components/Paginator';
+import { usePreparerFilter } from '../components/PreparerFilter';
 import { useDialogs } from '../components/Dialogs';
 
 interface BoxMeta { id: string; boxNumber: string; label: string; kind: string; stateField: boolean }
 interface RegistryForm { formType: string; title: string; boxes: BoxMeta[]; federalThresholdCents: number | null }
-interface Payer { id: string; legalName: string }
+interface Payer { id: string; legalName: string; clientId: string | null }
 interface FormRow {
   id: string;
   recipientId: string;
@@ -40,7 +41,9 @@ export function FormsGrid() {
   const [total, setTotal] = useState(0);
   const [offset, setOffset] = useState(0);
   const [showPicker, setShowPicker] = useState(false);
-  const LIMIT = 250;
+  // default All: this is a data-entry grid — a payer's whole list in one scroll
+  const [limit, setLimit] = usePageSize('forms', ALL_ROWS);
+  const preparers = usePreparerFilter();
 
   const payerId = params.get('payerId') ?? '';
   const { years: taxYears, current: currentYear } = useTaxYears();
@@ -52,11 +55,15 @@ export function FormsGrid() {
   const checkBoxes = useMemo(() => (currentDef?.boxes ?? []).filter((b) => !b.stateField && b.kind === 'checkbox'), [currentDef]);
 
   useEffect(() => {
-    api.get<{ payers: Payer[] }>('/api/payers').then((r) => {
-      setPayers(r.payers);
-      if (!payerId && r.payers[0]) setParams((p) => { p.set('payerId', r.payers[0]!.id); return p; }, { replace: true });
-    });
+    api.get<{ payers: Payer[] }>('/api/payers').then((r) => setPayers(r.payers));
   }, []); // initial load only
+
+  // payer choices honor the app-wide preparer filter (the open payer always stays listed)
+  const visiblePayers = useMemo(() => payers.filter((p) => preparers.matches(p.id) || p.id === payerId), [payers, preparers, payerId]);
+  useEffect(() => {
+    if (!payerId && visiblePayers[0]) setParams((p) => { p.set('payerId', visiblePayers[0]!.id); return p; }, { replace: true });
+  }, [payerId, visiblePayers]);
+  const payer = payers.find((p) => p.id === payerId);
 
   useEffect(() => {
     api.get<{ forms: RegistryForm[] }>(`/api/forms/registry/${taxYear}`).then((r) => setRegistry(r.forms)).catch(() => setRegistry([]));
@@ -65,9 +72,9 @@ export function FormsGrid() {
   const load = useCallback((off = 0) => {
     if (!payerId) return;
     api
-      .get<{ forms: FormRow[]; total: number }>(`/api/forms?payerId=${payerId}&taxYear=${taxYear}&formType=${formType}&limit=${LIMIT}&offset=${off}`)
+      .get<{ forms: FormRow[]; total: number }>(`/api/forms?payerId=${payerId}&taxYear=${taxYear}&formType=${formType}&limit=${limit}&offset=${off}`)
       .then((r) => { setRows(r.forms); setTotal(r.total); setOffset(off); });
-  }, [payerId, taxYear, formType]);
+  }, [payerId, taxYear, formType, limit]);
   useEffect(() => { void load(0); }, [load]);
 
   const setParam = (key: string, value: string) => setParams((p) => { p.set(key, value); return p; });
@@ -143,7 +150,7 @@ export function FormsGrid() {
     if (!ids.length) return setError('Select rows to print.');
     try {
       const blob = await api.post<Blob>('/api/batches/print', { formRecordIds: ids, layout });
-      downloadBlob(blob, `1099-${formType}-${taxYear}-${layout}.pdf`);
+      downloadBlob(blob, payerPdfName(payer?.legalName ?? '', taxYear, formType, payer?.clientId, { copyb: '', zfold: 'ZFold', client: 'ClientCopy' }[layout]));
     } catch (err) {
       setError(err instanceof ApiError ? err.message : String(err));
     }
@@ -184,7 +191,7 @@ export function FormsGrid() {
 
   const preview = async (row: FormRow) => {
     const blob = await api.get<Blob>(`/api/batches/preview/portal/${row.id}`);
-    downloadBlob(blob, `1099-${formType}-preview.pdf`);
+    downloadBlob(blob, payerPdfName(payer?.legalName ?? '', taxYear, formType, payer?.clientId));
   };
 
   const summary = useMemo(() => {
@@ -208,8 +215,8 @@ export function FormsGrid() {
       {/* context selectors */}
       <div className="panel">
         <div className="row">
-          <div className="field grow" style={{ position: 'relative' }}><label>Payer (type to search {payers.length})</label>
-            <Combobox options={payers.map((p) => ({ value: p.id, label: p.legalName }))} value={payerId} onChange={(v) => setParam('payerId', v)} placeholder="Search payers…" /></div>
+          <div className="field grow" style={{ position: 'relative' }}><label>Payer (type to search {visiblePayers.length})</label>
+            <Combobox options={visiblePayers.map((p) => ({ value: p.id, label: p.legalName }))} value={payerId} onChange={(v) => setParam('payerId', v)} placeholder="Search payers…" /></div>
           <div className="field"><label>Tax year</label>
             <select value={taxYear} onChange={(e) => setParam('taxYear', e.target.value)}>{taxYears.map((y) => <option key={y} value={y}>{y}</option>)}</select></div>
           <div className="field"><label>Form type</label>
@@ -313,7 +320,7 @@ export function FormsGrid() {
         )}
       </table>
       </div>
-      <Paginator total={total} limit={LIMIT} offset={offset} onChange={(o) => load(o)} unit={`1099-${formType} forms`} />
+      <Paginator total={total} limit={limit} offset={offset} onChange={(o) => load(o)} onLimitChange={setLimit} unit={`1099-${formType} forms`} />
       <p className="muted">Enter moves down the column (ten-key friendly). Amounts commit on blur/Enter. Sub-threshold NEC amounts warn but never block.</p>
     </div>
   );

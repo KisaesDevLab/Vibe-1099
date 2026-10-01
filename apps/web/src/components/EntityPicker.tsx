@@ -16,7 +16,11 @@ export function EntityPicker({
   onChange,
   quickAdds = [],
   unit = 'entities',
+  visible,
 }: {
+  /** Narrows what can be ADDED (search + quick-adds), e.g. the app-wide preparer
+   *  filter. Already-selected chips stay, so narrowing never drops a selection. */
+  visible?: (id: string) => boolean;
   options: Option[];
   selected: string[];
   onChange: (v: string[]) => void;
@@ -31,9 +35,9 @@ export function EntityPicker({
     const sel = new Set(selected);
     const q = query.trim().toLowerCase();
     return options
-      .filter((o) => !sel.has(o.value) && (!q || o.label.toLowerCase().includes(q) || (o.sub ?? '').toLowerCase().includes(q)))
+      .filter((o) => !sel.has(o.value) && (!visible || visible(o.value)) && (!q || o.label.toLowerCase().includes(q) || (o.sub ?? '').toLowerCase().includes(q)))
       .slice(0, 30);
-  }, [options, query, selected]);
+  }, [options, query, selected, visible]);
 
   const add = (id: string) => { onChange([...new Set([...selected, id])]); setQuery(''); };
   const addMany = (ids: string[]) => onChange([...new Set([...selected, ...ids])]);
@@ -45,10 +49,13 @@ export function EntityPicker({
       {quickAdds.length > 0 && (
         <div className="row" style={{ gap: 6, marginBottom: 6, flexWrap: 'wrap' }}>
           <span className="group-label">Add all</span>
-          {quickAdds.map((qa) => (
-            <button key={qa.label} type="button" className="small secondary" title={qa.title} disabled={!qa.ids.length}
-              onClick={() => addMany(qa.ids)}>{qa.label} ({qa.ids.length})</button>
-          ))}
+          {quickAdds.map((qa) => {
+            const ids = visible ? qa.ids.filter(visible) : qa.ids;
+            return (
+              <button key={qa.label} type="button" className="small secondary" title={qa.title} disabled={!ids.length}
+                onClick={() => addMany(ids)}>{qa.label} ({ids.length})</button>
+            );
+          })}
         </div>
       )}
 
