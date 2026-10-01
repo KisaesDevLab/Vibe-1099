@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useOutletContext } from 'react-router-dom';
+import { useSort } from '../components/useSort';
 import { api, ApiError, downloadBlob } from '../api';
 import { useDialogs } from '../components/Dialogs';
 import { usePreparerFilter } from '../components/PreparerFilter';
@@ -113,6 +114,17 @@ export function Transmissions() {
     downloadBlob(blob, `${utid}-${kind}.xml`);
   };
 
+
+  const sort = useSort(rows, {
+    payer: (t) => t.payerName,
+    utid: (t) => t.utid,
+    env: (t) => t.environment,
+    year: (t) => t.taxYear,
+    records: (t) => t.recordCount,
+    status: (t) => t.status,
+    transmitted: (t) => t.transmittedAt,
+  });
+
   return (
     <div>
       <h1>IRS transmissions (IRIS A2A)</h1>
@@ -121,9 +133,9 @@ export function Transmissions() {
       </p>
       {error && <div className="error-box" onClick={() => setError('')}>{error}</div>}
       <table className="grid">
-        <thead><tr><th>Payer</th><th>UTID / Receipt</th><th>Env</th><th>Year</th><th className="num">Records</th><th>Status</th><th>Transmitted</th><th></th></tr></thead>
+        <thead><tr>{sort.th('payer', 'Payer')}{sort.th('utid', 'UTID / Receipt')}{sort.th('env', 'Env')}{sort.th('year', 'Year')}{sort.th('records', 'Records', { className: 'num' })}{sort.th('status', 'Status')}{sort.th('transmitted', 'Transmitted')}<th></th></tr></thead>
         <tbody>
-          {rows.map((t) => (
+          {sort.rows.map((t) => (
             <>
               <tr key={t.id}>
                 <td>{t.payerName ?? <span className="muted">—</span>}</td>

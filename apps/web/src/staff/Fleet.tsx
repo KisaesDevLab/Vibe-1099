@@ -6,6 +6,7 @@
  * drills into per-payer results with retry-failed.
  */
 import { useCallback, useEffect, useState } from 'react';
+import { useSort } from '../components/useSort';
 import { api, ApiError, downloadBlob } from '../api';
 import { EntityPicker } from '../components/EntityPicker';
 import { usePreparerFilter } from '../components/PreparerFilter';
@@ -111,6 +112,16 @@ export function Fleet() {
 
   const Count = ({ n, unit }: { n: number | undefined; unit: string }) => <span className="muted"> · {n ?? '…'} {unit}</span>;
 
+
+  const sort = useSort(runs, {
+    kind: (r) => r.kind,
+    year: (r) => r.taxYear,
+    status: (r) => r.status,
+    ok: (r) => r.succeeded,
+    failed: (r) => r.failed,
+    when: (r) => r.createdAt,
+  });
+
   return (
     <div>
       <h1>Fleet operations</h1>
@@ -190,9 +201,9 @@ export function Fleet() {
 
       <h2>Run history</h2>
       <table className="grid">
-        <thead><tr><th>Kind</th><th>Year</th><th>Status</th><th className="num">OK</th><th className="num">Failed</th><th>When</th><th></th></tr></thead>
+        <thead><tr>{sort.th('kind', 'Kind')}{sort.th('year', 'Year')}{sort.th('status', 'Status')}{sort.th('ok', 'OK', { className: 'num' })}{sort.th('failed', 'Failed', { className: 'num' })}{sort.th('when', 'When')}<th></th></tr></thead>
         <tbody>
-          {runs.map((r) => (
+          {sort.rows.map((r) => (
             <tr key={r.id}>
               <td><a style={{ cursor: 'pointer' }} onClick={() => setDrill(r)}>{r.kind.replace('_', ' ')}</a></td>
               <td>{r.taxYear}</td>

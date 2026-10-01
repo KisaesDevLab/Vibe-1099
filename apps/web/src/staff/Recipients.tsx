@@ -1,4 +1,5 @@
 import { FormEvent, useEffect, useState } from 'react';
+import { useSort } from '../components/useSort';
 import { api, ApiError } from '../api';
 import { Paginator, usePageSize } from '../components/Paginator';
 import { Modal } from '../components/Modal';
@@ -204,6 +205,15 @@ export function Recipients() {
     setShowForm(true);
   };
 
+
+  const sort = useSort(recipients, {
+    name: (r) => r.name1,
+    tin: (r) => r.tinMasked,
+    city: (r) => r.address['city'],
+    contact: (r) => r.email ?? r.mobile,
+    w9: (r) => r.w9Status,
+  });
+
   return (
     <div>
       <div className="row" style={{ justifyContent: 'space-between' }}>
@@ -235,9 +245,9 @@ export function Recipients() {
       </div>
 
       <table className="grid">
-        <thead><tr><th>Name</th><th>TIN</th><th>City</th><th>Contact</th><th>W-9</th><th></th></tr></thead>
+        <thead><tr>{sort.th('name', 'Name')}{sort.th('tin', 'TIN')}{sort.th('city', 'City')}{sort.th('contact', 'Contact')}{sort.th('w9', 'W-9')}<th></th></tr></thead>
         <tbody>
-          {recipients.map((r) => (
+          {sort.rows.map((r) => (
             <tr key={r.id}>
               <td>{r.name1}{r.isItin && <span className="badge warn" style={{ marginLeft: 6 }}>ITIN</span>}
                 {r.backupWithholding && <span className="badge err" style={{ marginLeft: 6 }}>BWH</span>}</td>

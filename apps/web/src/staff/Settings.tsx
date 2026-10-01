@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useOutletContext } from 'react-router-dom';
 import { AuthSettingsPage } from '@kisaesdevlab/vibe-auth/react';
+import { useSort } from '../components/useSort';
 import { api, ApiError, csrfToken, downloadBlob } from '../api';
 import { useDialogs } from '../components/Dialogs';
 import { Modal } from '../components/Modal';
@@ -389,6 +390,22 @@ export function Settings() {
     downloadBlob(blob, 'calibration.pdf');
   };
 
+
+  const sortUsers = useSort(users, {
+    name: (u) => u.name,
+    email: (u) => u.email,
+    role: (u) => u.role,
+    totp: (u) => (u.totpEnabled ? 1 : 0),
+    lastLogin: (u) => u.lastLoginAt,
+  });
+  const sortAudit = useSort(audit, {
+    when: (a) => a.createdAt,
+    actor: (a) => a.actorType,
+    action: (a) => a.action,
+    entity: (a) => a.entityType,
+    ip: (a) => a.ip,
+  });
+
   return (
     <div>
       <h1>Settings</h1>
@@ -760,9 +777,9 @@ export function Settings() {
       {tab === 'users' && isAdmin && (
         <div className="panel">
           <table className="grid">
-            <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>TOTP</th><th>Last login</th><th></th></tr></thead>
+            <thead><tr>{sortUsers.th('name', 'Name')}{sortUsers.th('email', 'Email')}{sortUsers.th('role', 'Role')}{sortUsers.th('totp', 'TOTP')}{sortUsers.th('lastLogin', 'Last login')}<th></th></tr></thead>
             <tbody>
-              {users.map((u) => (
+              {sortUsers.rows.map((u) => (
                 <tr key={u.id} style={{ opacity: u.active ? 1 : 0.5 }}>
                   <td>{u.name}</td><td>{u.email}</td><td>{u.role}</td>
                   <td>{u.totpEnabled ? '✓' : '—'}</td>
@@ -907,9 +924,9 @@ export function Settings() {
             {isAdmin && <button className="secondary" onClick={exportAudit}>Export CSV</button>}
           </div>
           <table className="grid" style={{ marginTop: 8 }}>
-            <thead><tr><th>When</th><th>Actor</th><th>Action</th><th>Entity</th><th>IP</th></tr></thead>
+            <thead><tr>{sortAudit.th('when', 'When')}{sortAudit.th('actor', 'Actor')}{sortAudit.th('action', 'Action')}{sortAudit.th('entity', 'Entity')}{sortAudit.th('ip', 'IP')}</tr></thead>
             <tbody>
-              {audit.map((a) => (
+              {sortAudit.rows.map((a) => (
                 <tr key={a.id}>
                   <td>{new Date(a.createdAt).toLocaleString()}</td>
                   <td>{a.actorType}</td>

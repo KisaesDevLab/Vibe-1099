@@ -27,7 +27,7 @@ interface Progress {
   delivered: number;
 }
 
-type SortKey = 'payerName' | 'total' | 'ready' | 'accepted' | 'rejected' | 'delivered' | 'unfiled';
+type SortKey = 'payerName' | 'total' | 'ready' | 'transmitted' | 'accepted' | 'rejected' | 'delivered' | 'unfiled';
 type FilterKey = 'all' | 'rejects' | 'unfiled' | 'undelivered';
 
 export function Dashboard() {
@@ -174,7 +174,7 @@ export function Dashboard() {
           <tr>
             <th style={{ cursor: 'pointer' }} onClick={() => sortBy('payerName')}>Payer{sort === 'payerName' ? (dir === 1 ? ' ▲' : ' ▼') : ''}</th>
             <Th k="total" label="Total" /><Th k="unfiled" label="Unfiled" /><Th k="ready" label="Ready" />
-            <th className="num">Transmitted</th><Th k="accepted" label="Accepted" /><Th k="rejected" label="Rejected" /><Th k="delivered" label="Delivered" />
+            <Th k="transmitted" label="Transmitted" /><Th k="accepted" label="Accepted" /><Th k="rejected" label="Rejected" /><Th k="delivered" label="Delivered" />
             <th>Risk</th>
           </tr>
         </thead>

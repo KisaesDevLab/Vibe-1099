@@ -3,6 +3,7 @@
  * date/receipt/status and any rejected 1099s (with reasons), for a tax year.
  */
 import { Fragment, useEffect, useState } from 'react';
+import { useSort } from '../components/useSort';
 import { api } from '../api';
 import { useTaxYears } from '../components/useTaxYears';
 import { usePreparerFilter } from '../components/PreparerFilter';
@@ -61,6 +62,17 @@ export function FilingStatus() {
     return acc;
   }, { accepted: 0, rejected: 0, inProgress: 0, notFiled: 0 });
 
+
+  const sort = useSort(filtered, {
+    clientId: (r) => r.clientId,
+    payer: (r) => r.payerName,
+    forms: (r) => r.total,
+    status: (r) => r.status,
+    filed: (r) => r.filedAt,
+    receipt: (r) => r.receiptId,
+    rejects: (r) => r.rejectCount,
+  });
+
   return (
     <div>
       <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
@@ -87,10 +99,10 @@ export function FilingStatus() {
 
       <table className="grid">
         <thead>
-          <tr><th>Client ID</th><th>Payer</th><th>Forms</th><th>Status</th><th>Filed</th><th>Receipt</th><th>Rejects</th></tr>
+          <tr>{sort.th('clientId', 'Client ID')}{sort.th('payer', 'Payer')}{sort.th('forms', 'Forms')}{sort.th('status', 'Status')}{sort.th('filed', 'Filed')}{sort.th('receipt', 'Receipt')}{sort.th('rejects', 'Rejects')}</tr>
         </thead>
         <tbody>
-          {filtered.map((r) => (
+          {sort.rows.map((r) => (
             <Fragment key={r.payerId}>
               <tr>
                 <td className="mono">{r.clientId ?? <span className="muted">—</span>}</td>

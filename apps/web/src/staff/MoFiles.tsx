@@ -1,4 +1,5 @@
 import { FormEvent, useEffect, useState } from 'react';
+import { useSort } from '../components/useSort';
 import { api, ApiError, downloadBlob } from '../api';
 import { EntityPicker } from '../components/EntityPicker';
 import { usePreparerFilter } from '../components/PreparerFilter';
@@ -94,6 +95,25 @@ export function MoFiles() {
     load();
   };
 
+
+  const money = (v: string) => Number(v.replace(/[^0-9.-]/g, ''));
+  const sortPreview = useSort(preview ?? [], {
+    payer: (p) => p.payerName,
+    whId: (p) => p.moWithholdingId,
+    included: (p) => p.included,
+    excluded: (p) => p.excluded,
+    payments: (p) => money(p.totalPayments),
+    withheld: (p) => money(p.totalWithheld),
+  });
+  const sort = useSort(files, {
+    file: (f) => f.filename,
+    year: (f) => f.taxYear,
+    records: (f) => f.recordCount,
+    status: (f) => f.status,
+    notes: (f) => f.statusNotes,
+    created: (f) => f.createdAt,
+  });
+
   return (
     <div>
       <h1>Missouri direct file (Pub 1220)</h1>
@@ -133,9 +153,9 @@ export function MoFiles() {
         <div className="panel">
           <h2 style={{ marginTop: 0 }}>Preview</h2>
           <table className="grid">
-            <thead><tr><th>Payer</th><th>MO WH ID</th><th className="num">Included</th><th className="num">Under threshold</th><th className="num">Payments</th><th className="num">MO withheld</th></tr></thead>
+            <thead><tr>{sortPreview.th('payer', 'Payer')}{sortPreview.th('whId', 'MO WH ID')}{sortPreview.th('included', 'Included', { className: 'num' })}{sortPreview.th('excluded', 'Under threshold', { className: 'num' })}{sortPreview.th('payments', 'Payments', { className: 'num' })}{sortPreview.th('withheld', 'MO withheld', { className: 'num' })}</tr></thead>
             <tbody>
-              {preview.map((p) => (
+              {sortPreview.rows.map((p) => (
                 <tr key={p.payerId}>
                   <td>{p.payerName}{p.missingWithholdingId && <span className="badge err" style={{ marginLeft: 6 }}>missing MO WH ID</span>}</td>
                   <td>{p.moWithholdingId ?? '—'}</td>
@@ -152,9 +172,9 @@ export function MoFiles() {
       )}
 
       <table className="grid">
-        <thead><tr><th>File</th><th>Year</th><th className="num">Records</th><th>Status</th><th>Notes</th><th>Created</th><th></th></tr></thead>
+        <thead><tr>{sort.th('file', 'File')}{sort.th('year', 'Year')}{sort.th('records', 'Records', { className: 'num' })}{sort.th('status', 'Status')}{sort.th('notes', 'Notes')}{sort.th('created', 'Created')}<th></th></tr></thead>
         <tbody>
-          {files.map((f) => (
+          {sort.rows.map((f) => (
             <tr key={f.id}>
               <td className="mono">{f.filename}</td>
               <td>{f.taxYear}</td>

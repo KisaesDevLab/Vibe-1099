@@ -5,6 +5,7 @@
  */
 import { useCallback, useEffect, useMemo, useState, KeyboardEvent } from 'react';
 import { useSearchParams } from 'react-router-dom';
+import { useSort } from '../components/useSort';
 import { api, ApiError, downloadBlob, formatCents, parseCentsInput, payerPdfName } from '../api';
 import { Combobox } from '../components/Combobox';
 import { RecipientPicker } from '../components/RecipientPicker';
@@ -206,6 +207,14 @@ export function FormsGrid() {
     return totals;
   }, [rows, moneyBoxes]);
 
+
+  // box columns are registry-driven, so their sort accessors are built per form type
+  const sort = useSort<FormRow, string>(rows, {
+    recipient: (r) => r.recipient?.name1,
+    status: (r) => r.status,
+    ...Object.fromEntries(moneyBoxes.map((b) => [b.id, (r: FormRow) => (typeof r.boxValues[b.id] === 'number' ? (r.boxValues[b.id] as number) : null)])),
+  });
+
   return (
     <div>
       <h1>Form entry — 1099-{formType} TY{taxYear}</h1>
@@ -256,15 +265,15 @@ export function FormsGrid() {
         <thead>
           <tr>
             <th className="sticky" style={{ left: 0 }}><input type="checkbox" onChange={(e) => setSelected(e.target.checked ? new Set(rows.map((r) => r.id)) : new Set())} /></th>
-            <th className="sticky" style={{ left: 34 }}>Recipient</th>
-            {moneyBoxes.map((b) => <th key={b.id} className="num" title={b.label}>{b.boxNumber || '·'} {b.label.length > 22 ? b.label.slice(0, 20) + '…' : b.label}</th>)}
+            {sort.th('recipient', 'Recipient', { className: 'sticky', style: { left: 34 } })}
+            {moneyBoxes.map((b) => sort.th(b.id, <>{b.boxNumber || '·'} {b.label.length > 22 ? b.label.slice(0, 20) + '…' : b.label}</>, { className: 'num', title: b.label }))}
             {checkBoxes.map((b) => <th key={b.id} title={b.label}>{b.boxNumber || '·'} ☐</th>)}
-            <th>Status</th>
+            {sort.th('status', 'Status')}
             <th></th>
           </tr>
         </thead>
         <tbody>
-          {rows.map((row, ri) => (
+          {sort.rows.map((row, ri) => (
             <tr key={row.id}>
               <td className="sticky" style={{ left: 0 }}><input type="checkbox" checked={selected.has(row.id)} onChange={(e) => {
                 const next = new Set(selected);

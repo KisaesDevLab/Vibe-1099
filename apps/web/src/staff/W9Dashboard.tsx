@@ -1,4 +1,5 @@
 import { FormEvent, useEffect, useState } from 'react';
+import { useSort } from '../components/useSort';
 import { api, ApiError, downloadBlob } from '../api';
 
 interface W9Row {
@@ -65,6 +66,15 @@ export function W9Dashboard() {
     setNotice(`${r.marked} recipient(s) marked stale (W-9 older than the configured threshold).`);
   };
 
+
+  const sort = useSort(rows, {
+    who: (r) => r.recipientName,
+    sentTo: (r) => r.email ?? r.mobile,
+    status: (r) => r.status,
+    age: (r) => r.ageDays,
+    reminders: (r) => r.remindersSent,
+  });
+
   return (
     <div>
       <div className="row" style={{ justifyContent: 'space-between' }}>
@@ -85,9 +95,9 @@ export function W9Dashboard() {
       </form>
 
       <table className="grid">
-        <thead><tr><th>Who</th><th>Sent to</th><th>Status</th><th>Age</th><th>Reminders</th><th></th></tr></thead>
+        <thead><tr>{sort.th('who', 'Who')}{sort.th('sentTo', 'Sent to')}{sort.th('status', 'Status')}{sort.th('age', 'Age')}{sort.th('reminders', 'Reminders')}<th></th></tr></thead>
         <tbody>
-          {rows.map((r) => (
+          {sort.rows.map((r) => (
             <tr key={r.id}>
               <td>{r.recipientName || <span className="muted">unnamed</span>}
                 {r.tinMismatch && <span className="badge err" style={{ marginLeft: 6 }}>TIN MISMATCH</span>}</td>

@@ -1,4 +1,5 @@
 import { FormEvent, useEffect, useState } from 'react';
+import { useSort } from '../components/useSort';
 import { api, ApiError } from '../api';
 import { Combobox } from '../components/Combobox';
 import { useDialogs } from '../components/Dialogs';
@@ -126,6 +127,16 @@ export function Invites() {
     } catch (err) { setError(err instanceof ApiError ? err.message : String(err)); }
   };
 
+
+  const sort = useSort(invites, {
+    payer: (i) => i.payerName,
+    year: (i) => i.taxYear,
+    types: (i) => i.formTypes.join(', '),
+    status: (i) => (i.revokedAt ? 'revoked' : i.submittedAt ? 'submitted' : new Date(i.expiresAt) < new Date() ? 'expired' : 'open'),
+    expires: (i) => i.expiresAt,
+    activity: (i) => i.lastActivityAt,
+  });
+
   return (
     <div>
       <h1>Client invites</h1>
@@ -180,9 +191,9 @@ export function Invites() {
       </form>
 
       <table className="grid">
-        <thead><tr><th>Payer</th><th>Year</th><th>Types</th><th>Status</th><th>Expires</th><th>Last activity</th><th></th></tr></thead>
+        <thead><tr>{sort.th('payer', 'Payer')}{sort.th('year', 'Year')}{sort.th('types', 'Types')}{sort.th('status', 'Status')}{sort.th('expires', 'Expires')}{sort.th('activity', 'Last activity')}<th></th></tr></thead>
         <tbody>
-          {invites.map((inv) => (
+          {sort.rows.map((inv) => (
             <tr key={inv.id}>
               <td>{inv.payerName}</td>
               <td>{inv.taxYear}</td>

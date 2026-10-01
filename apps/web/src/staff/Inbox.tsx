@@ -5,6 +5,7 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useTaxYears } from '../components/useTaxYears';
+import { useSort } from '../components/useSort';
 import { api } from '../api';
 import { Paginator, usePageSize } from '../components/Paginator';
 import { usePreparerFilter } from '../components/PreparerFilter';
@@ -60,6 +61,13 @@ export function Inbox() {
     else navigate('/recipients');
   };
 
+
+  const sort = useSort(items, {
+    kind: (it) => it.kind,
+    item: (it) => it.title,
+    detail: (it) => it.detail,
+  });
+
   return (
     <div>
       <div className="row" style={{ justifyContent: 'space-between' }}>
@@ -85,9 +93,9 @@ export function Inbox() {
       </div>
 
       <table className="grid">
-        <thead><tr><th>Kind</th><th>Item</th><th>Detail</th><th></th></tr></thead>
+        <thead><tr>{sort.th('kind', 'Kind')}{sort.th('item', 'Item')}{sort.th('detail', 'Detail')}<th></th></tr></thead>
         <tbody>
-          {items.map((it, i) => (
+          {sort.rows.map((it, i) => (
             <tr key={i}>
               <td><span className={`badge ${KINDS.find((k) => k.key === it.kind)?.badge ?? 'warn'}`}>{it.kind.replace('_', ' ')}</span></td>
               <td>{it.title}</td>

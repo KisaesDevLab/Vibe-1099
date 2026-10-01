@@ -5,6 +5,7 @@
  * under Advanced. History is paginated with a drill-in for reprint-single.
  */
 import { FormEvent, useEffect, useState } from 'react';
+import { useSort } from '../components/useSort';
 import { api, ApiError, downloadBlob } from '../api';
 import { EntityPicker } from '../components/EntityPicker';
 import { usePreparerFilter } from '../components/PreparerFilter';
@@ -98,6 +99,16 @@ export function Batches() {
   const reprintOne = async (formId: string, name: string) => { downloadBlob(await api.get<Blob>(`/api/batches/preview/zfold/${formId}`), `reprint-${name}.pdf`); };
   const testPattern = async () => { downloadBlob(await api.get<Blob>('/api/batches/test-pattern'), 'pressure-seal-calibration.pdf'); };
 
+
+  const sort = useSort(batches, {
+    label: (b) => b.label,
+    year: (b) => b.taxYear,
+    forms: (b) => b.formCount,
+    pages: (b) => b.pageCount,
+    status: (b) => b.status,
+    created: (b) => b.createdAt,
+  });
+
   return (
     <div>
       <div className="row" style={{ justifyContent: 'space-between' }}>
@@ -174,9 +185,9 @@ export function Batches() {
       </form>
 
       <table className="grid">
-        <thead><tr><th>Label</th><th>Year</th><th className="num">Forms</th><th className="num">Pages</th><th>Status</th><th>Created</th><th></th></tr></thead>
+        <thead><tr>{sort.th('label', 'Label')}{sort.th('year', 'Year')}{sort.th('forms', 'Forms', { className: 'num' })}{sort.th('pages', 'Pages', { className: 'num' })}{sort.th('status', 'Status')}{sort.th('created', 'Created')}<th></th></tr></thead>
         <tbody>
-          {batches.map((b) => (
+          {sort.rows.map((b) => (
             <tr key={b.id}>
               <td><a style={{ cursor: 'pointer' }} onClick={() => openDrill(b)}>{b.label}</a></td>
               <td>{b.taxYear}</td>

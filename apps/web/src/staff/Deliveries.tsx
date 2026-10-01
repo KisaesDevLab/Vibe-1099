@@ -1,4 +1,5 @@
 import { FormEvent, useEffect, useState } from 'react';
+import { useSort } from '../components/useSort';
 import { api, ApiError } from '../api';
 import { EntityPicker } from '../components/EntityPicker';
 import { usePreparerFilter } from '../components/PreparerFilter';
@@ -74,6 +75,15 @@ export function Deliveries() {
     return <span className="badge draft">pending</span>;
   };
 
+
+  const sort = useSort(rows, {
+    channel: (d) => d.channel,
+    status: (d) => (d.tokenRevokedAt ? 'revoked' : d.bouncedAt ? 'bounced' : d.downloadedAt ? 'downloaded' : d.viewedAt ? 'viewed' : d.sentAt ? 'sent' : 'pending'),
+    corrected: (d) => (d.isCorrected ? 'corrected' : ''),
+    expires: (d) => d.tokenExpiresAt,
+    created: (d) => d.createdAt,
+  });
+
   return (
     <div>
       <h1>Deliveries</h1>
@@ -106,9 +116,9 @@ export function Deliveries() {
       </form>
 
       <table className="grid">
-        <thead><tr><th>Channel</th><th>Status</th><th>Corrected</th><th>Expires</th><th>Created</th><th></th></tr></thead>
+        <thead><tr>{sort.th('channel', 'Channel')}{sort.th('status', 'Status')}{sort.th('corrected', 'Corrected')}{sort.th('expires', 'Expires')}{sort.th('created', 'Created')}<th></th></tr></thead>
         <tbody>
-          {rows.map((d) => (
+          {sort.rows.map((d) => (
             <tr key={d.id}>
               <td>{d.channel}</td>
               <td>{status(d)}</td>

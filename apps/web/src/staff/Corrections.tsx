@@ -6,6 +6,7 @@
  */
 import { useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
+import { useSort } from '../components/useSort';
 import { api, ApiError, formatCents, parseCentsInput } from '../api';
 import { MO_FILING_ENABLED } from '../config';
 import { Combobox } from '../components/Combobox';
@@ -135,6 +136,22 @@ export function Corrections() {
 
   const numericBoxes = useMemo(() => target ? Object.entries(target.boxValues).filter(([, v]) => typeof v === 'number') : [], [target]);
 
+
+  const sortAccepted = useSort(accepted, {
+    payer: (f) => payerName(f.payerId),
+    recipient: (f) => f.recipient?.name1,
+    form: (f) => f.formType,
+    year: (f) => f.taxYear,
+    status: (f) => f.status,
+  });
+  const sortOutstanding = useSort(outstanding, {
+    payer: (f) => f.payerName,
+    recipient: (f) => f.recipientName,
+    form: (f) => `${f.formType} ${f.taxYear}`,
+    kind: (f) => f.correctionType,
+    status: (f) => f.status,
+  });
+
   return (
     <div>
       <h1>Corrections</h1>
@@ -162,9 +179,9 @@ export function Corrections() {
 
       <h2>Correctable (accepted) records</h2>
       <table className="grid">
-        <thead><tr><th>Payer</th><th>Recipient</th><th>Form</th><th>Year</th><th>Status</th><th></th></tr></thead>
+        <thead><tr>{sortAccepted.th('payer', 'Payer')}{sortAccepted.th('recipient', 'Recipient')}{sortAccepted.th('form', 'Form')}{sortAccepted.th('year', 'Year')}{sortAccepted.th('status', 'Status')}<th></th></tr></thead>
         <tbody>
-          {accepted.map((f) => (
+          {sortAccepted.rows.map((f) => (
             <tr key={f.id}>
               <td>{payerName(f.payerId)}</td>
               <td>{f.recipient?.name1} <span className="mono muted">{f.recipient?.tinMasked}</span></td>
@@ -185,9 +202,9 @@ export function Corrections() {
       {/* outstanding corrections — a real queue with payer + recipient */}
       <h2 style={{ marginTop: 20 }}>Outstanding corrections</h2>
       <table className="grid">
-        <thead><tr><th>Payer</th><th>Recipient</th><th>Form</th><th>Kind</th><th>Status</th><th></th></tr></thead>
+        <thead><tr>{sortOutstanding.th('payer', 'Payer')}{sortOutstanding.th('recipient', 'Recipient')}{sortOutstanding.th('form', 'Form')}{sortOutstanding.th('kind', 'Kind')}{sortOutstanding.th('status', 'Status')}<th></th></tr></thead>
         <tbody>
-          {outstanding.map((f) => (
+          {sortOutstanding.rows.map((f) => (
             <tr key={f.id}>
               <td>{f.payerName}</td>
               <td>{f.recipientName}</td>

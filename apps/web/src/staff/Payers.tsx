@@ -1,4 +1,5 @@
 import { FormEvent, useEffect, useState } from 'react';
+import { useSort } from '../components/useSort';
 import { api, ApiError } from '../api';
 import { Paginator, usePageSize } from '../components/Paginator';
 import { usePreparerFilter } from '../components/PreparerFilter';
@@ -150,6 +151,16 @@ export function Payers() {
     await dialogs.reveal('Payer TIN (reveal recorded in the audit log)', r.tin);
   };
 
+
+  const sort = useSort(payers, {
+    clientId: (p) => p.clientId,
+    name: (p) => p.legalName,
+    tin: (p) => p.tinMasked,
+    city: (p) => p.address['city'],
+    contact: (p) => p.contactEmail ?? p.contactMobile,
+    preparer: (p) => preparers.staff.find((s) => s.id === p.preparerId)?.name,
+  });
+
   return (
     <div>
       <div className="row" style={{ justifyContent: 'space-between' }}>
@@ -283,10 +294,10 @@ export function Payers() {
             <input type="checkbox" title="Select all on this page" checked={payers.length > 0 && selected.size === payers.length}
               onChange={(e) => setSelected(e.target.checked ? new Set(payers.map((p) => p.id)) : new Set())} />
           </th>
-          <th>Client ID</th><th>Name</th><th>TIN</th><th>City</th><th>Contact</th><th>Preparer</th><th></th>
+          {sort.th('clientId', 'Client ID')}{sort.th('name', 'Name')}{sort.th('tin', 'TIN')}{sort.th('city', 'City')}{sort.th('contact', 'Contact')}{sort.th('preparer', 'Preparer')}<th></th>
         </tr></thead>
         <tbody>
-          {payers.map((p) => (
+          {sort.rows.map((p) => (
             <tr key={p.id}>
               <td><input type="checkbox" checked={selected.has(p.id)} onChange={() => toggleSelected(p.id)} /></td>
               <td className="mono">{p.clientId ?? <span className="muted">—</span>}</td>
