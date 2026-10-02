@@ -3,16 +3,17 @@
  * review queue for client-submitted records, re-open flow.
  */
 import { Router } from 'express';
-import { and, desc, eq, inArray, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, ne, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { AppError, zClientInviteInput, zTaxYear } from '@vibe1099/shared';
 import { getCrypto, getQueue, loadEnv, notify, QUEUE_NAMES, type DeliveryJob } from '@vibe1099/core';
-import { clientInvites, firms, formRecords, getDb, payers } from '@vibe1099/db';
+import { clientInvites, firms, formRecords, getDb, payers, recipients } from '@vibe1099/db';
 import { h } from '../middleware/error.js';
 import { requireStaff } from '../middleware/auth.js';
 import { preparerCond, zPreparerFilter } from '../services/preparers.js';
 import { getSetting } from '../services/settings.js';
 import { transitionStatus } from '../services/forms.js';
+import { toPublicRecipient } from '../services/vault.js';
 
 export const invitesRouter = Router();
 invitesRouter.use(requireStaff());
@@ -361,9 +362,57 @@ invitesRouter.get(
       db.select().from(formRecords).where(and(...conds)).orderBy(desc(formRecords.updatedAt)).limit(q.limit).offset(q.offset),
       db.select({ n: sql<number>`count(*)::int` }).from(formRecords).where(and(...conds)),
     ]);
-    res.json({ queue: rows, total: countRow?.n ?? 0, limit: q.limit, offset: q.offset });
+    // Recipient context for the reviewer: masked vault record, whether it's new
+    // to this payer, and any other form already on file for the same recipient.
+    const recipientIds = [...new Set(rows.map((r) => r.recipientId))];
+    const payerIds = [...new Set(rows.map((r) => r.payerId))];
+    const [recipRows, siblingRows] = recipientIds.length
+      ? await Promise.all([
+          db.select().from(recipients).where(and(eq(recipients.firmId, req.staff!.firmId), inArray(recipients.id, recipientIds))),
+          db
+            .select({ id: formRecords.id, payerId: formRecords.payerId, recipientId: formRecords.recipientId, taxYear: formRecords.taxYear, formType: formRecords.formType, status: formRecords.status, clientSubmitted: formRecords.clientSubmitted, boxValues: formRecords.boxValues })
+            .from(formRecords)
+            .where(and(eq(formRecords.firmId, req.staff!.firmId), inArray(formRecords.recipientId, recipientIds), inArray(formRecords.payerId, payerIds))),
+        ])
+      : [[], []];
+    const recipById = new Map(recipRows.map((r) => [r.id, r]));
+    const queue = rows.map((r) => {
+      const recip = recipById.get(r.recipientId);
+      const priorYears = siblingRows.filter((p) => p.payerId === r.payerId && p.recipientId === r.recipientId && p.taxYear < r.taxYear).map((p) => p.taxYear);
+      const others = siblingRows.filter((o) => o.id !== r.id && o.payerId === r.payerId && o.recipientId === r.recipientId && o.taxYear === r.taxYear);
+      return {
+        ...r,
+        recipient: recip ? toPublicRecipient(recip) : null,
+        // new to this payer: no prior-year form and nothing staff entered this year
+        isNewRecipient: !priorYears.length && !others.some((o) => !o.clientSubmitted),
+        priorYears: [...new Set(priorYears)].sort((a, b) => b - a),
+        duplicates: others
+          .filter((o) => o.formType === r.formType)
+          .map((o) => ({ id: o.id, status: o.status, clientSubmitted: o.clientSubmitted, boxValues: o.boxValues })),
+      };
+    });
+    res.json({ queue, total: countRow?.n ?? 0, limit: q.limit, offset: q.offset });
   }),
 );
+
+/** A non-draft form already on file for the same (payer, recipient, year, type) — promoting would double-file. */
+async function assertNoFiledDuplicate(firmId: string, formId: string): Promise<void> {
+  const db = getDb();
+  const form = await db.query.formRecords.findFirst({ where: and(eq(formRecords.id, formId), eq(formRecords.firmId, firmId)) });
+  if (!form) return;
+  const dup = await db.query.formRecords.findFirst({
+    where: and(
+      eq(formRecords.firmId, firmId),
+      eq(formRecords.payerId, form.payerId),
+      eq(formRecords.recipientId, form.recipientId),
+      eq(formRecords.taxYear, form.taxYear),
+      eq(formRecords.formType, form.formType),
+      ne(formRecords.id, form.id),
+      ne(formRecords.status, 'draft'),
+    ),
+  });
+  if (dup) throw AppError.state(`This recipient already has a ${dup.status} 1099-${form.formType} for ${form.taxYear} — delete this submission or edit the existing form instead.`);
+}
 
 /** Accept an entire engagement: promote all a payer's client-submitted drafts to ready. */
 invitesRouter.post(
@@ -381,6 +430,7 @@ invitesRouter.post(
     const failed: Array<{ id: string; reason: string }> = [];
     for (const r of rows) {
       try {
+        await assertNoFiledDuplicate(firmId, r.id);
         await transitionStatus(db, firmId, r.id, 'ready', { actorId: req.staff!.userId, actorRole: req.staff!.role, reviewerGateEnabled: reviewerGate });
         promoted++;
       } catch (err) {
@@ -397,6 +447,7 @@ invitesRouter.post(
   h(async (req, res) => {
     const formId = z.string().uuid().parse(req.params['formId']);
     const reviewerGate = (await getSetting<boolean>('reviewer_gate_enabled')) ?? false;
+    await assertNoFiledDuplicate(req.staff!.firmId, formId);
     const updated = await transitionStatus(getDb(), req.staff!.firmId, formId, 'ready', {
       actorId: req.staff!.userId,
       actorRole: req.staff!.role,

@@ -15,6 +15,7 @@ import { CLIENT_COOKIE, requireClient } from '../middleware/auth.js';
 import { rateLimit } from '../middleware/rate-limit.js';
 import { createRecipient, lookupByTin } from '../services/vault.js';
 import { validateFormRecord } from '../services/forms.js';
+import { planClientSubmission } from '../services/client-submit.js';
 import { isPortalOtpVerified, maskContact, portalOtpRequired, requestPortalOtp, verifyPortalOtp } from '../services/portal-otp.js';
 import type { ClientScope } from '../types.js';
 import { CLIENT_SESSION_TTL, engagementContacts, listClientEngagements, type LoginContact, normalizeLoginContact, readClientSession, requestClientLogin, verifyClientLogin } from '../services/client-login.js';
@@ -426,18 +427,7 @@ clientPortalRouter.post(
       }
     }
 
-    // replace this invite's previous entries (client edits before submit)
-    await db
-      .delete(formRecords)
-      .where(
-        and(
-          eq(formRecords.clientInviteId, scope.inviteId),
-          eq(formRecords.status, 'draft'),
-          eq(formRecords.clientSubmitted, true),
-        ),
-      );
-
-    const created: string[] = [];
+    // validate everything before writing anything
     const issuesByEntry: Array<{ index: number; issues: unknown[] }> = [];
     for (let i = 0; i < entries.length; i++) {
       const e = entries[i]!;
@@ -449,32 +439,54 @@ clientPortalRouter.post(
         secondTinNotice: false,
       });
       const errors = issues.filter((x) => x.severity === 'error');
-      if (errors.length) {
-        issuesByEntry.push({ index: i, issues: errors });
-        continue;
-      }
-      const [row] = await db
-        .insert(formRecords)
-        .values({
-          firmId: scope.firmId,
-          payerId: scope.payerId,
-          recipientId: e.recipientId,
-          taxYear: scope.taxYear,
-          formType: e.formType as FormType,
-          boxValues: e.boxValues as Record<string, number | boolean | string | null>,
-          clientSubmitted: true,
-          clientInviteId: scope.inviteId,
-          moSource: false,
-        })
-        .returning({ id: formRecords.id });
-      if (row) created.push(row.id);
+      if (errors.length) issuesByEntry.push({ index: i, issues: errors });
     }
+    if (issuesByEntry.length) throw AppError.validation('Some entries have errors', issuesByEntry);
 
-    if (issuesByEntry.length) {
-      // reject atomically-ish: remove created rows, surface validation report
-      if (created.length) await db.delete(formRecords).where(inArray(formRecords.id, created));
-      throw AppError.validation('Some entries have errors', issuesByEntry);
-    }
+    // One form per (recipient, form type): update the draft already on file
+    // (staff-entered or an earlier submission) rather than inserting a duplicate.
+    const existing = await db
+      .select({
+        id: formRecords.id,
+        recipientId: formRecords.recipientId,
+        formType: formRecords.formType,
+        status: formRecords.status,
+        clientSubmitted: formRecords.clientSubmitted,
+        clientInviteId: formRecords.clientInviteId,
+      })
+      .from(formRecords)
+      .where(and(eq(formRecords.firmId, scope.firmId), eq(formRecords.payerId, scope.payerId), eq(formRecords.taxYear, scope.taxYear)));
+    const plan = planClientSubmission(scope.inviteId, entries, existing);
+
+    await db.transaction(async (tx) => {
+      if (plan.deletes.length) {
+        await tx
+          .delete(formRecords)
+          .where(and(inArray(formRecords.id, plan.deletes), eq(formRecords.status, 'draft'), eq(formRecords.clientSubmitted, true)));
+      }
+      for (const u of plan.updates) {
+        await tx
+          .update(formRecords)
+          .set({ boxValues: u.entry.boxValues, clientSubmitted: true, clientInviteId: scope.inviteId, updatedAt: new Date() })
+          .where(and(eq(formRecords.id, u.id), eq(formRecords.status, 'draft')));
+      }
+      if (plan.inserts.length) {
+        await tx.insert(formRecords).values(
+          plan.inserts.map((e) => ({
+            firmId: scope.firmId,
+            payerId: scope.payerId,
+            recipientId: e.recipientId,
+            taxYear: scope.taxYear,
+            formType: e.formType as FormType,
+            boxValues: e.boxValues,
+            clientSubmitted: true,
+            clientInviteId: scope.inviteId,
+            moSource: false,
+          })),
+        );
+      }
+    });
+    const created = plan.inserts.length + plan.updates.length;
 
     await db
       .update(clientInvites)
@@ -488,10 +500,10 @@ clientPortalRouter.post(
       action: 'client.submit',
       entityType: 'client_invite',
       entityId: scope.inviteId,
-      detail: { entryCount: created.length },
+      detail: { entryCount: created, updated: plan.updates.length, skipped: plan.skipped.length },
       ip: req.ip,
     });
 
-    res.json({ ok: true, created: created.length });
+    res.json({ ok: true, created, skipped: plan.skipped.length });
   }),
 );
