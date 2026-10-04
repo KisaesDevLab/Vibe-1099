@@ -3,7 +3,7 @@
  */
 import { useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { api, ApiError, downloadBlob, formatCents, parseCentsInput } from '../api';
+import { api, ApiError, downloadBlob, formatCents, formTypeLabel, parseCentsInput } from '../api';
 import { useDialogs } from '../components/Dialogs';
 import { ClientLogin, type Engagement } from './ClientLogin';
 
@@ -102,7 +102,11 @@ function ClientEngagement({ token, onSwitch, via = 'email' }: { token: string; o
   const sendCode = async (contact: number) => {
     setError('');
     try {
-      const r = await api.post<{ throttled: boolean; sentTo: string }>('/api/client-portal/request-otp', { contact }, opts);
+      const r = await api.post<{ sent: boolean; throttled?: boolean; notConfigured?: boolean; sentTo: string }>('/api/client-portal/request-otp', { contact }, opts);
+      if (r.notConfigured) {
+        setError('Codes cannot be sent yet — your accountant has not set up email/text delivery. Contact them for access.');
+        return;
+      }
       setCodeSent(r.sentTo);
       if (r.throttled) setError('A code was just sent — check your messages (resend in a moment).');
     } catch (err) { setError(err instanceof ApiError ? err.message : 'Could not send a code'); }
@@ -123,7 +127,10 @@ function ClientEngagement({ token, onSwitch, via = 'email' }: { token: string; o
   }, [session, opts, otpOk]);
 
   const kf = (ft: string, recipientId: string) => `${ft}:${recipientId}`;
-  const primaryFor = (ft: string) => (ft === 'DIV' ? 'box1a' : 'box1');
+  // the form's primary payment box comes from the registry the session carries
+  // (first money box that is not withholding) — never a per-type branch here
+  const primaryFor = (ft: string) =>
+    session?.registry.find((r) => r.formType === ft)?.boxes.find((b) => b.kind === 'cents' && b.id !== 'fedTaxWithheld')?.id ?? 'box1';
   const primaryBoxId = primaryFor(formType);
   const currentReg = session?.registry.find((r) => r.formType === formType);
   // Payment-type choices for the current form (e.g. MISC: rents / royalties /
@@ -208,8 +215,18 @@ function ClientEngagement({ token, onSwitch, via = 'email' }: { token: string; o
   const requestW9 = async (name: string) => {
     const email = await dialogs.prompt(`We'll email ${name || 'them'} a secure W-9 form. Their email:`, { title: 'Request a W-9' });
     if (!email) return;
-    await api.post('/api/client-portal/w9-request', { name, email }, opts).catch(() => {});
-    dialogs.toast('W-9 request sent — your accountant will see the result.', 'success');
+    try {
+      await api.post('/api/client-portal/w9-request', { name, email }, opts);
+      dialogs.toast('W-9 request sent — your accountant will see the result.', 'success');
+    } catch (err) {
+      setError(
+        err instanceof ApiError
+          ? err.code === 'E_VALIDATION'
+            ? 'That email address does not look valid — please try again.'
+            : err.message
+          : 'Could not send the W-9 request',
+      );
+    }
   };
 
   const printSubstitute = async (ft: string, recipientId: string, name: string) => {
@@ -241,13 +258,22 @@ function ClientEngagement({ token, onSwitch, via = 'email' }: { token: string; o
 
   const saveDraft = async () => {
     setSaving(true);
+    setError('');
     try {
       await api.put('/api/client-portal/draft', { draftState: { entries: buildEntries() } }, opts);
+      dialogs.toast('Draft saved — come back any time with your link.', 'success');
+    } catch (err) {
+      // a typo in an amount throws before the request; an expired link rejects it —
+      // either way the client must not walk away believing the draft was saved
+      setError(err instanceof ApiError ? err.message : String((err as Error).message ?? err).replace(/^Error: /, ''));
     } finally { setSaving(false); }
   };
 
+  const [submitting, setSubmitting] = useState(false);
   const submit = async () => {
+    if (submitting) return; // a double-click must not send two submissions
     setError('');
+    setSubmitting(true);
     try {
       const entries = buildEntries();
       if (!entries.length) return setError('Enter at least one amount before submitting.');
@@ -256,6 +282,8 @@ function ClientEngagement({ token, onSwitch, via = 'email' }: { token: string; o
       void r;
     } catch (err) {
       setError(err instanceof ApiError ? `${err.message}${err.details ? ' — check your amounts' : ''}` : String(err));
+    } finally {
+      setSubmitting(false);
     }
   };
 
@@ -341,7 +369,7 @@ function ClientEngagement({ token, onSwitch, via = 'email' }: { token: string; o
                     return (
                       <tr key={kf(ft, c.recipientId)}>
                         <td>{c.name1}</td>
-                        {multiType && <td className="muted">1099-{ft}</td>}
+                        {multiType && <td className="muted">{formTypeLabel(ft)}</td>}
                         <td className="num">${amounts[kf(ft, c.recipientId)]}{filed && <span className="badge ok" style={{ marginLeft: 6 }}>filed</span>}</td>
                         <td>{filed && <a style={{ cursor: 'pointer' }} onClick={() => printSubstitute(ft, c.recipientId, c.name1)}>Print 1099</a>}</td>
                       </tr>
@@ -377,7 +405,7 @@ function ClientEngagement({ token, onSwitch, via = 'email' }: { token: string; o
                 <label>What are you reporting?</label>
                 <select value={formType} onChange={(e) => setFormType(e.target.value)}>
                   {session.formTypes.map((t) => (
-                    <option key={t} value={t}>1099-{t} — {session.registry.find((r) => r.formType === t)?.title}</option>
+                    <option key={t} value={t}>{formTypeLabel(t)} — {session.registry.find((r) => r.formType === t)?.title}</option>
                   ))}
                 </select>
               </div>
@@ -393,7 +421,7 @@ function ClientEngagement({ token, onSwitch, via = 'email' }: { token: string; o
               <span className="muted">step 2 of 3</span>
             </div>
             <h2 style={{ margin: '8px 0 0' }}>{session.payerName}</h2>
-            <div className="muted" style={{ marginBottom: 10 }}>{session.taxYear} 1099-{formType} — contractors &amp; amounts paid</div>
+            <div className="muted" style={{ marginBottom: 10 }}>{session.taxYear} {formTypeLabel(formType)} — contractors &amp; amounts paid</div>
             {multiType && (
               <div className="row" style={{ gap: 6, marginBottom: 4 }}>
                 {session.formTypes.map((t) => (
@@ -499,13 +527,13 @@ function ClientEngagement({ token, onSwitch, via = 'email' }: { token: string; o
               <span className="muted">step 3 of 3</span>
             </div>
             <h2 style={{ margin: '8px 0 0' }}>Review — {session.payerName}</h2>
-            <div className="muted" style={{ marginBottom: 10 }}>{session.taxYear}{multiType ? ' — all forms' : ` 1099-${formType}`}</div>
+            <div className="muted" style={{ marginBottom: 10 }}>{session.taxYear}{multiType ? ' — all forms' : ` ${formTypeLabel(formType)}`}</div>
             <table className="grid" style={{ marginTop: 10 }}>
               <tbody>
                 {reportedRows.map(({ ft, c }) => (
                   <tr key={kf(ft, c.recipientId)}>
                     <td><a style={{ cursor: 'pointer' }} onClick={() => setDetail(c)}>{c.name1}</a></td>
-                    <td className="muted">{multiType && `1099-${ft} · `}{boxLabel(ft, boxSel[kf(ft, c.recipientId)] ?? primaryFor(ft))}</td>
+                    <td className="muted">{multiType && `${formTypeLabel(ft)} · `}{boxLabel(ft, boxSel[kf(ft, c.recipientId)] ?? primaryFor(ft))}</td>
                     <td className="num">${amounts[kf(ft, c.recipientId)]}</td>
                   </tr>
                 ))}
@@ -516,7 +544,7 @@ function ClientEngagement({ token, onSwitch, via = 'email' }: { token: string; o
             <p className="muted">By submitting you confirm these totals are accurate to the best of your knowledge.</p>
             <div className="row" style={{ justifyContent: 'space-between' }}>
               <button className="secondary" onClick={() => setStep('grid')}>← Back</button>
-              <button onClick={submit}>Submit to {session.firmName}</button>
+              <button onClick={submit} disabled={submitting}>{submitting ? 'Submitting…' : `Submit to ${session.firmName}`}</button>
             </div>
           </>
         )}

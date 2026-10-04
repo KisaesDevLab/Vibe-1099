@@ -3,7 +3,7 @@
  * AES-256-GCM envelope encryption; tin_hash HMAC lookup without decryption;
  * address/name history versioning; merge; rollforward.
  */
-import { and, desc, eq, isNull, sql } from 'drizzle-orm';
+import { and, desc, eq, isNotNull, isNull, notInArray, or, sql } from 'drizzle-orm';
 import {
   AppError,
   ErrorCodes,
@@ -83,14 +83,7 @@ export async function lookupByTin(
   if (!row) return null;
 
   // Client zone: only reveal recipients this payer already files for.
-  if (opts?.payerId) {
-    const owned = await db
-      .select({ id: formRecords.id })
-      .from(formRecords)
-      .where(and(eq(formRecords.recipientId, row.id), eq(formRecords.payerId, opts.payerId)))
-      .limit(1);
-    if (!owned.length) return null;
-  }
+  if (opts?.payerId && !(await payerOwnsRecipient(db, opts.payerId, row.id))) return null;
 
   const lastForm = await db
     .select({
@@ -116,6 +109,30 @@ export async function lookupByTin(
       ? { payerName: lastForm[0].payerName, taxYear: lastForm[0].taxYear, formType: lastForm[0].formType }
       : null,
   };
+}
+
+/** Whether a payer already files for this recipient (any year, any status). */
+export async function payerOwnsRecipient(db: Db, payerId: string, recipientId: string): Promise<boolean> {
+  const owned = await db
+    .select({ id: formRecords.id })
+    .from(formRecords)
+    .where(and(eq(formRecords.recipientId, recipientId), eq(formRecords.payerId, payerId)))
+    .limit(1);
+  return owned.length > 0;
+}
+
+/**
+ * Client-zone attachment rule: a payer may use a recipient it already files
+ * for, or one the client zone itself created that no payer has a form for yet.
+ * Anything else is another payer's vault row — it must stay invisible to this
+ * client (trust-zone isolation; IRC §7216).
+ */
+export async function payerMayUseRecipient(db: Db, payerId: string, recipientId: string): Promise<boolean> {
+  if (await payerOwnsRecipient(db, payerId, recipientId)) return true;
+  const row = await db.query.recipients.findFirst({ where: eq(recipients.id, recipientId) });
+  if (!row || row.createdFrom !== 'client') return false;
+  const used = await db.select({ id: formRecords.id }).from(formRecords).where(eq(formRecords.recipientId, recipientId)).limit(1);
+  return used.length === 0;
 }
 
 export interface UpsertOptions {
@@ -168,6 +185,7 @@ export async function createRecipient(
       email: input.email ?? null,
       mobile: input.mobile ?? null,
       backupWithholding: input.backupWithholding ?? false,
+      smsOptOut: input.smsOptOut ?? false,
       createdFrom: opts.source,
     })
     .returning({ id: recipients.id });
@@ -214,6 +232,7 @@ export async function updateRecipient(
   if (input.email !== undefined) patch.email = input.email;
   if (input.mobile !== undefined) patch.mobile = input.mobile;
   if (input.backupWithholding !== undefined) patch.backupWithholding = input.backupWithholding;
+  if (input.smsOptOut !== undefined) patch.smsOptOut = input.smsOptOut;
 
   if (input.tin !== undefined) {
     const newTinType = input.tinType ?? row.tinType;
@@ -267,10 +286,30 @@ export async function mergeRecipients(
   if (!survivor || !duplicate) throw AppError.notFound('Recipient');
   if (duplicate.mergedIntoId) throw AppError.state('Recipient is already merged');
 
+  // Only unfiled, editable records may follow the survivor. Anything already
+  // transmitted/accepted/corrected — or queued and claimed by a transmission —
+  // was filed under the DUPLICATE's TIN: re-pointing it would rewrite the
+  // as-filed identity behind Copy B reprints, the recipient-portal last-4
+  // challenge and the correction diff while the IRS still holds the old TIN.
+  const filed = await db
+    .select({ id: formRecords.id })
+    .from(formRecords)
+    .where(
+      and(
+        eq(formRecords.recipientId, duplicateId),
+        or(notInArray(formRecords.status, ['draft', 'ready', 'rejected']), isNotNull(formRecords.transmissionId)),
+      ),
+    );
+  if (filed.length) {
+    throw AppError.state(
+      `This recipient has ${filed.length} filed or in-flight form(s) — a TIN change on a filed return is a Type 2 correction, not a merge. Only draft/ready/rejected forms can be merged.`,
+    );
+  }
+
   const moved = await db
     .update(formRecords)
     .set({ recipientId: survivorId, updatedAt: new Date() })
-    .where(eq(formRecords.recipientId, duplicateId))
+    .where(and(eq(formRecords.recipientId, duplicateId), isNull(formRecords.transmissionId)))
     .returning({ id: formRecords.id });
 
   await db.update(recipients).set({ mergedIntoId: survivorId, updatedAt: new Date() }).where(eq(recipients.id, duplicateId));
@@ -291,20 +330,6 @@ export async function revealTin(db: Db, firmId: string, id: string): Promise<str
   const row = await db.query.recipients.findFirst({ where: and(eq(recipients.id, id), eq(recipients.firmId, firmId)) });
   if (!row) throw AppError.notFound('Recipient');
   return getCrypto().decrypt(row.tinEncrypted);
-}
-
-/** Prior-year rollforward: clone payer's recipient set into new-year drafts (amounts blank → handled by caller). */
-export async function rollforwardRecipients(
-  db: Db,
-  firmId: string,
-  payerId: string,
-  fromYear: number,
-): Promise<Array<{ recipientId: string; formType: string }>> {
-  const rows = await db
-    .selectDistinct({ recipientId: formRecords.recipientId, formType: formRecords.formType })
-    .from(formRecords)
-    .where(and(eq(formRecords.firmId, firmId), eq(formRecords.payerId, payerId), eq(formRecords.taxYear, fromYear)));
-  return rows;
 }
 
 export { getDb };

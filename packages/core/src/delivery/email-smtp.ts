@@ -53,12 +53,30 @@ export class SmtpEmailAdapter implements EmailAdapter {
 /** No-op adapter used when SMTP is unconfigured (dev / pre-onboarding). */
 export class NullEmailAdapter implements EmailAdapter {
   readonly name = 'null';
+  /** last few messages only — these carry live portal links and must not pile up in memory */
   sent: EmailMessage[] = [];
+  private counter = 0;
   async send(msg: EmailMessage): Promise<{ messageId: string }> {
     this.sent.push(msg);
-    return { messageId: `null-${this.sent.length}` };
+    if (this.sent.length > 50) this.sent.splice(0, this.sent.length - 50);
+    return { messageId: `null-${++this.counter}` };
   }
   async verify(): Promise<boolean> {
     return true;
+  }
+}
+
+/**
+ * Production stand-in for "nothing configured": every send FAILS loudly so the
+ * delivery row is marked bounced and the Settings test reports the gap, instead
+ * of invites, portal links, OTP codes and W-9 requests "succeeding" into a void.
+ */
+export class UnconfiguredEmailAdapter implements EmailAdapter {
+  readonly name = 'none';
+  async send(): Promise<{ messageId: string }> {
+    throw new Error('No email provider is configured — Settings → Delivery (SMTP or EmailIt)');
+  }
+  async verify(): Promise<boolean> {
+    return false;
   }
 }

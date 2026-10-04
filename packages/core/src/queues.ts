@@ -22,16 +22,26 @@ export function getQueue(name: QueueName): Queue {
     // The delivery queue's job payloads carry tokenized magic links (and the raw
     // password-reset token). Those must NOT linger in Redis after the send, where
     // anyone with Redis/BullMQ-dashboard access could harvest live credentials —
-    // so completed AND failed delivery jobs are dropped immediately.
+    // completed delivery jobs are dropped immediately. FAILED delivery jobs are
+    // kept (the worker scrubs their secrets on the terminal attempt) so an SMTP
+    // outage leaves a visible, countable trace instead of silently eating a
+    // campaign; their backoff is long enough to ride out a short outage.
     const sensitive = name === QUEUE_NAMES.delivery;
     q = new Queue(name, {
       connection: redisConnectionOptions(),
-      defaultJobOptions: {
-        attempts: 5,
-        backoff: { type: 'exponential', delay: 5_000 },
-        removeOnComplete: sensitive ? true : { count: 1000 },
-        removeOnFail: sensitive ? true : { count: 5000 },
-      },
+      defaultJobOptions: sensitive
+        ? {
+            attempts: 6,
+            backoff: { type: 'exponential', delay: 30_000 }, // 30s … 16m ≈ 30 min of retries
+            removeOnComplete: true,
+            removeOnFail: { count: 500 },
+          }
+        : {
+            attempts: 5,
+            backoff: { type: 'exponential', delay: 5_000 },
+            removeOnComplete: { count: 1000 },
+            removeOnFail: { count: 5000 },
+          },
     });
     queues.set(name, q);
   }
@@ -70,6 +80,8 @@ export interface DeliveryJob {
   vars: Record<string, string>;
   deliveryId?: string;
   w9RequestId?: string;
+  /** set by the worker on terminal failure: secrets removed, job kept only as a visible failure record */
+  scrubbed?: boolean;
 }
 
 export interface IrisTransmitJob {
@@ -83,4 +95,6 @@ export interface IrisPollJob {
   transmissionId: string;
   firmId: string;
   attempt: number;
+  /** status() calls that threw back-to-back (provider outage / breaker open); reset on any answer */
+  consecutiveErrors?: number;
 }

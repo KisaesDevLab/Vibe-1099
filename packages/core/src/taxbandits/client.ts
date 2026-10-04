@@ -8,11 +8,15 @@
  * contract; they are centralized here and in ./payload.ts so the live wire-up is a
  * localized change. The mock server mirrors these shapes.
  */
+import { createHash } from 'node:crypto';
 import { AppError, ErrorCodes } from '@vibe1099/shared';
+import { createLogger } from '../logger.js';
 import type { RecordError, IrisAckStatus } from '../iris/client.js';
 import type { FilingProvider, FilingStatusResult, FilingTransmitResult } from '../filing/provider.js';
 import { toTaxBanditsWire, type TaxBanditsPayload } from './payload.js';
 import { TaxBanditsAuth, type TaxBanditsCredentials } from './auth.js';
+
+const log = createLogger('taxbandits');
 
 export interface TaxBanditsEndpoints {
   base: string;
@@ -114,6 +118,25 @@ interface TbErrorRecord {
   Errors?: TbStatusError[] | null;
 }
 
+/**
+ * OAuth tokens live an hour, but a client is rebuilt for every poll / credits /
+ * TIN-match call (credentials are decrypted per call). Sharing the auth object
+ * per credential set — like the IRIS token cache — means one token exchange per
+ * hour instead of one per operation. Keyed on a digest so a rotated secret gets
+ * a fresh entry; bypassed when a custom fetch is injected (tests stay isolated).
+ */
+const authCache = new Map<string, TaxBanditsAuth>();
+
+function sharedAuth(tokenUrl: string, creds: TaxBanditsCredentials): TaxBanditsAuth {
+  const key = `${tokenUrl}:${creds.clientId}:${createHash('sha256').update(`${creds.clientSecret}:${creds.userToken}`).digest('hex')}`;
+  let auth = authCache.get(key);
+  if (!auth) {
+    auth = new TaxBanditsAuth(tokenUrl, creds);
+    authCache.set(key, auth);
+  }
+  return auth;
+}
+
 export class TaxBanditsClient implements FilingProvider {
   readonly kind = 'taxbandits' as const;
   private readonly auth: TaxBanditsAuth;
@@ -123,7 +146,7 @@ export class TaxBanditsClient implements FilingProvider {
     creds: TaxBanditsCredentials,
     private readonly fetchImpl: typeof fetch = fetch,
   ) {
-    this.auth = new TaxBanditsAuth(endpoints.tokenUrl, creds, fetchImpl);
+    this.auth = fetchImpl === fetch ? sharedAuth(endpoints.tokenUrl, creds) : new TaxBanditsAuth(endpoints.tokenUrl, creds, fetchImpl);
   }
 
   private async call(url: string, init: RequestInit): Promise<Response> {
@@ -138,7 +161,8 @@ export class TaxBanditsClient implements FilingProvider {
         signal: AbortSignal.timeout(120_000),
       });
     } catch (err) {
-      throw new AppError(ErrorCodes.E_IRIS, `TaxBandits request failed: ${(err as Error).message}`, 502);
+      // transport: true — the request may have reached TaxBandits (timeout / lost response)
+      throw new AppError(ErrorCodes.E_IRIS, `TaxBandits request failed: ${(err as Error).message}`, 502, { transport: true });
     }
   }
 
@@ -246,11 +270,13 @@ export class TaxBanditsClient implements FilingProvider {
     const created = this.parseSubmission(raw, payeeRefs);
     try {
       await this.release(formType, created.providerRef);
-    } catch {
+    } catch (err) {
       // The submission EXISTS at the provider — failing the app transmission here
       // would unlink the records and a recompose would create a duplicate
       // submission. Return the ref instead: the status path auto-releases any
-      // submission still sitting in CREATED on the next poll.
+      // submission still sitting in CREATED on the next poll. Never silent: the
+      // reason (e.g. exhausted prepaid credits) must reach the log.
+      log.warn({ submissionId: created.providerRef, formType, err: (err as Error).message }, 'TaxBandits release (Transmit) failed after Create — submission staged, not yet filed');
     }
     return created;
   }
@@ -272,8 +298,9 @@ export class TaxBanditsClient implements FilingProvider {
     const created = this.parseSubmission(raw, payeeRefs);
     try {
       await this.release(formType, created.providerRef);
-    } catch {
+    } catch (err) {
       // same reasoning as transmit(): poll-side auto-release retries
+      log.warn({ submissionId: created.providerRef, formType, err: (err as Error).message }, 'TaxBandits release (Transmit) failed after Correction — submission staged, not yet filed');
     }
     return created;
   }
@@ -299,21 +326,6 @@ export class TaxBanditsClient implements FilingProvider {
     const failed = body.Form1099Records?.ErrorRecords ?? [];
     if (!success.length && !failed.length) return { status: 'Processing', errors: [], raw };
 
-    // Self-heal: a submission whose records are ALL still CREATED was staged but
-    // never released to the IRS (a missed/failed Transmit step). Our app only
-    // creates submissions it intends to file, so release it now; the next poll
-    // sees TRANSMITTED/SENT TO AGENCY and proceeds normally.
-    const allCreated =
-      !failed.length && success.every((r) => (r.FederalReturn?.Status ?? '').trim().toUpperCase() === 'CREATED');
-    if (allCreated) {
-      try {
-        await this.release(formType, submissionId);
-      } catch {
-        // next poll retries the release
-      }
-      return { status: 'Processing', errors: [], raw };
-    }
-
     // Per-record status for the operator (why is this "stuck"?). Built from the
     // two buckets separately — an identity lookup back into `failed` would be
     // quadratic on a 500-record submission and breaks if the shapes are ever
@@ -325,27 +337,53 @@ export class TaxBanditsClient implements FilingProvider {
     });
     const perRecord = [...success.map((r) => describe(r, 'UNKNOWN')), ...failed.map((r) => describe(r, 'ERROR'))];
 
+    // Self-heal: a submission whose records are ALL still CREATED was staged but
+    // never released to the IRS (a missed/failed Transmit step). Our app only
+    // creates submissions it intends to file, so release it now; the next poll
+    // sees TRANSMITTED/SENT TO AGENCY and proceeds normally. The per-record
+    // CREATED statuses are returned either way so the staged state is visible
+    // to the operator instead of reading as a bare "Processing".
+    const allCreated =
+      !failed.length && success.every((r) => (r.FederalReturn?.Status ?? '').trim().toUpperCase() === 'CREATED');
+    if (allCreated) {
+      try {
+        await this.release(formType, submissionId);
+      } catch (err) {
+        log.warn({ submissionId, formType, err: (err as Error).message }, 'TaxBandits release (Transmit) still failing — submission remains staged (CREATED)');
+      }
+      return { status: 'Processing', errors: [], raw, records: perRecord };
+    }
+
     const errors: RecordError[] = [];
     const buckets = { accepted: 0, awe: 0, rejected: 0, processing: 0 };
-    const pushErrors = (r: TbStatusRecord, list: TbStatusError[] | null | undefined) => {
+    const pushErrors = (r: TbStatusRecord, list: TbStatusError[] | null | undefined, disposition: 'rejected' | 'accepted_with_errors') => {
       const recordId = r.PayeeRef ?? r.RecordId ?? '';
       let pushed = 0;
       for (const e of list ?? []) {
-        errors.push({ recordId, code: e.Id ?? e.Code ?? 'UNKNOWN', message: e.Message ?? e.Name ?? '' });
+        errors.push({ recordId, code: e.Id ?? e.Code ?? 'UNKNOWN', message: e.Message ?? e.Name ?? '', disposition });
         pushed++;
       }
-      // applyAckToRecords rejects by error presence — a rejected record with no
+      // applyAckToRecords acts on error presence — a rejected record with no
       // detail from the agency still needs an error row or it would lock accepted.
-      if (!pushed) errors.push({ recordId, code: 'REJECTED', message: 'Rejected by the agency (no error detail provided)' });
+      if (!pushed) {
+        errors.push(
+          disposition === 'rejected'
+            ? { recordId, code: 'REJECTED', message: 'Rejected by the agency (no error detail provided)', disposition }
+            : { recordId, code: 'ACCEPTED_WITH_ERRORS', message: 'Accepted with errors by the agency (no error detail provided) — file a correction', disposition },
+        );
+      }
     };
     for (const r of success) {
       const ack = recordAck(r.FederalReturn?.Status ?? '');
       buckets[ack]++;
-      if (ack === 'rejected' || ack === 'awe') pushErrors(r, r.FederalReturn?.Errors);
+      // ACCEPTED WITH ERRORS = the IRS HAS this return; it is fixed by a correction,
+      // never by re-filing an original.
+      if (ack === 'rejected') pushErrors(r, r.FederalReturn?.Errors, 'rejected');
+      else if (ack === 'awe') pushErrors(r, r.FederalReturn?.Errors, 'accepted_with_errors');
     }
     for (const r of failed) {
       buckets.rejected++;
-      pushErrors(r, r.Errors ?? r.FederalReturn?.Errors);
+      pushErrors(r, r.Errors ?? r.FederalReturn?.Errors, 'rejected');
     }
 
     if (buckets.processing > 0) return { status: 'Processing', errors: [], raw, records: perRecord };

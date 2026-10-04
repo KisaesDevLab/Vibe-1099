@@ -3,9 +3,10 @@
  * review queue for client-submitted records, re-open flow.
  */
 import { Router } from 'express';
+import { randomUUID } from 'node:crypto';
 import { and, desc, eq, inArray, ne, sql } from 'drizzle-orm';
 import { z } from 'zod';
-import { AppError, zClientInviteInput, zTaxYear } from '@vibe1099/shared';
+import { AppError, zClientInviteInput, zFormType, zTaxYear } from '@vibe1099/shared';
 import { getCrypto, getQueue, loadEnv, notify, QUEUE_NAMES, type DeliveryJob } from '@vibe1099/core';
 import { clientInvites, firms, formRecords, getDb, payers, recipients } from '@vibe1099/db';
 import { h } from '../middleware/error.js';
@@ -82,14 +83,20 @@ async function createAndSendInvite(opts: {
   const payer = await db.query.payers.findFirst({ where: and(eq(payers.id, opts.payerId), eq(payers.firmId, opts.firmId)) });
   if (!payer) throw AppError.notFound('Payer');
   const expiresAt = new Date(Date.now() + opts.expiryDays * 86_400_000);
+  // Mint the id first so the REAL token hash goes in with the insert — a 'pending'
+  // placeholder collides on the unique token_hash index when two invites are
+  // created concurrently (two staff tabs, Fleet + Invites, …).
+  const id = randomUUID();
+  const token = getCrypto().signScopedToken('client', id, expiresAt);
   const [created] = await db
     .insert(clientInvites)
     .values({
+      id,
       firmId: opts.firmId,
       payerId: opts.payerId,
       taxYear: opts.taxYear,
       formTypes: opts.formTypes,
-      tokenHash: 'pending',
+      tokenHash: getCrypto().tokenHash(token),
       email: opts.email ?? payer.contactEmail,
       mobile: opts.mobile ?? payer.contactMobile,
       expiresAt,
@@ -97,7 +104,6 @@ async function createAndSendInvite(opts: {
     })
     .returning({ id: clientInvites.id });
   if (!created) throw new Error('invite insert failed');
-  const token = await issueInviteToken(created.id, expiresAt);
   const env = loadEnv();
   const link = `${env.APP_BASE_URL}/client?token=${encodeURIComponent(token)}`;
   const firm = await db.query.firms.findFirst({ where: eq(firms.id, opts.firmId) });
@@ -148,7 +154,7 @@ invitesRouter.post(
       .object({
         payerIds: z.array(z.string().uuid()).min(1).max(1000).transform((a) => [...new Set(a)]),
         taxYear: zTaxYear,
-        formTypes: z.array(z.enum(['NEC', 'MISC', 'INT', 'DIV'])).optional(), // override presets
+        formTypes: z.array(zFormType).optional(), // override presets (registry-driven — same set as the single-invite route)
         onlyUninvited: z.boolean().default(true),
       })
       .parse(req.body);

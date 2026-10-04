@@ -16,7 +16,11 @@ describe('TIN validation heuristics', () => {
   });
   it('detects ITINs (9xx area, valid group)', () => {
     expect(validateTin('912-70-1234', 'SSN')).toMatchObject({ valid: true, isItin: true });
+    expect(validateTin('912-55-1234', 'SSN')).toMatchObject({ valid: true, isItin: true }); // 50-65 block (2012+)
+    expect(validateTin('912-65-1234', 'SSN')).toMatchObject({ valid: true, isItin: true });
+    expect(validateTin('912-66-1234', 'SSN').valid).toBe(false); // group 66-69 not ITIN
     expect(validateTin('912-89-1234', 'SSN').valid).toBe(false); // group 89 not ITIN
+    expect(validateTin('912-93-1234', 'SSN').valid).toBe(false); // group 93 not ITIN
   });
   it('rejects unassigned EIN prefixes', () => {
     expect(validateTin('07-1234567', 'EIN').valid).toBe(false);

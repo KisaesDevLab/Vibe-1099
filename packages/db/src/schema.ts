@@ -7,6 +7,7 @@
  *    HMAC-SHA256(TIN, install key) enables lookup without decryption
  *  - audit_log is append-only
  */
+import type { FilingProviderKind } from '@vibe1099/shared';
 import {
   pgTable,
   uuid,
@@ -43,7 +44,7 @@ export const firms = pgTable('firms', {
   irisEnvironment: text('iris_environment').notNull().default('ATS'), // ATS | PROD
   // filing backend: 'iris' (firm is transmitter, needs TCC) | 'tax1099' (Zenwork
   // files on the payer's behalf, no TCC). Default provider for the firm's payers.
-  filingProvider: text('filing_provider').notNull().default('iris').$type<'iris' | 'tax1099' | 'taxbandits'>(),
+  filingProvider: text('filing_provider').notNull().default('iris').$type<FilingProviderKind>(),
   tax1099ApiKeyEncrypted: text('tax1099_api_key_encrypted'), // Tax1099 app key, envelope-encrypted
   tax1099Environment: text('tax1099_environment').notNull().default('sandbox').$type<'sandbox' | 'production'>(),
   tax1099Mailing: boolean('tax1099_mailing').notNull().default(false), // let Tax1099 USPS-mail recipient copies
@@ -154,7 +155,7 @@ export const payers = pgTable('payers', {
   contactMobile: text('contact_mobile'),
   moWithholdingId: text('mo_withholding_id'), // nullable
   // per-payer override of the firm's default filing backend (null = inherit firm)
-  filingProviderOverride: text('filing_provider_override').$type<'iris' | 'tax1099' | 'taxbandits'>(),
+  filingProviderOverride: text('filing_provider_override').$type<FilingProviderKind>(),
   moSourceDefault: boolean('mo_source_default').notNull().default(false),
   defaultFormTypes: jsonb('default_form_types').notNull().default(['NEC']).$type<string[]>(),
   // staff user responsible for this payer (null = unassigned); a filter axis app-wide
@@ -295,7 +296,7 @@ export const transmissions = pgTable('transmissions', {
   taxYear: integer('tax_year').notNull(),
   environment: text('environment').notNull().$type<'ATS' | 'PROD'>(),
   // filing backend that owns this transmission (worker dispatches accordingly)
-  provider: text('provider').notNull().default('iris').$type<'iris' | 'tax1099' | 'taxbandits'>(),
+  provider: text('provider').notNull().default('iris').$type<FilingProviderKind>(),
   // the payer this submission files for (compose is per-payer); survives record
   // unlinking on rejection so the transmissions screen stays identifiable
   payerId: uuid('payer_id').references(() => payers.id),
@@ -307,8 +308,8 @@ export const transmissions = pgTable('transmissions', {
     .$type<'building' | 'transmitting' | 'transmitted' | 'polling' | 'accepted' | 'accepted_with_errors' | 'rejected' | 'failed'>(),
   isCorrection: boolean('is_correction').notNull().default(false),
   recordCount: integer('record_count').notNull().default(0),
-  xmlBlobId: uuid('xml_blob_id'),
-  ackBlobId: uuid('ack_blob_id'),
+  xmlBlobId: uuid('xml_blob_id').references(() => blobs.id, { onDelete: 'set null' }),
+  ackBlobId: uuid('ack_blob_id').references(() => blobs.id, { onDelete: 'set null' }),
   ackPayload: jsonb('ack_payload').$type<Record<string, unknown>>(),
   errorDetails: jsonb('error_details').$type<Array<Record<string, unknown>>>(),
   cfsfStates: jsonb('cfsf_states').$type<string[]>(), // CF/SF election states in this submission
@@ -333,7 +334,7 @@ export const stateFiles = pgTable('state_files', {
   payerIds: jsonb('payer_ids').notNull().$type<string[]>(),
   recordCount: integer('record_count').notNull().default(0),
   kRecordTotals: jsonb('k_record_totals').$type<Record<string, number>>(), // cents
-  fileBlobId: uuid('file_blob_id'),
+  fileBlobId: uuid('file_blob_id').references(() => blobs.id, { onDelete: 'set null' }),
   filename: text('filename').notNull().default(''),
   status: text('status')
     .notNull()
@@ -445,7 +446,7 @@ export const paperBatches = pgTable('paper_batches', {
     .references(() => firms.id),
   taxYear: integer('tax_year').notNull(),
   label: text('label').notNull().default(''),
-  pdfBlobId: uuid('pdf_blob_id'),
+  pdfBlobId: uuid('pdf_blob_id').references(() => blobs.id, { onDelete: 'set null' }),
   pageCount: integer('page_count').notNull().default(0),
   formCount: integer('form_count').notNull().default(0),
   formRecordIds: jsonb('form_record_ids').notNull().$type<string[]>(),
@@ -473,7 +474,7 @@ export const w9Requests = pgTable('w9_requests', {
   completedAt: timestamp('completed_at', { withTimezone: true }),
   remindersSent: integer('reminders_sent').notNull().default(0),
   lastReminderAt: timestamp('last_reminder_at', { withTimezone: true }),
-  pdfBlobId: uuid('pdf_blob_id'), // completed W-9 PDF (encrypted blob)
+  pdfBlobId: uuid('pdf_blob_id').references(() => blobs.id, { onDelete: 'set null' }), // completed W-9 PDF (encrypted blob)
   esignMeta: jsonb('esign_meta').$type<Record<string, unknown>>(), // IP, UTC ts, UA, typed/drawn
   tinMismatch: boolean('tin_mismatch').notNull().default(false), // vault had different TIN — staff review
   submittedData: jsonb('submitted_data').$type<Record<string, unknown>>(), // non-TIN fields for review
@@ -567,7 +568,7 @@ export const filingRuns = pgTable(
     succeeded: integer('succeeded').notNull().default(0),
     failed: integer('failed').notNull().default(0),
     items: jsonb('items').$type<Array<{ payerId?: string; label: string; ok: boolean; message?: string; refId?: string }>>(),
-    resultBlobId: uuid('result_blob_id'),
+    resultBlobId: uuid('result_blob_id').references(() => blobs.id, { onDelete: 'set null' }),
     createdBy: uuid('created_by').references(() => users.id),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     resolvedAt: timestamp('resolved_at', { withTimezone: true }),

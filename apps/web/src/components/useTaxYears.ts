@@ -40,6 +40,21 @@ export function refreshTaxYears(): void {
   void load();
 }
 
+/**
+ * A screen's selected tax year, seeded from the configured current year (not a
+ * literal) and re-synced when an admin rolls the year. Seeding from `current`
+ * means a warm-cache mount renders the right year on the first pass instead of
+ * fetching 2026 first and the real year second (two requests, racing responses).
+ */
+export function useTaxYearState(): [number, (y: number) => void, FilingYears] {
+  const fy = useTaxYears();
+  const [taxYear, setTaxYear] = useState(fy.current);
+  useEffect(() => {
+    setTaxYear(fy.current);
+  }, [fy.current]);
+  return [taxYear, setTaxYear, fy];
+}
+
 export function useTaxYears(): FilingYears {
   const [value, setValue] = useState<FilingYears>(cache ?? FALLBACK);
   useEffect(() => {

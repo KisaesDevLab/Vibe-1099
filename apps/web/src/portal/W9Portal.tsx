@@ -39,9 +39,16 @@ export function W9Portal() {
       .catch((err: unknown) => setError(err instanceof ApiError ? err.message : 'This W-9 link is not valid'));
   }, [token]);
 
+  // Pointer coordinates are CSS pixels while the bitmap is a fixed 480×120: the
+  // canvas is displayed at 100% width, so scale into bitmap space or the stroke
+  // lands ahead of (desktop) or behind (phone) the finger.
   const pos = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    const rect = e.currentTarget.getBoundingClientRect();
-    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    const c = e.currentTarget;
+    const rect = c.getBoundingClientRect();
+    return {
+      x: (e.clientX - rect.left) * (c.width / Math.max(rect.width, 1)),
+      y: (e.clientY - rect.top) * (c.height / Math.max(rect.height, 1)),
+    };
   };
   const startDraw = (e: React.PointerEvent<HTMLCanvasElement>) => {
     drawing.current = true;

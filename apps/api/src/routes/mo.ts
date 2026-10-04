@@ -70,9 +70,15 @@ async function collectMoCandidates(
       taxYear,
       record.boxValues,
     );
-    // NULL statesFiled = pre-0.1.21 transmission (unknown) → treated as not
-    // state-filed, preserving prior behaviour for historical records.
-    const alreadyStateFiled = (statesFiled ?? []).includes('MO');
+    // Per-record truth first: the as-filed snapshot records which state return(s)
+    // THIS record's submission carried (a provider only files a state return for
+    // records with a state block). Older snapshots lack it → fall back to the
+    // transmission-level union; NULL statesFiled = pre-0.1.21 transmission
+    // (unknown) → treated as not state-filed, preserving prior behaviour.
+    const snapStates = (record.filedSnapshot as { statesFiled?: unknown } | null)?.statesFiled;
+    const alreadyStateFiled = Array.isArray(snapStates)
+      ? snapStates.includes('MO')
+      : (statesFiled ?? []).includes('MO');
     const meets = meetsMoThreshold(amounts, stateTaxWithheldCents, thresholdCents);
     // The provider-filed exclusion is absolute: includeBelowThreshold must not
     // be able to pull a double filing back into the file.

@@ -4,11 +4,14 @@
  * Every billable TaxBandits event records an integer-cents ledger row attributed
  * to firm → payer → transmission → form so firms can rebill clients. Rates are
  * contract-negotiated (not the retail sheet), so per-event amounts are supplied by
- * config/estimate, not hard-coded.
+ * config/estimate, not hard-coded. Lives in core so the worker (the only live
+ * writer) and the API share ONE implementation — the audited one.
  */
 import { and, desc, eq, sql } from 'drizzle-orm';
-import { audit, notify } from '@vibe1099/core';
+import { formatUsd } from '@vibe1099/shared';
 import { firms, taxbanditsCostLedger, type Db } from '@vibe1099/db';
+import { audit } from '../audit.js';
+import { notify } from '../notify.js';
 
 export type TbCostEvent = 'efile' | 'correction' | 'void' | 'state_filing' | 'tin_match' | 'postal' | 'online_access';
 
@@ -23,6 +26,7 @@ export interface LedgerEntry {
   detail?: Record<string, unknown>;
 }
 
+/** Record a charge — always with its append-only audit row (FTC Safeguards monitoring). */
 export async function recordCost(db: Db, entry: LedgerEntry): Promise<void> {
   await db.insert(taxbanditsCostLedger).values({
     firmId: entry.firmId,
@@ -74,7 +78,7 @@ export async function checkLowBalance(db: Db, firmId: string, balanceCents: numb
       kind: 'system',
       severity: 'warning',
       title: 'TaxBandits credit balance low',
-      body: `Prepaid credit balance is $${(balanceCents / 100).toFixed(2)} — top up to avoid failed filings.`,
+      body: `Prepaid credit balance is ${formatUsd(balanceCents)} — top up to avoid failed filings.`,
       link: '/settings',
       entityType: 'firm',
       entityId: firmId,

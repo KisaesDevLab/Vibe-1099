@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useMemo, useState } from 'react';
-import { api, ApiError, formatCents } from '../api';
+import { api, ApiError, formatCents, formTypeLabel } from '../api';
 import { ALL_ROWS, Paginator, usePageSize } from '../components/Paginator';
 import { usePreparerFilter } from '../components/PreparerFilter';
 import { useDialogs } from '../components/Dialogs';
@@ -68,7 +68,7 @@ export function ReviewQueue() {
     load(offset);
   };
   const discard = async (q: QueueRow) => {
-    if (!(await dialogs.confirm(`Delete this client-submitted 1099-${q.formType} for ${q.recipient?.name1 ?? 'this recipient'}?`, { title: 'Discard submission', danger: true }))) return;
+    if (!(await dialogs.confirm(`Delete this client-submitted ${formTypeLabel(q.formType)} for ${q.recipient?.name1 ?? 'this recipient'}?`, { title: 'Discard submission', danger: true }))) return;
     await api.del(`/api/forms/${q.id}`).catch((err: ApiError) => dialogs.toast(err.message, 'error'));
     load(offset);
   };
@@ -113,7 +113,7 @@ export function ReviewQueue() {
                         {filedDup && <div><span className="badge rejected" style={{ marginTop: 4 }}>duplicate — already {filedDup.status}: {money(filedDup.boxValues) || 'no amounts'}</span></div>}
                         {!filedDup && q.duplicates.length > 0 && <div><span className="badge warn" style={{ marginTop: 4 }}>{q.duplicates.length} other draft(s) for this recipient</span></div>}
                       </td>
-                      <td>1099-{q.formType}</td>
+                      <td>{formTypeLabel(q.formType)}</td>
                       <td>{money(q.boxValues)}</td>
                       <td>{new Date(q.updatedAt).toLocaleString()}</td>
                       <td style={{ whiteSpace: 'nowrap' }}>

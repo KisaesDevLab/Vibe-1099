@@ -185,7 +185,15 @@ describe('TaxBandits status/ack parsing', () => {
       wrap([record('rec-1', 'ACCEPTED'), record('rec-2', 'REJECTED', [{ Id: 'F00-100112', Message: 'TIN/Name mismatch' }])]),
     ).status('SUB1');
     expect(r.status).toBe('AcceptedWithErrors');
-    expect(r.errors).toEqual([{ recordId: 'rec-2', code: 'F00-100112', message: 'TIN/Name mismatch' }]);
+    expect(r.errors).toEqual([{ recordId: 'rec-2', code: 'F00-100112', message: 'TIN/Name mismatch', disposition: 'rejected' }]);
+  });
+
+  it('ACCEPTED WITH ERRORS records are accepted (disposition), not rejected', async () => {
+    const r = await clientWith(
+      wrap([record('rec-1', 'ACCEPTED'), record('rec-2', 'ACCEPTED WITH ERRORS', [{ Id: 'F00-200', Message: 'Name control' }])]),
+    ).status('SUB1');
+    expect(r.status).toBe('AcceptedWithErrors');
+    expect(r.errors).toEqual([{ recordId: 'rec-2', code: 'F00-200', message: 'Name control', disposition: 'accepted_with_errors' }]);
   });
 
   it('rejection without agency detail still yields a rejecting error row', async () => {
@@ -205,7 +213,7 @@ describe('TaxBandits status/ack parsing', () => {
       wrap([record('rec-1', 'ACCEPTED')], [{ PayeeRef: 'rec-2', Errors: [{ Id: 'F01-100230', Message: 'Invalid ZIP' }] }]),
     ).status('SUB1');
     expect(r.status).toBe('AcceptedWithErrors');
-    expect(r.errors).toEqual([{ recordId: 'rec-2', code: 'F01-100230', message: 'Invalid ZIP' }]);
+    expect(r.errors).toEqual([{ recordId: 'rec-2', code: 'F01-100230', message: 'Invalid ZIP', disposition: 'rejected' }]);
   });
 });
 

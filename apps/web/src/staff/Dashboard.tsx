@@ -8,12 +8,10 @@ import { Link } from 'react-router-dom';
 import { api } from '../api';
 import { MO_FILING_ENABLED } from '../config';
 import { useDialogs } from '../components/Dialogs';
-import { useTaxYears } from '../components/useTaxYears';
+import { useTaxYearState } from '../components/useTaxYears';
 import { usePreparerFilter } from '../components/PreparerFilter';
 
 interface SavedView { id: string; name: string; config: { sort?: string; dir?: number; filter?: string; search?: string } }
-
-const CURRENT_TY = 2026;
 
 interface Progress {
   payerId: string;
@@ -31,9 +29,7 @@ type SortKey = 'payerName' | 'total' | 'ready' | 'transmitted' | 'accepted' | 'r
 type FilterKey = 'all' | 'rejects' | 'unfiled' | 'undelivered';
 
 export function Dashboard() {
-  const [taxYear, setTaxYear] = useState(CURRENT_TY);
-  const { years: taxYears, current: currentYear } = useTaxYears();
-  useEffect(() => { setTaxYear(currentYear); }, [currentYear]);
+  const [taxYear, setTaxYear, { years: taxYears }] = useTaxYearState();
   const [season, setSeason] = useState<{ progress: Progress[]; deadlines: Record<string, string>; yearLocked: boolean } | null>(null);
   const [deadlines, setDeadlines] = useState<{ deadlines: Record<string, { date: string; note: string }>; counts: Record<string, number> } | null>(null);
   const [inbox, setInbox] = useState<{ total: number; counts: Record<string, number> } | null>(null);
@@ -67,10 +63,14 @@ export function Dashboard() {
   const deleteView = async (id: string) => { await api.del(`/api/views/${id}`); loadViews(); };
 
   useEffect(() => {
-    api.get<{ progress: Progress[]; deadlines: Record<string, string>; yearLocked: boolean }>(`/api/dashboard/season/${taxYear}`).then(setSeason).catch(() => {});
-    api.get<{ deadlines: Record<string, { date: string; note: string }>; counts: Record<string, number> }>(`/api/iris/deadlines/${taxYear}`).then(setDeadlines).catch(() => {});
-    api.get<{ total: number; counts: Record<string, number> }>(`/api/inbox/${taxYear}?limit=1${preparers.query}`).then(setInbox).catch(() => {});
-    api.get<{ stats: Record<string, number> }>('/api/recipients/stats').then((r) => setVault(r.stats)).catch(() => {});
+    // stale-response guard: when the year changes, a slower answer for the OLD
+    // year must not land on top of the new one
+    let alive = true;
+    api.get<{ progress: Progress[]; deadlines: Record<string, string>; yearLocked: boolean }>(`/api/dashboard/season/${taxYear}`).then((v) => alive && setSeason(v)).catch(() => {});
+    api.get<{ deadlines: Record<string, { date: string; note: string }>; counts: Record<string, number> }>(`/api/iris/deadlines/${taxYear}`).then((v) => alive && setDeadlines(v)).catch(() => {});
+    api.get<{ total: number; counts: Record<string, number> }>(`/api/inbox/${taxYear}?limit=1${preparers.query}`).then((v) => alive && setInbox(v)).catch(() => {});
+    api.get<{ stats: Record<string, number> }>('/api/recipients/stats').then((r) => alive && setVault(r.stats)).catch(() => {});
+    return () => { alive = false; };
   }, [taxYear, preparers.query]);
 
   const daysUntil = (date: string) => Math.ceil((new Date(date + 'T23:59:59').getTime() - Date.now()) / 86_400_000);

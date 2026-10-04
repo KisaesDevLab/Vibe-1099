@@ -4,7 +4,7 @@
  */
 import { Router } from 'express';
 import { sql } from 'drizzle-orm';
-import { getQueue, getRedis, getRenderClient, loadEnv, QUEUE_NAMES, type QueueName } from '@vibe1099/core';
+import { getEmailAdapter, getQueue, getRedis, getRenderClient, getSmsAdapter, loadEnv, QUEUE_NAMES, type QueueName } from '@vibe1099/core';
 import { getDb } from '@vibe1099/db';
 import { h } from '../middleware/error.js';
 import { computeApplianceHealth, type StatusCheck } from './appliance-health.js';
@@ -52,6 +52,16 @@ healthRouter.get(
       checks['redis'] = { ok: false, error: (err as Error).message };
     }
     checks['render'] = { ok: await getRenderClient().health() };
+    // Delivery providers — informational: an appliance is healthy before SMTP is
+    // set up, but the console must show that nothing can be sent yet.
+    const emailName = getEmailAdapter().name;
+    const smsName = getSmsAdapter().name;
+    checks['delivery'] = {
+      ok: !['null', 'none'].includes(emailName),
+      email: emailName,
+      sms: smsName,
+      informational: true,
+    };
 
     const queues: Record<string, unknown> = {};
     try {

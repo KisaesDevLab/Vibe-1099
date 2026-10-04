@@ -1,6 +1,6 @@
 import { FormEvent, useEffect, useState } from 'react';
 import { useSort } from '../components/useSort';
-import { api, ApiError } from '../api';
+import { api, ApiError, parseCsv } from '../api';
 import { Paginator, usePageSize } from '../components/Paginator';
 import { Modal } from '../components/Modal';
 import { PdfImportWizard } from '../components/PdfImportWizard';
@@ -21,6 +21,7 @@ interface Recipient {
   mobile: string | null;
   w9Status: string;
   backupWithholding: boolean;
+  smsOptOut: boolean;
 }
 
 interface VaultMatch {
@@ -35,7 +36,7 @@ interface VaultMatch {
 const emptyForm = {
   tin: '', tinType: 'SSN' as 'SSN' | 'EIN', name1: '', name2: '',
   line1: '', line2: '', city: '', state: 'MO', zip: '',
-  email: '', mobile: '', backupWithholding: false,
+  email: '', mobile: '', backupWithholding: false, smsOptOut: false,
 };
 
 export function Recipients() {
@@ -105,6 +106,7 @@ export function Recipients() {
       address: { line1: form.line1, line2: form.line2, city: form.city, state: form.state, zip: form.zip },
       email: form.email || null, mobile: form.mobile || null,
       backupWithholding: form.backupWithholding,
+      smsOptOut: form.smsOptOut,
     };
     try {
       if (editing) await api.patch(`/api/recipients/${editing}`, body);
@@ -158,15 +160,6 @@ export function Recipients() {
     await load();
   };
 
-  const parseCsv = (text: string): Array<Record<string, string>> => {
-    const lines = text.trim().split(/\r?\n/);
-    const headers = (lines[0] ?? '').split(',').map((h) => h.trim());
-    return lines.slice(1).map((line) => {
-      const cells = line.split(',').map((c) => c.trim());
-      return Object.fromEntries(headers.map((h, i) => [h, cells[i] ?? '']));
-    });
-  };
-
   const previewImport = async () => {
     const rows = parseCsv(importText);
     const r = await api.post<{ preview: Array<{ row: number; status: string; name?: string; reason?: string; matchName?: string }> }>('/api/recipients/import/preview', { rows });
@@ -200,7 +193,7 @@ export function Recipients() {
       tin: '', tinType: r.tinType, name1: r.name1, name2: r.name2,
       line1: r.address['line1'] ?? '', line2: r.address['line2'] ?? '', city: r.address['city'] ?? '',
       state: r.address['state'] ?? 'MO', zip: r.address['zip'] ?? '',
-      email: r.email ?? '', mobile: r.mobile ?? '', backupWithholding: r.backupWithholding,
+      email: r.email ?? '', mobile: r.mobile ?? '', backupWithholding: r.backupWithholding, smsOptOut: r.smsOptOut,
     });
     setShowForm(true);
   };
@@ -293,6 +286,10 @@ export function Recipients() {
               <div className="field"><label>Backup withholding</label>
                 <select value={form.backupWithholding ? '1' : '0'} onChange={(e) => setForm((f) => ({ ...f, backupWithholding: e.target.value === '1' }))}>
                   <option value="0">No</option><option value="1">Yes</option>
+                </select></div>
+              <div className="field"><label>SMS opt-out (STOP)</label>
+                <select value={form.smsOptOut ? '1' : '0'} onChange={(e) => setForm((f) => ({ ...f, smsOptOut: e.target.value === '1' }))} title="Honored at the send layer: no text messages to this number">
+                  <option value="0">No</option><option value="1">Yes — never text</option>
                 </select></div>
             </div>
             {match && (

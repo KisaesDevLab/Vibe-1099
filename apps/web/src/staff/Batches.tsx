@@ -6,10 +6,10 @@
  */
 import { FormEvent, useEffect, useState } from 'react';
 import { useSort } from '../components/useSort';
-import { api, ApiError, downloadBlob } from '../api';
+import { api, ApiError, downloadBlob, FORM_TYPES, formTypeLabel } from '../api';
 import { EntityPicker } from '../components/EntityPicker';
 import { usePreparerFilter } from '../components/PreparerFilter';
-import { useTaxYears } from '../components/useTaxYears';
+import { useTaxYearState } from '../components/useTaxYears';
 import { Paginator, usePageSize } from '../components/Paginator';
 import { Modal } from '../components/Modal';
 import { useDialogs } from '../components/Dialogs';
@@ -31,10 +31,8 @@ export function Batches() {
   const [offset, setOffset] = useState(0);
   const [payers, setPayers] = useState<Payer[]>([]);
   const [payerIds, setPayerIds] = useState<string[]>([]);
-  const [formTypes, setFormTypes] = useState<string[]>(['NEC', 'MISC', 'INT', 'DIV']);
-  const [taxYear, setTaxYear] = useState(2026);
-  const { years: taxYears, current: currentYear } = useTaxYears();
-  useEffect(() => { setTaxYear(currentYear); }, [currentYear]);
+  const [formTypes, setFormTypes] = useState<string[]>([...FORM_TYPES]);
+  const [taxYear, setTaxYear, { years: taxYears }] = useTaxYearState();
   const [label, setLabel] = useState('');
   const [statuses, setStatuses] = useState<string[]>(['accepted', 'accepted_with_errors']);
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -51,9 +49,13 @@ export function Batches() {
   useEffect(() => { void load(0); }, [limit]);
   // Poll the page currently in view. Re-arm on page change — a mount-scoped
   // interval would capture offset=0 forever and snap pagination back to page 1.
+  // Paused while the tab is hidden (nothing to show, nothing to spend); refreshes
+  // as soon as it is visible again.
   useEffect(() => {
-    const t = setInterval(() => void load(offset), 5000);
-    return () => clearInterval(t);
+    const tick = () => { if (!document.hidden) void load(offset); };
+    const t = setInterval(tick, 5000);
+    document.addEventListener('visibilitychange', tick);
+    return () => { clearInterval(t); document.removeEventListener('visibilitychange', tick); };
   }, [offset, limit]);
   useEffect(() => { api.get<Pending>(`/api/payers/pending/${taxYear}`).then(setPending).catch(() => {}); }, [taxYear]);
 
@@ -125,9 +127,9 @@ export function Batches() {
           <div className="field">
             <label>Form types</label>
             <div className="row" style={{ gap: 8 }}>
-              {['NEC', 'MISC', 'INT', 'DIV'].map((t) => (
+              {FORM_TYPES.map((t) => (
                 <label key={t} style={{ display: 'flex', gap: 4, alignItems: 'center', fontSize: 13, color: 'var(--text)' }}>
-                  <input type="checkbox" style={{ width: 'auto' }} checked={formTypes.includes(t)} onChange={() => toggle(formTypes, setFormTypes, t)} /> {t}
+                  <input type="checkbox" style={{ width: 'auto' }} checked={formTypes.includes(t)} onChange={() => toggle(formTypes, setFormTypes, t)} /> {formTypeLabel(t)}
                 </label>
               ))}
             </div>
@@ -215,7 +217,7 @@ export function Batches() {
             <thead><tr><th>Payer</th><th>Recipient</th><th>Form</th><th></th></tr></thead>
             <tbody>
               {drill.forms.map((f) => (
-                <tr key={f.id}><td>{f.payerName}</td><td>{f.recipientName}</td><td>1099-{f.formType}</td>
+                <tr key={f.id}><td>{f.payerName}</td><td>{f.recipientName}</td><td>{formTypeLabel(f.formType)}</td>
                   <td><button className="small secondary" onClick={() => reprintOne(f.id, f.recipientName)}>Reprint</button></td></tr>
               ))}
             </tbody>

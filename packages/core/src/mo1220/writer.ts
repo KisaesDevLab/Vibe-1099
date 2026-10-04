@@ -48,6 +48,18 @@ function blank(width: number): string {
   return ' '.repeat(width);
 }
 
+/**
+ * T-record Contact Email (359-408) is the ONE field Pub 1220 lets through as-is
+ * ("may be case sensitive"): the '@' and lowercase must survive, so it bypasses
+ * the uppercase-alpha filter and only drops non-printable / non-ASCII bytes.
+ */
+function emailField(s: string, width: number): string {
+  return s.replace(/[^\x21-\x7E]/g, '').slice(0, width).padEnd(width, ' ');
+}
+
+/** Generational suffixes are not part of the surname for name-control purposes. */
+const NAME_SUFFIXES = new Set(['JR', 'SR', 'II', 'III', 'IV', 'V']);
+
 class RecordBuilder {
   private buf: string[];
   constructor(type: string) {
@@ -71,12 +83,39 @@ class RecordBuilder {
   }
 }
 
-/** Name control: first 4 significant chars — business first word, individual last word. */
+/**
+ * Name control (Pub 1220 Part C, payee/payer name control rules):
+ *  - individual (SSN): first 4 characters of the SURNAME — "LAST, FIRST" when a
+ *    comma is present, otherwise the last word after dropping generational
+ *    suffixes (JR/SR/II/III/IV/V); "JOHN SMITH JR" → SMIT, never "JR".
+ *  - business (EIN): first 4 significant characters of the name with embedded
+ *    blanks removed, ignoring a leading "THE" when more words follow
+ *    ("THE WILLOW CO" → WILL, "4-R RANCH" → 4-RR, "A & B PLUMBING" → A&BP).
+ * Blank-padded when nothing determinable remains (a wrong value is worse than
+ * the blank the spec permits).
+ */
 export function nameControl(name1: string, tinType: 'SSN' | 'EIN'): string {
-  const cleaned = ascii(name1).replace(/[^A-Z0-9 \-&]/g, '').trim();
-  if (!cleaned) return '    ';
-  const words = cleaned.split(/\s+/);
-  const src = tinType === 'SSN' ? (words[words.length - 1] ?? '') : (words[0] ?? '');
+  const upper = ascii(name1).trim();
+  if (!upper) return '    ';
+  const significant = (s: string) => s.replace(/[^A-Z0-9 \-&]/g, '').trim();
+  let src: string;
+  if (tinType === 'SSN') {
+    const comma = upper.indexOf(',');
+    const afterComma = comma > 0 ? significant(upper.slice(comma + 1)).replace(/\s+/g, '') : '';
+    if (comma > 0 && afterComma && !NAME_SUFFIXES.has(afterComma)) {
+      // "LAST, FIRST [MIDDLE]" — the surname is everything before the comma
+      src = significant(upper.slice(0, comma)).replace(/\s+/g, '');
+    } else {
+      // "FIRST [MIDDLE] LAST[, SUFFIX]" — drop a trailing generational suffix, then take the last word
+      const words = significant(comma > 0 ? upper.slice(0, comma) : upper).split(/\s+/).filter(Boolean);
+      while (words.length > 1 && NAME_SUFFIXES.has(words[words.length - 1] ?? '')) words.pop();
+      src = words[words.length - 1] ?? '';
+    }
+  } else {
+    const words = significant(upper).split(/\s+/).filter(Boolean);
+    if (words.length > 2 && words[0] === 'THE') words.shift();
+    src = words.join('');
+  }
   return src.replace(/[^A-Z0-9\-&]/g, '').slice(0, 4).padEnd(4, ' ');
 }
 
@@ -152,10 +191,14 @@ export function buildMo1220File(input: Mo1220Input): Mo1220Output {
   const totalPayees = input.groups.reduce((n, g) => n + g.payees.length, 0);
 
   // ---- T record --------------------------------------------------------------
+  const transmitterTin = input.transmitter.tin.replace(/\D/g, '');
+  if (!/^\d{9}$/.test(transmitterTin)) {
+    throw new Error('Transmitter (firm) EIN must be 9 digits before a Missouri file can be built — Settings → Firm');
+  }
   const t = new RecordBuilder('T');
   t.set(2, num(input.taxYear, 4));
   if (input.priorYear) t.set(6, 'P');
-  t.set(7, alpha(input.transmitter.tin.replace(/\D/g, ''), 9));
+  t.set(7, alpha(transmitterTin, 9));
   if (input.testFile) t.set(28, 'T');
   t.set(30, alpha(input.transmitter.name, 40));
   t.set(110, alpha(input.transmitter.companyName, 40));
@@ -166,7 +209,7 @@ export function buildMo1220File(input: Mo1220Input): Mo1220Output {
   t.set(296, num(totalPayees, 8));
   t.set(304, alpha(input.transmitter.contactName, 40));
   t.set(344, alpha(input.transmitter.contactPhone.replace(/\D/g, ''), 15));
-  t.set(359, alpha(input.transmitter.contactEmail, 50));
+  t.set(359, emailField(input.transmitter.contactEmail, 50));
   t.set(518, 'I'); // in-house software indicator
   records.push(t.build(next()));
 
@@ -185,7 +228,11 @@ export function buildMo1220File(input: Mo1220Input): Mo1220Output {
     a.set(12, alpha(group.payer.tin.replace(/\D/g, ''), 9));
     a.set(21, nameControl(group.payer.name, group.payer.tinType));
     a.set(26, alpha(def.mo1220ReturnType, 2));
-    a.set(28, alpha(codes, 16));
+    // Amount Codes occupy 28-45 (18 positions — one per B-record payment field
+    // 1-9, A-J; 46-51 blank). Truncating would declare fewer codes than the B/C/K
+    // records carry (1099-DIV legitimately has 17), so overflow is an error.
+    if (codes.length > 18) throw new Error(`Amount codes overflow the A record: ${codes}`);
+    a.set(28, alpha(codes, 18));
     a.set(53, alpha(group.payer.name, 40));
     a.set(134, alpha(group.payer.address, 40));
     a.set(174, alpha(group.payer.city, 40));
@@ -209,6 +256,9 @@ export function buildMo1220File(input: Mo1220Input): Mo1220Output {
       b.set(11, payee.tinType === 'EIN' ? '1' : '2');
       b.set(12, alpha(payee.tin.replace(/\D/g, ''), 9));
       b.set(21, alpha(payee.accountNumber, 20));
+      // Payment Amount fields 1-9, A-J (55-270) are numeric and REQUIRED: unused
+      // ones are zero-filled, never blank (Pub 1220 Part C, B record).
+      for (const pos of Object.values(AMOUNT_FIELD_POS)) b.set(pos, centsToPub1220(0, 12));
       for (const [code, cents] of Object.entries(payee.amounts)) {
         const pos = AMOUNT_FIELD_POS[code];
         if (pos == null) throw new Error(`Unknown Pub 1220 amount code: ${code}`);
@@ -222,11 +272,11 @@ export function buildMo1220File(input: Mo1220Input): Mo1220Output {
       b.set(448, alpha(payee.city, 40));
       b.set(488, alpha(payee.state, 2));
       b.set(490, alpha(payee.zip.replace(/\D/g, ''), 9));
-      // state tax withheld (positions 723-734), CF/SF code (747-748)
-      if (payee.stateTaxWithheldCents > 0) {
-        b.set(723, centsToPub1220(payee.stateTaxWithheldCents, 12));
-        groupStateWithheld += payee.stateTaxWithheldCents;
-      }
+      // state tax withheld (723-734) and local tax withheld (735-746) are numeric
+      // fields too — zero-filled when nothing was withheld; CF/SF code (747-748)
+      b.set(723, centsToPub1220(payee.stateTaxWithheldCents, 12));
+      b.set(735, centsToPub1220(0, 12));
+      groupStateWithheld += payee.stateTaxWithheldCents;
       b.set(747, MO_CFSF_CODE);
       records.push(b.build(next()));
     }

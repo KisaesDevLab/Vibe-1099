@@ -103,6 +103,24 @@ describe('form-type registry (form_type, tax_year)', () => {
     expect(issues.some((i) => i.code === 'E_QUAL_GT_ORD')).toBe(true);
   });
 
+  it('validates: MISC threshold is measured against the registry-listed §6041 boxes, largest wins', () => {
+    const def = getFormDef('MISC', 2026);
+    // $500 other income → under the $2,000 default, flagged on box3
+    const warn = def.validate({ box3: 50000 }, CTX).find((i) => i.code === 'W_UNDER_THRESHOLD');
+    expect(warn?.severity).toBe('warning');
+    expect(warn?.boxId).toBe('box3');
+    // royalties are a $10 class — never measured against the $2,000 threshold
+    expect(def.validate({ box2: 50000 }, CTX).some((i) => i.code === 'W_UNDER_THRESHOLD')).toBe(false);
+    // $2,500 rents clears it even with a small other-income amount alongside
+    expect(def.validate({ box1: 250000, box3: 1000 }, CTX).some((i) => i.code === 'W_UNDER_THRESHOLD')).toBe(false);
+  });
+
+  it('validates: a void / Type-2 zeroing correction is not an empty form', () => {
+    const def = getFormDef('NEC', 2026);
+    expect(def.validate({ box1: 0 }, CTX).some((i) => i.code === 'E_EMPTY_FORM')).toBe(true);
+    expect(def.validate({ box1: 0 }, { ...CTX, zeroCorrection: true }).some((i) => i.code === 'E_EMPTY_FORM')).toBe(false);
+  });
+
   it('deadlines: Jan 31 furnish, Mar 31 e-file, last day of Feb for MO (leap-aware)', () => {
     expect(deadlinesFor(2026)).toEqual({
       recipientFurnish: '2027-01-31',

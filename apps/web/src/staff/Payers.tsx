@@ -1,6 +1,6 @@
 import { FormEvent, useEffect, useState } from 'react';
 import { useSort } from '../components/useSort';
-import { api, ApiError } from '../api';
+import { api, ApiError, FORM_TYPES, formTypeLabel, parseCsv } from '../api';
 import { Paginator, usePageSize } from '../components/Paginator';
 import { usePreparerFilter } from '../components/PreparerFilter';
 import { useDialogs } from '../components/Dialogs';
@@ -73,14 +73,6 @@ export function Payers() {
   const toggleSelected = (id: string) =>
     setSelected((cur) => { const next = new Set(cur); if (next.has(id)) next.delete(id); else next.add(id); return next; });
 
-  const parseCsv = (text: string): Array<Record<string, string>> => {
-    const lines = text.trim().split(/\r?\n/);
-    const headers = (lines[0] ?? '').split(',').map((h) => h.trim());
-    return lines.slice(1).map((line) => {
-      const cells = line.split(',').map((c) => c.trim());
-      return Object.fromEntries(headers.map((h, i) => [h, cells[i] ?? '']));
-    });
-  };
   const previewImport = async () => {
     const r = await api.post<{ preview: Array<{ row: number; status: string; name?: string; reason?: string }> }>('/api/payers/import/preview', { rows: parseCsv(importText) });
     setImportPreview(r.preview);
@@ -239,9 +231,9 @@ export function Payers() {
             <div className="field">
               <label>Default form types (preset for invites)</label>
               <div className="row" style={{ gap: 8 }}>
-                {['NEC', 'MISC', 'INT', 'DIV'].map((t) => (
+                {FORM_TYPES.map((t) => (
                   <label key={t} style={{ display: 'flex', gap: 4, alignItems: 'center', fontSize: 13, color: 'var(--text)' }}>
-                    <input type="checkbox" style={{ width: 'auto' }} checked={form.defaultFormTypes.includes(t)} onChange={() => toggleFormType(t)} /> {t}
+                    <input type="checkbox" style={{ width: 'auto' }} checked={form.defaultFormTypes.includes(t)} onChange={() => toggleFormType(t)} /> {formTypeLabel(t)}
                   </label>
                 ))}
               </div>

@@ -86,9 +86,11 @@ describe('MO Pub 1220 writer — golden layout', () => {
     expect(out.recordCounts).toEqual({ t: 1, a: 1, b: 2, c: 1, k: 1, f: 1 });
   });
 
-  it('records are uppercase ASCII', () => {
+  it('records are uppercase ASCII — except the T-record contact email, which Pub 1220 keeps case-sensitive', () => {
     for (const r of records) expect(r).toMatch(/^[\x20-\x7E]+$/);
-    expect(out.content).not.toMatch(/[a-z]/);
+    const withoutEmail = (r: string, i: number) => (i === 0 ? r.slice(0, 358) + r.slice(408) : r);
+    for (const [i, r] of records.entries()) expect(withoutEmail(r, i)).not.toMatch(/[a-z]/);
+    expect(field(t, 359, 408)).toBe('admin@demo.firm'.padEnd(50));
   });
 
   it('T record: year, transmitter TIN, payee count, contact, sequence 1', () => {
@@ -127,7 +129,11 @@ describe('MO Pub 1220 writer — golden layout', () => {
     // second payee: EIN
     expect(field(b2, 11, 11)).toBe('1');
     expect(field(b2, 55, 66)).toBe('000002200000');
-    expect(field(b2, 723, 734)).toBe(' '.repeat(12)); // no withholding → blank
+    expect(field(b2, 723, 734)).toBe('000000000000'); // no withholding → zero-filled (numeric field, never blank)
+    expect(field(b2, 735, 746)).toBe('000000000000'); // local withholding, always zero
+    expect(field(b2, 67, 78)).toBe('000000000000'); // unused payment amount 2 → zero-filled
+    expect(field(b2, 259, 270)).toBe('000000000000'); // unused payment amount J → zero-filled
+    expect(field(b2, 55, 270)).toMatch(/^\d{216}$/); // every payment amount slot is numeric
   });
 
   it('C record: payee count + 18-char control totals per amount code', () => {
@@ -179,5 +185,13 @@ describe('MO threshold + mapping helpers', () => {
     expect(nameControl('JORDAN ABLE', 'SSN')).toBe('ABLE');
     expect(nameControl('ACME CONSTRUCTION LLC', 'EIN')).toBe('ACME');
     expect(nameControl('NG', 'SSN')).toBe('NG  ');
+    // generational suffixes are not the surname
+    expect(nameControl('JOHN SMITH JR', 'SSN')).toBe('SMIT');
+    expect(nameControl('James P. En, Sr.', 'SSN')).toBe('EN  ');
+    expect(nameControl('Smith, John', 'SSN')).toBe('SMIT');
+    // business: leading THE ignored, embedded blanks removed
+    expect(nameControl('THE WILLOW CO', 'EIN')).toBe('WILL');
+    expect(nameControl('4-R RANCH', 'EIN')).toBe('4-RR');
+    expect(nameControl('A & B PLUMBING', 'EIN')).toBe('A&BP');
   });
 });

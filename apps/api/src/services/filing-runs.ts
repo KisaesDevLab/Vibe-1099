@@ -96,14 +96,25 @@ export async function createRun(
   return row.id;
 }
 
-async function finishRun(db: Db, runId: string, firmId: string, kind: RunKind, items: RunItem[], link: string): Promise<void> {
+/** Persist a run's outcome (counts + items + optional result blob); returns the verdict. */
+async function completeRun(
+  db: Db,
+  runId: string,
+  items: RunItem[],
+  resultBlobId: string | null = null,
+): Promise<{ status: 'completed' | 'failed' | 'partial'; succeeded: number; failed: number }> {
   const succeeded = items.filter((i) => i.ok).length;
   const failed = items.length - succeeded;
   const status = failed === 0 ? 'completed' : succeeded === 0 ? 'failed' : 'partial';
   await db
     .update(filingRuns)
-    .set({ status, total: items.length, succeeded, failed, items, resolvedAt: new Date() })
+    .set({ status, total: items.length, succeeded, failed, items, resultBlobId, resolvedAt: new Date() })
     .where(eq(filingRuns.id, runId));
+  return { status, succeeded, failed };
+}
+
+async function finishRun(db: Db, runId: string, firmId: string, kind: RunKind, items: RunItem[], link: string): Promise<void> {
+  const { status, succeeded, failed } = await completeRun(db, runId, items);
   await notify(db, {
     firmId,
     kind: 'filing_run',
@@ -114,6 +125,16 @@ async function finishRun(db: Db, runId: string, firmId: string, kind: RunKind, i
     entityType: 'filing_run',
     entityId: runId,
   });
+}
+
+/** A detached run that threw outside its per-payer loop must not stay `running` forever. */
+async function failRun(db: Db, runId: string, err: unknown): Promise<void> {
+  const message = err instanceof AppError ? err.message : String(err);
+  await db
+    .update(filingRuns)
+    .set({ status: 'failed', items: [{ label: 'run', ok: false, message }], resolvedAt: new Date() })
+    .where(eq(filingRuns.id, runId))
+    .catch(() => undefined);
 }
 
 function kindLabel(kind: RunKind): string {
@@ -139,7 +160,11 @@ export async function runTransmitAll(db: Db, firmId: string, scope: RunScope, cr
       // NOT auto-retry, or a lost/timed-out response could re-POST and duplicate a
       // return (§6721). Especially important here — fleet fires many payers at once.
       await getQueue(QUEUE_NAMES.iris).add('transmit', job, { attempts: 1 });
-      items.push({ payerId, label: payerId, ok: true, message: `${result.recordCount} record(s) queued for transmit`, refId: result.transmissionId });
+      const kind = result.isCorrection ? 'correction record(s)' : 'record(s)';
+      const left = result.skipped
+        ? ` — ${result.skipped} ${result.isCorrection ? 'original' : 'correction'} record(s) left queued for a separate transmit`
+        : '';
+      items.push({ payerId, label: payerId, ok: true, message: `${result.recordCount} ${kind} queued for transmit${left}`, refId: result.transmissionId });
     } catch (err) {
       // "No queued records" is expected for payers with nothing to file — skip quietly
       const msg = err instanceof AppError ? err.message : String(err);
@@ -167,6 +192,14 @@ async function labelPayers(db: Db, items: RunItem[]): Promise<void> {
  */
 export async function runSummaryAll(db: Db, firmId: string, scope: RunScope, createdBy: string): Promise<string> {
   const runId = await createRun(db, firmId, 'summary_zip', scope, createdBy);
+  // Long-running (one sidecar render per payer): hand the run id back at once and
+  // let the Fleet screen poll /api/runs/:id. Awaiting it here made the "202" wait
+  // for the whole fleet — past the proxy timeout on any realistic season.
+  void executeSummaryRun(db, firmId, runId, scope).catch((err) => failRun(db, runId, err));
+  return runId;
+}
+
+async function executeSummaryRun(db: Db, firmId: string, runId: string, scope: RunScope): Promise<void> {
   const items: RunItem[] = [];
   const pdfs: Buffer[] = [];
   for (const payerId of scope.payerIds) {
@@ -192,20 +225,7 @@ export async function runSummaryAll(db: Db, firmId: string, scope: RunScope, cre
       encrypt: true,
     });
   }
-  const succeeded = items.filter((i) => i.ok).length;
-  const failed = items.length - succeeded;
-  await db
-    .update(filingRuns)
-    .set({
-      status: failed === 0 ? 'completed' : succeeded === 0 ? 'failed' : 'partial',
-      total: items.length,
-      succeeded,
-      failed,
-      items,
-      resultBlobId,
-      resolvedAt: new Date(),
-    })
-    .where(eq(filingRuns.id, runId));
+  const { succeeded, failed } = await completeRun(db, runId, items, resultBlobId);
   await notify(db, {
     firmId,
     kind: 'filing_run',
@@ -216,7 +236,6 @@ export async function runSummaryAll(db: Db, firmId: string, scope: RunScope, cre
     entityType: 'filing_run',
     entityId: runId,
   });
-  return runId;
 }
 
 /**
@@ -226,6 +245,13 @@ export async function runSummaryAll(db: Db, firmId: string, scope: RunScope, cre
  */
 export async function runArchiveAll(db: Db, firmId: string, scope: RunScope, createdBy: string): Promise<string> {
   const runId = await createRun(db, firmId, 'archive_zip', scope, createdBy);
+  // Detached for the same reason as the summary run — every form is rendered
+  // through the sidecar; the caller polls the run row instead of waiting.
+  void executeArchiveRun(db, firmId, runId, scope).catch((err) => failRun(db, runId, err));
+  return runId;
+}
+
+async function executeArchiveRun(db: Db, firmId: string, runId: string, scope: RunScope): Promise<void> {
   const items: RunItem[] = [];
   const files: Array<{ name: string; pdf: Buffer }> = [];
   for (const payerId of scope.payerIds) {
@@ -251,20 +277,7 @@ export async function runArchiveAll(db: Db, firmId: string, scope: RunScope, cre
       encrypt: true,
     });
   }
-  const succeeded = items.filter((i) => i.ok).length;
-  const failed = items.length - succeeded;
-  await db
-    .update(filingRuns)
-    .set({
-      status: failed === 0 ? 'completed' : succeeded === 0 ? 'failed' : 'partial',
-      total: items.length,
-      succeeded,
-      failed,
-      items,
-      resultBlobId,
-      resolvedAt: new Date(),
-    })
-    .where(eq(filingRuns.id, runId));
+  const { failed } = await completeRun(db, runId, items, resultBlobId);
   await notify(db, {
     firmId,
     kind: 'filing_run',
@@ -275,7 +288,6 @@ export async function runArchiveAll(db: Db, firmId: string, scope: RunScope, cre
     entityType: 'filing_run',
     entityId: runId,
   });
-  return runId;
 }
 
 export async function getRun(db: Db, firmId: string, runId: string) {

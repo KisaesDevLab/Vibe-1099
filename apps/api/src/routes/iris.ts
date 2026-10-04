@@ -6,7 +6,7 @@
 import { Router } from 'express';
 import { and, desc, eq, sql } from 'drizzle-orm';
 import { z } from 'zod';
-import { AppError, deadlinesFor, zTaxYear } from '@vibe1099/shared';
+import { AppError, deadlinesFor, ErrorCodes, FILING_PROVIDER_KINDS, zTaxYear } from '@vibe1099/shared';
 import { generateJwkPair, getBlob, getCrypto, getQueue, loadEnv, QUEUE_NAMES, type IrisTransmitJob } from '@vibe1099/core';
 import { errorTranslations, firms, formRecords, getDb, payers, recipients, taxbanditsWebhookEvents, tinMatchResults, transmissions } from '@vibe1099/db';
 import { h } from '../middleware/error.js';
@@ -62,7 +62,7 @@ irisRouter.put(
         environment: z.enum(['ATS', 'PROD']).optional(),
         privateJwk: z.record(z.unknown()).optional(), // upload existing JWK
         // filing backend
-        filingProvider: z.enum(['iris', 'tax1099', 'taxbandits']).optional(),
+        filingProvider: z.enum(FILING_PROVIDER_KINDS).optional(),
         tax1099ApiKey: z.string().max(500).optional(),
         tax1099Environment: z.enum(['sandbox', 'production']).optional(),
         tax1099Mailing: z.boolean().optional(),
@@ -203,7 +203,9 @@ irisRouter.post(
         payerId: z.string().uuid(),
         taxYear: zTaxYear,
         recordIds: z.array(z.string().uuid()).optional(),
-        isCorrection: z.boolean().default(false),
+        // omitted = let compose infer it from the queued records (originals first,
+        // then corrections); never default to "original" for a correction batch
+        isCorrection: z.boolean().optional(),
       })
       .parse(req.body);
     const db = getDb();
@@ -237,10 +239,29 @@ irisRouter.post(
       where: and(eq(recipients.id, recipientId), eq(recipients.firmId, req.staff!.firmId)),
     });
     if (!recip) throw AppError.notFound('Recipient');
-    // Default to the firm's filing backend, falling back to Tax1099 for IRIS firms
-    // that still hold a Tax1099 key (either provider offers real-time TIN matching).
+    // Pick the provider that is actually CONFIGURED (credentials + §7216 ack),
+    // preferring the firm's filing backend — an IRIS-default firm whose payers
+    // override to TaxBandits has no Tax1099 key, and "Tax1099 is not configured"
+    // would point the operator at the wrong provider.
     const firm = await db.query.firms.findFirst({ where: eq(firms.id, req.staff!.firmId) });
-    const chosen = provider ?? (firm?.filingProvider === 'taxbandits' ? 'taxbandits' : 'tax1099');
+    const tbReady = !!(
+      firm?.taxbanditsEnabled &&
+      firm.taxbanditsClientIdEncrypted &&
+      firm.taxbanditsClientSecretEncrypted &&
+      firm.taxbanditsUserTokenEncrypted &&
+      firm.taxbanditsDisclosureAckAt
+    );
+    const t99Ready = !!(firm?.tax1099ApiKeyEncrypted && firm.tax1099DisclosureAckAt);
+    const chosen =
+      provider ??
+      (firm?.filingProvider === 'taxbandits' && tbReady ? 'taxbandits' : t99Ready ? 'tax1099' : tbReady ? 'taxbandits' : null);
+    if (!chosen) {
+      throw new AppError(
+        ErrorCodes.E_IRIS_AUTH,
+        'No TIN-matching provider is configured — add Tax1099 or TaxBandits credentials and acknowledge the §7216 disclosure in Settings → E-file',
+        409,
+      );
+    }
     const tin = getCrypto().decrypt(recip.tinEncrypted);
     // supersede any prior open result for this recipient
     await db
@@ -290,7 +311,9 @@ irisRouter.post(
 irisRouter.get(
   '/transmissions',
   h(async (req, res) => {
-    const q = z.object({ taxYear: z.coerce.number().int().optional() }).parse(req.query);
+    const q = z
+      .object({ taxYear: z.coerce.number().int().optional(), limit: z.coerce.number().int().min(1).max(5000).default(500) })
+      .parse(req.query);
     const conds = [eq(transmissions.firmId, req.staff!.firmId)];
     if (q.taxYear) conds.push(eq(transmissions.taxYear, q.taxYear));
     const rows = await getDb()
@@ -298,7 +321,8 @@ irisRouter.get(
       .from(transmissions)
       .leftJoin(payers, eq(payers.id, transmissions.payerId))
       .where(and(...conds))
-      .orderBy(desc(transmissions.createdAt));
+      .orderBy(desc(transmissions.createdAt))
+      .limit(q.limit); // the screen polls this every 10 s — most recent N, not every season ever filed
     res.json({
       transmissions: rows.map(({ t, payerName }) => ({
         id: t.id,
@@ -463,6 +487,34 @@ irisRouter.post(
     if (!tx.receiptId) throw AppError.state('Transmission has no Receipt ID yet');
     await getQueue(QUEUE_NAMES.iris).add('poll', { kind: 'poll', transmissionId: id, firmId: req.staff!.firmId, attempt: 0 });
     res.json({ ok: true });
+  }),
+);
+
+/**
+ * Release the records of a FAILED transmission back to the queue (admin, audited).
+ * A transport failure (no answer from the provider) keeps records bound to the
+ * failed transmission on purpose — the submission may have been received — so
+ * re-transmitting is a deliberate operator step taken after confirming with the
+ * provider, never an automatic unlink.
+ */
+irisRouter.post(
+  '/transmissions/:id/release',
+  requireStaff('admin'),
+  h(async (req, res) => {
+    const id = z.string().uuid().parse(req.params['id']);
+    const db = getDb();
+    const tx = await db.query.transmissions.findFirst({
+      where: and(eq(transmissions.id, id), eq(transmissions.firmId, req.staff!.firmId)),
+    });
+    if (!tx) throw AppError.notFound('Transmission');
+    if (tx.status !== 'failed') throw AppError.state('Only a failed transmission can release its records');
+    const released = await db
+      .update(formRecords)
+      .set({ transmissionId: null, updatedAt: new Date() })
+      .where(and(eq(formRecords.transmissionId, id), eq(formRecords.status, 'queued')))
+      .returning({ id: formRecords.id });
+    res.locals['audit'] = { action: 'transmission.release', entityType: 'transmission', entityId: id, detail: { utid: tx.utid, released: released.length } };
+    res.json({ ok: true, released: released.length });
   }),
 );
 

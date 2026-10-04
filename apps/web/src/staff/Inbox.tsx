@@ -4,7 +4,7 @@
  */
 import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { useTaxYears } from '../components/useTaxYears';
+import { useTaxYearState } from '../components/useTaxYears';
 import { useSort } from '../components/useSort';
 import { api } from '../api';
 import { Paginator, usePageSize } from '../components/Paginator';
@@ -26,9 +26,7 @@ const KINDS = [
 ] as const;
 
 export function Inbox() {
-  const [taxYear, setTaxYear] = useState(2026);
-  const { years: taxYears, current: currentYear } = useTaxYears();
-  useEffect(() => { setTaxYear(currentYear); }, [currentYear]);
+  const [taxYear, setTaxYear, { years: taxYears }] = useTaxYearState();
   const [items, setItems] = useState<Item[]>([]);
   const [counts, setCounts] = useState<Record<string, number>>({});
   const [total, setTotal] = useState(0);

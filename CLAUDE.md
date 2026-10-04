@@ -16,6 +16,8 @@ pnpm typecheck        # tsc --noEmit over shared/db/core/api/worker + tests
 pnpm lint             # eslint flat config (correctness rules only)
 pnpm test             # vitest; single file: pnpm vitest run tests/mo1220.golden.test.ts
 pnpm --filter @vibe1099/web build   # web typecheck + vite build
+pnpm migrate          # apply packages/db/migrations/*.sql only (no demo data; also runs on API boot)
+pnpm bootstrap:firm   # create/repair the single firm row + break-glass admin for a fresh deployment (see docs/SSO.md)
 pnpm seed             # migrations + demo data (needs DATABASE_URL, MASTER_KEY)
 pnpm seed:sandbox     # +10 payers/30 recipients whose TINs encode TaxBandits sandbox
                       # simulation outcomes (accept/reject/stuck/TIN-match-fail); idempotent;

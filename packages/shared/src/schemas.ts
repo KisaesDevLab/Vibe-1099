@@ -18,10 +18,13 @@ export const zAddress = z.object({
 export type Address = z.infer<typeof zAddress>;
 
 export const zEmail = z.string().email().max(254);
-export const zMobile = z
-  .string()
-  .transform((s) => s.replace(/[^\d+]/g, ''))
-  .refine((s) => /^\+?1?\d{10}$/.test(s), 'Mobile must be a 10-digit US number');
+
+/**
+ * Every e-file backend the app can drive. The ONE list every enum/type derives
+ * from: a provider missing from any copy made payers set to it un-editable once.
+ */
+export const FILING_PROVIDER_KINDS = ['iris', 'tax1099', 'taxbandits'] as const;
+export type FilingProviderKind = (typeof FILING_PROVIDER_KINDS)[number];
 
 export const zRecipientInput = z.object({
   tin: z.string().min(9).max(11),
@@ -32,6 +35,8 @@ export const zRecipientInput = z.object({
   email: zEmail.optional().nullable(),
   mobile: z.string().optional().nullable(),
   backupWithholding: z.boolean().optional().default(false),
+  /** STOP received — never text this recipient (honored at the send layer) */
+  smsOptOut: z.boolean().optional(),
 });
 export type RecipientInput = z.infer<typeof zRecipientInput>;
 
@@ -55,7 +60,7 @@ export const zPayerInput = z.object({
   // null = inherit the firm default. MUST list every provider kind: a payer set
   // to a provider missing here cannot be edited at all, because the UI round-
   // trips the current value back and validation rejects it.
-  filingProviderOverride: z.enum(['iris', 'tax1099', 'taxbandits']).nullable().optional(),
+  filingProviderOverride: z.enum(FILING_PROVIDER_KINDS).nullable().optional(),
   // assigned staff preparer (null = unassigned)
   preparerId: z.string().uuid().nullable().optional(),
 });

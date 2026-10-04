@@ -5,7 +5,7 @@
 import { Fragment, useEffect, useState } from 'react';
 import { useSort } from '../components/useSort';
 import { api } from '../api';
-import { useTaxYears } from '../components/useTaxYears';
+import { useTaxYearState } from '../components/useTaxYears';
 import { usePreparerFilter } from '../components/PreparerFilter';
 
 interface Reject { recipientName: string; formType: string; reasons: string[] }
@@ -32,8 +32,7 @@ const statusBadge = (s: string) =>
             : 'ready';
 
 export function FilingStatus() {
-  const { years, current } = useTaxYears();
-  const [taxYear, setTaxYear] = useState(current);
+  const [taxYear, setTaxYear, { years }] = useTaxYearState();
   const preparers = usePreparerFilter();
   const [allRows, setRows] = useState<PayerFiling[]>([]);
   const rows = allRows.filter((r) => preparers.matches(r.payerId));
@@ -41,7 +40,6 @@ export function FilingStatus() {
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(false);
 
-  useEffect(() => setTaxYear(current), [current]);
   useEffect(() => {
     setLoading(true);
     api.get<{ payers: PayerFiling[] }>(`/api/dashboard/filing-status/${taxYear}`)

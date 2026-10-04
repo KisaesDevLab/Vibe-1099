@@ -15,19 +15,6 @@ import {
 import { getCrypto, getRenderClient } from '@vibe1099/core';
 import { firms, formRecords, getDb, payers, recipients, type Db } from '@vibe1099/db';
 
-const OMB_BY_TYPE: Record<FormType, string> = {
-  NEC: '1545-0116',
-  MISC: '1545-0115',
-  INT: '1545-0112',
-  DIV: '1545-0110',
-  '1098': '1545-0901',
-};
-
-export interface CopyBOptions {
-  variant: 'portal' | 'copy2';
-  maskContact?: boolean; // suppress recipient email/phone from printed output
-}
-
 function addressLines(addr: Record<string, string>): string[] {
   const lines = [addr['line1'] ?? ''];
   if (addr['line2']) lines.push(addr['line2']);
@@ -88,6 +75,9 @@ export async function buildFormPayload(
       return {
         number: b.boxNumber,
         label: b.label,
+        // carried so templates that prefix money with "$" (client copy) never
+        // treat the state code / payer state number as an amount
+        kind: b.kind,
         value: b.kind === 'cents' ? (typeof v === 'number' && v > 0 ? formatCents(v) : '') : ((v as string) ?? ''),
       };
     });
@@ -101,9 +91,10 @@ export async function buildFormPayload(
       corrected: isCorrected,
       tax_year: record.taxYear,
       form_type: record.formType,
-      form_number: record.formType === '1098' ? '1098' : `1099-${record.formType}`,
+      // registry-driven (never branch on form type here or in the worker copy)
+      form_number: def.formNumber,
       form_title: def.title,
-      omb: OMB_BY_TYPE[record.formType as FormType],
+      omb: def.omb,
       copy_label: 'Copy B',
       ...copyBLabels(record.formType as FormType),
       account_number: record.accountNumber,
@@ -216,7 +207,7 @@ export async function renderClientCopyPdf(db: Db, firmId: string, formRecordIds:
       g = { payer: p.form.payer, tax_year: p.form.tax_year, form_number: p.form.form_number, forms: [], totalCents: 0, withheldCents: 0 };
       groups.set(row.payerId, g);
     }
-    const boxes = [...p.form.boxes, ...p.form.state_boxes.map((s) => ({ ...s, kind: 'cents' as const }))].filter(
+    const boxes = [...p.form.boxes, ...p.form.state_boxes].filter(
       (b) => (b.kind === 'checkbox' ? b.value === true : b.value !== '' && b.value != null),
     );
     // payer totals (1096-style): payment boxes summed, withholding separate

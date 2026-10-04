@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { useOutletContext } from 'react-router-dom';
 import { AuthSettingsPage } from '@kisaesdevlab/vibe-auth/react';
 import { useSort } from '../components/useSort';
-import { api, ApiError, csrfToken, downloadBlob } from '../api';
+import { api, ApiError, csrfToken, downloadBlob, formatCents, parseCentsInput } from '../api';
 import { useDialogs } from '../components/Dialogs';
 import { Modal } from '../components/Modal';
 import { refreshTaxYears } from '../components/useTaxYears';
@@ -87,7 +87,7 @@ export function Settings() {
     api.get<{ settings: Record<string, unknown> }>('/api/admin/settings').then((r) => {
       setSettings(r.settings);
       const t = (r.settings['federal_thresholds'] as Record<string, number>) ?? {};
-      setThresholds(Object.fromEntries(Object.entries(t).map(([k, v]) => [k, (v / 100).toString()])));
+      setThresholds(Object.fromEntries(Object.entries(t).map(([k, v]) => [k, typeof v === 'number' ? formatCents(v) : ''])));
     }).catch(() => {});
     if (me.role === 'admin') {
       api.get<typeof sms>('/api/admin/sms').then((r) => setSms((s) => ({ ...s, ...r }))).catch(() => {});
@@ -664,8 +664,18 @@ export function Settings() {
             </tbody>
           </table>
           <button className="secondary" style={{ marginTop: 8 }} onClick={() => {
+            // the app's cents parser: "1,200" and "$2,000.00" are exact; a typo is
+            // reported instead of saving NaN → null (silently "no override")
             const map: Record<string, number> = {};
-            for (const [k, v] of Object.entries(thresholds)) if (v.trim() !== '') map[k] = Math.round(parseFloat(v) * 100);
+            for (const [k, v] of Object.entries(thresholds)) {
+              if (v.trim() === '') continue;
+              try {
+                map[k] = parseCentsInput(v);
+              } catch {
+                dialogs.toast(`Invalid amount for ${k}: "${v}" — use dollars and cents, e.g. 2,000.00`, 'error');
+                return;
+              }
+            }
             void saveSetting('federal_thresholds', map);
           }}>Save thresholds</button>
         </div>

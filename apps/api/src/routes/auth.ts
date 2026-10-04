@@ -76,6 +76,7 @@ authRouter.post(
 
     setSessionCookies(res, sid);
 
+    res.locals['audit'] = false; // audited explicitly below
     await audit(getDb(), {
       firmId: user.firmId,
       actorType: 'staff',
@@ -188,11 +189,10 @@ authRouter.post(
     const ok = await argonVerify(user?.passwordHash ?? '', password).catch(() => false);
     if (!ok) throw new AppError(ErrorCodes.E_AUTH, 'Password does not match', 401);
     const secret = generateTotpSecret();
-    const crypto = getCrypto();
-    await db
-      .update(users)
-      .set({ totpSecretEncrypted: crypto.encrypt(secret), totpEnabled: false })
-      .where(eq(users.id, req.staff!.userId));
+    // The candidate secret is held OUTSIDE the user row until the first code
+    // confirms it: writing it (and totpEnabled=false) straight into users meant an
+    // abandoned re-enrollment silently removed MFA from an enrolled account.
+    await getRedis().set(`totp-pending:${req.staff!.userId}`, getCrypto().encrypt(secret), 'EX', 600);
     res.locals['audit'] = { action: 'totp.setup', entityType: 'user', entityId: req.staff!.userId };
     res.json({ secret, otpauthUrl: otpauthUrl(secret, req.staff!.email) });
   }),
@@ -204,9 +204,23 @@ authRouter.post(
   h(async (req, res) => {
     const { code } = z.object({ code: z.string().length(6) }).parse(req.body);
     const db = getDb();
+    const crypto = getCrypto();
+    const pendingKey = `totp-pending:${req.staff!.userId}`;
+    const pending = await getRedis().get(pendingKey);
+    if (pending) {
+      if (!verifyTotp(crypto.decrypt(pending), code)) {
+        throw new AppError(ErrorCodes.E_AUTH, 'Code does not match — try again', 401);
+      }
+      // the confirmed secret replaces the old one atomically with the enable flag
+      await db.update(users).set({ totpSecretEncrypted: pending, totpEnabled: true }).where(eq(users.id, req.staff!.userId));
+      await getRedis().del(pendingKey);
+      res.locals['audit'] = { action: 'totp.confirm', entityType: 'user', entityId: req.staff!.userId };
+      return void res.json({ ok: true });
+    }
+    // legacy path: a secret already stored on the row but never confirmed
     const user = await db.query.users.findFirst({ where: eq(users.id, req.staff!.userId) });
     if (!user?.totpSecretEncrypted) throw AppError.validation('Run TOTP setup first');
-    if (!verifyTotp(getCrypto().decrypt(user.totpSecretEncrypted), code)) {
+    if (!verifyTotp(crypto.decrypt(user.totpSecretEncrypted), code)) {
       throw new AppError(ErrorCodes.E_AUTH, 'Code does not match — try again', 401);
     }
     await db.update(users).set({ totpEnabled: true }).where(eq(users.id, user.id));

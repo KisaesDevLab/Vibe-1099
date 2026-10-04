@@ -42,6 +42,27 @@ export interface TinMatchResult {
   message: string;
 }
 
+/** Best-effort per-form errors from a rejection body: `forms[].errors[]` keyed by refId, or top-level `errors[]`. */
+function extractTax1099RecordErrors(raw: string): RecordError[] {
+  let body: {
+    forms?: Array<{ refId?: string; errors?: Array<{ code?: string; message?: string }> }> | null;
+    errors?: Array<{ refId?: string; code?: string; message?: string }> | null;
+  };
+  try {
+    body = JSON.parse(raw) as typeof body;
+  } catch {
+    return [];
+  }
+  const out: RecordError[] = [];
+  for (const f of body.forms ?? []) {
+    for (const e of f.errors ?? []) out.push({ recordId: f.refId ?? '', code: e.code ?? 'UNKNOWN', message: e.message ?? '', disposition: 'rejected' });
+  }
+  for (const e of body.errors ?? []) {
+    if (e.refId) out.push({ recordId: e.refId, code: e.code ?? 'UNKNOWN', message: e.message ?? '', disposition: 'rejected' });
+  }
+  return out;
+}
+
 function normalizeStatus(s: string): IrisAckStatus {
   const t = s.trim().toLowerCase();
   if (t === 'accepted') return 'Accepted';
@@ -73,7 +94,8 @@ export class Tax1099Client implements FilingProvider {
         signal: AbortSignal.timeout(120_000),
       });
     } catch (err) {
-      throw new AppError(ErrorCodes.E_IRIS, `Tax1099 request failed: ${(err as Error).message}`, 502);
+      // transport: true — the request may have reached Zenwork (timeout / lost response)
+      throw new AppError(ErrorCodes.E_IRIS, `Tax1099 request failed: ${(err as Error).message}`, 502, { transport: true });
     }
   }
 
@@ -85,7 +107,11 @@ export class Tax1099Client implements FilingProvider {
     });
     const raw = await res.text();
     if (!res.ok) {
-      throw new AppError(ErrorCodes.E_IRIS, `Tax1099 eFile rejected (${res.status}): ${raw.slice(0, 1000)}`, 502, { raw });
+      // Carry per-form reasons when the rejection body names them, so the operator
+      // sees WHICH payee failed on the grid (same contract as the TaxBandits client).
+      const recordErrors = extractTax1099RecordErrors(raw);
+      const detail = recordErrors.length ? ` — ${recordErrors.length} record error(s)` : '';
+      throw new AppError(ErrorCodes.E_IRIS, `Tax1099 eFile rejected (${res.status})${detail}: ${raw.slice(0, 1000)}`, 502, { raw, recordErrors });
     }
     let body: { submissionId?: string };
     try {

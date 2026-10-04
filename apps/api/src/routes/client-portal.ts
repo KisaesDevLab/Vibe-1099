@@ -4,7 +4,7 @@
  * clients NEVER see other payers/years/staff data, and vault matches are masked.
  */
 import { Router, type Response } from 'express';
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { z } from 'zod';
 import { randomUUID } from 'node:crypto';
 import { AppError, ErrorCodes, getFormDef, zRecipientInput, zTinType, type FormType } from '@vibe1099/shared';
@@ -13,7 +13,7 @@ import { clientInvites, firms, formRecords, getDb, payers, recipients } from '@v
 import { h } from '../middleware/error.js';
 import { CLIENT_COOKIE, requireClient } from '../middleware/auth.js';
 import { rateLimit } from '../middleware/rate-limit.js';
-import { createRecipient, lookupByTin } from '../services/vault.js';
+import { createRecipient, lookupByTin, payerMayUseRecipient } from '../services/vault.js';
 import { validateFormRecord } from '../services/forms.js';
 import { planClientSubmission } from '../services/client-submit.js';
 import { isPortalOtpVerified, maskContact, portalOtpRequired, requestPortalOtp, verifyPortalOtp } from '../services/portal-otp.js';
@@ -61,6 +61,7 @@ clientPortalRouter.post(
     // one message for wrong / expired / locked / no-match — nothing to probe
     if (!result) throw new AppError(ErrorCodes.E_CHALLENGE_FAILED, 'That code is incorrect or has expired.', 403);
     setClientCookie(res, result.sid, CLIENT_SESSION_TTL);
+    res.locals['audit'] = false; // one explicit row per matched engagement below
     for (const m of result.matches) {
       await audit(getDb(), {
         firmId: m.firmId,
@@ -343,7 +344,16 @@ clientPortalRouter.post(
       source: 'client',
       onExisting: 'return', // never leak or overwrite existing vault data from client zone
     });
+    if (result.existed && !(await payerMayUseRecipient(getDb(), scope.payerId, result.id))) {
+      // The TIN is in the firm's vault under ANOTHER payer. Handing the client
+      // that recipient id would let /submit attach it and /contractors echo its
+      // vault identity and contact details (IRC §7216) — staff attach it instead.
+      throw AppError.state(
+        'This contractor is already on file with your accountant for another client — ask them to add this contractor to your engagement.',
+      );
+    }
     await touchActivity(scope.inviteId);
+    res.locals['audit'] = false; // audited explicitly below
     await audit(getDb(), {
       firmId: scope.firmId,
       actorType: 'client',
@@ -353,7 +363,8 @@ clientPortalRouter.post(
       entityId: result.id,
       ip: req.ip,
     });
-    res.status(201).json({ recipientId: result.id, existed: result.existed });
+    // no `existed` echo: whether a TIN is already in the firm's vault is not the client's to learn
+    res.status(201).json({ recipientId: result.id });
   }),
 );
 
@@ -420,10 +431,15 @@ clientPortalRouter.post(
     if (!invite) throw AppError.notFound('Engagement');
     if (invite.submittedAt) throw AppError.state('Already submitted');
 
-    // scope enforcement: only staff-enabled form types
+    // scope enforcement: only staff-enabled form types, and only recipients this
+    // payer already files for or the client zone itself created — a recipient id
+    // belonging to another payer's book must never be attachable here
     for (const e of entries) {
       if (!scope.formTypes.includes(e.formType)) {
         throw AppError.forbidden(`Form type ${e.formType} is not enabled for this engagement`);
+      }
+      if (!(await payerMayUseRecipient(db, scope.payerId, e.recipientId))) {
+        throw AppError.forbidden('A contractor on this submission is not part of this engagement — remove it and ask your accountant to add it for you.');
       }
     }
 
@@ -459,6 +475,16 @@ clientPortalRouter.post(
     const plan = planClientSubmission(scope.inviteId, entries, existing);
 
     await db.transaction(async (tx) => {
+      // Atomic claim: exactly ONE submit may pass. A concurrent duplicate (double
+      // click, browser retry) blocks on this row until the first commits, then
+      // sees submitted_at set and aborts before writing a single draft — the
+      // plain read-then-check above cannot guarantee that on its own.
+      const claimed = await tx
+        .update(clientInvites)
+        .set({ submittedAt: new Date(), lastActivityAt: new Date(), draftState: null })
+        .where(and(eq(clientInvites.id, scope.inviteId), isNull(clientInvites.submittedAt)))
+        .returning({ id: clientInvites.id });
+      if (!claimed.length) throw AppError.state('Already submitted');
       if (plan.deletes.length) {
         await tx
           .delete(formRecords)
@@ -488,11 +514,7 @@ clientPortalRouter.post(
     });
     const created = plan.inserts.length + plan.updates.length;
 
-    await db
-      .update(clientInvites)
-      .set({ submittedAt: new Date(), lastActivityAt: new Date(), draftState: null })
-      .where(eq(clientInvites.id, scope.inviteId));
-
+    res.locals['audit'] = false; // audited explicitly below (one row, not a second generic one)
     await audit(db, {
       firmId: scope.firmId,
       actorType: 'client',

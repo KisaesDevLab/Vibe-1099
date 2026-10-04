@@ -4,7 +4,8 @@
  * Links carry opaque tokens only — no TIN, no name in URLs.
  */
 import { Router } from 'express';
-import { and, desc, eq, inArray } from 'drizzle-orm';
+import { randomUUID } from 'node:crypto';
+import { and, desc, eq, gt, inArray, isNull } from 'drizzle-orm';
 import { z } from 'zod';
 import { AppError, zTaxYear } from '@vibe1099/shared';
 import { getCrypto, getQueue, loadEnv, QUEUE_NAMES, type DeliveryJob } from '@vibe1099/core';
@@ -29,28 +30,32 @@ export async function createPortalDelivery(opts: {
   formRecordId: string;
   channel: 'email' | 'sms';
   isCorrected: boolean;
+  /** precomputed by bulk callers (one settings read per compose, not per form) */
+  expiresAt?: Date;
 }): Promise<{ deliveryId: string; token: string; expiresAt: Date }> {
   const db = getDb();
   const crypto = getCrypto();
-  const record = await db.query.formRecords.findFirst({ where: eq(formRecords.id, opts.formRecordId) });
-  if (!record) throw AppError.notFound('Form record');
-  const expiresAt = await tokenExpiry(record.taxYear);
-
-  const [created] = await db
-    .insert(deliveries)
-    .values({
-      firmId: opts.firmId,
-      formRecordId: opts.formRecordId,
-      channel: opts.channel,
-      tokenHash: 'pending',
-      tokenExpiresAt: expiresAt,
-      isCorrected: opts.isCorrected,
-    })
-    .returning({ id: deliveries.id });
-  if (!created) throw new Error('delivery insert failed');
-  const token = crypto.signScopedToken('recipient', created.id, expiresAt);
-  await db.update(deliveries).set({ tokenHash: crypto.tokenHash(token) }).where(eq(deliveries.id, created.id));
-  return { deliveryId: created.id, token, expiresAt };
+  let expiresAt = opts.expiresAt;
+  if (!expiresAt) {
+    const record = await db.query.formRecords.findFirst({ where: and(eq(formRecords.id, opts.formRecordId), eq(formRecords.firmId, opts.firmId)) });
+    if (!record) throw AppError.notFound('Form record');
+    expiresAt = await tokenExpiry(record.taxYear);
+  }
+  // The token embeds the delivery id: mint the id first and insert the REAL hash
+  // in one statement — a 'pending' placeholder collides on the unique token_hash
+  // index whenever two deliveries are created at the same moment.
+  const id = randomUUID();
+  const token = crypto.signScopedToken('recipient', id, expiresAt);
+  await db.insert(deliveries).values({
+    id,
+    firmId: opts.firmId,
+    formRecordId: opts.formRecordId,
+    channel: opts.channel,
+    tokenHash: crypto.tokenHash(token),
+    tokenExpiresAt: expiresAt,
+    isCorrected: opts.isCorrected,
+  });
+  return { deliveryId: id, token, expiresAt };
 }
 
 /**
@@ -88,8 +93,32 @@ deliveriesRouter.post(
       .where(and(...conds));
 
     const firm = await db.query.firms.findFirst({ where: eq(firms.id, firmId) });
-    let queued = 0;
+    // Re-running compose (double click, retry after a proxy timeout, a second
+    // campaign) must not mail every recipient a SECOND live link: skip forms that
+    // already have an un-revoked, un-expired delivery on a channel for the same
+    // original/corrected version.
+    const live = rows.length
+      ? await db
+          .select({ formRecordId: deliveries.formRecordId, channel: deliveries.channel, isCorrected: deliveries.isCorrected })
+          .from(deliveries)
+          .where(
+            and(
+              eq(deliveries.firmId, firmId),
+              inArray(
+                deliveries.formRecordId,
+                rows.map((r) => r.form.id),
+              ),
+              inArray(deliveries.channel, ['email', 'sms']),
+              isNull(deliveries.tokenRevokedAt),
+              gt(deliveries.tokenExpiresAt, new Date()),
+            ),
+          )
+      : [];
+    const liveKeys = new Set(live.map((l) => `${l.formRecordId}:${l.isCorrected}`));
+    const expiresAt = await tokenExpiry(input.taxYear); // identical for every row (same tax year)
+    const jobs: DeliveryJob[] = [];
     let paperOnly = 0;
+    let skipped = 0;
     for (const { form, recipient, payerName } of rows) {
       const isCorrected = form.correctionSeq > 0 || form.correctionType != null;
       // channel resolution: email preferred, SMS fallback (opt-out honored), none → paper-only
@@ -102,14 +131,19 @@ deliveriesRouter.post(
         paperOnly++;
         continue;
       }
-      const { deliveryId, token, expiresAt } = await createPortalDelivery({
+      if (liveKeys.has(`${form.id}:${isCorrected}`)) {
+        skipped++;
+        continue;
+      }
+      const { deliveryId, token } = await createPortalDelivery({
         firmId,
         formRecordId: form.id,
         channel,
         isCorrected,
+        expiresAt,
       });
       const link = `${env.PORTAL_BASE_URL}/f/${encodeURIComponent(token)}`;
-      const job: DeliveryJob = {
+      jobs.push({
         kind: 'form_notification',
         channel,
         firmId,
@@ -124,12 +158,12 @@ deliveriesRouter.post(
           expires: expiresAt.toISOString().slice(0, 10),
         },
         deliveryId,
-      };
-      await getQueue(QUEUE_NAMES.delivery).add('form_notification', job);
-      queued++;
+      });
     }
-    res.locals['audit'] = { action: 'delivery.compose', entityType: 'delivery', detail: { queued, paperOnly } };
-    res.json({ queued, paperOnly });
+    if (jobs.length) await getQueue(QUEUE_NAMES.delivery).addBulk(jobs.map((data) => ({ name: 'form_notification', data })));
+    const queued = jobs.length;
+    res.locals['audit'] = { action: 'delivery.compose', entityType: 'delivery', detail: { queued, paperOnly, skipped } };
+    res.json({ queued, paperOnly, skipped });
   }),
 );
 
@@ -194,9 +228,6 @@ deliveriesRouter.post(
     if (!old) throw AppError.notFound('Delivery');
     if (old.channel === 'paper') throw AppError.validation('Paper deliveries are reprinted via batches');
 
-    // revoke old token
-    await db.update(deliveries).set({ tokenRevokedAt: new Date() }).where(eq(deliveries.id, id));
-
     const record = await db.query.formRecords.findFirst({ where: eq(formRecords.id, old.formRecordId) });
     const recipient = record ? await db.query.recipients.findFirst({ where: eq(recipients.id, record.recipientId) }) : null;
     const payer = record ? await db.query.payers.findFirst({ where: eq(payers.id, record.payerId) }) : null;
@@ -229,6 +260,9 @@ deliveriesRouter.post(
       deliveryId,
     };
     await getQueue(QUEUE_NAMES.delivery).add('form_notification', job);
+    // revoke the OLD token only once its replacement exists and is queued — a
+    // resend that fails validation above must leave the recipient's working link alive
+    await db.update(deliveries).set({ tokenRevokedAt: new Date() }).where(eq(deliveries.id, id));
     res.locals['audit'] = { action: 'delivery.resend', entityType: 'delivery', entityId: deliveryId, detail: { replaced: id } };
     res.json({ deliveryId });
   }),

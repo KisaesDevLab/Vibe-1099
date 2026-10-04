@@ -10,6 +10,7 @@ import { randomUUID } from 'node:crypto';
 import {
   centsToDecimalString,
   getFormDef,
+  normalizeUsPhone,
   type FormType,
   type FormRecordValues,
 } from '@vibe1099/shared';
@@ -96,7 +97,7 @@ function partyXml(wrapper: string, p: IrisParty): string {
           elText('ZIPCd', p.address.zip),
         ].join(''),
       ),
-      elText('PhoneNum', p.phone ?? ''),
+      elText('PhoneNum', normalizeUsPhone(p.phone)),
     ].join(''),
   );
 }
@@ -188,6 +189,8 @@ export function buildTransmissionXml(input: IrisTransmissionInput): string {
 export function preTransmitCheck(input: IrisTransmissionInput): string[] {
   const problems: string[] = [];
   if (!input.tcc || input.tcc.length < 5) problems.push('TCC missing or too short (Settings → IRIS)');
+  if (!/^\d{9}$/.test(input.transmitter.tin)) problems.push('Transmitter (firm) EIN is not 9 digits — Settings → Firm');
+  if (!/^\d{9}$/.test(input.issuer.tin)) problems.push('Payer TIN is not 9 digits');
   if (!input.records.length) problems.push('No records in submission');
   if (input.records.length > 10_000) problems.push('Submission exceeds record cap — split the batch');
   for (const r of input.records) {

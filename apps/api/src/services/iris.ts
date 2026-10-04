@@ -82,18 +82,56 @@ export async function composeTransmission(
   taxYear: number,
   createdBy: string,
   opts: { isCorrection?: boolean; recordIds?: string[] } = {},
-): Promise<{ transmissionId: string; recordCount: number; problems: string[] }> {
+): Promise<{ transmissionId: string; recordCount: number; problems: string[]; isCorrection: boolean; skipped: number }> {
   const firm = await db.query.firms.findFirst({ where: eq(firms.id, firmId) });
   const payer = await db.query.payers.findFirst({ where: and(eq(payers.id, payerId), eq(payers.firmId, firmId)) });
   if (!firm || !payer) throw AppError.notFound('Payer');
 
+  const conds = [
+    eq(formRecords.firmId, firmId),
+    eq(formRecords.payerId, payerId),
+    eq(formRecords.taxYear, taxYear),
+    eq(formRecords.status, 'queued'),
+  ];
+  if (opts.recordIds?.length) conds.push(inArray(formRecords.id, opts.recordIds));
+  const queued = await db
+    .select()
+    .from(formRecords)
+    .where(and(...conds));
+  if (!queued.length) throw AppError.validation('No queued records for this payer/year');
+
+  // Originals and corrections NEVER share a transmission: IRIS wraps the whole
+  // batch in one TransmissionTypeCd (O|C) and TaxBandits routes corrections
+  // through a separate endpoint, so a mixed sweep would file corrections as
+  // brand-new originals (a duplicate return, §6721). When the caller does not say
+  // which kind it wants, originals go first and queued corrections stay queued
+  // for a follow-up compose (reported back as `skipped`); once only corrections
+  // remain, the next compose is a correction transmission automatically.
+  const originals = queued.filter((r) => r.correctionType == null);
+  const corrections = queued.filter((r) => r.correctionType != null);
+  const isCorrection = opts.isCorrection ?? (originals.length === 0 && corrections.length > 0);
+  const records = isCorrection ? corrections : originals;
+  const skipped = isCorrection ? originals.length : corrections.length;
+  if (!records.length) {
+    throw AppError.validation(
+      isCorrection
+        ? 'No queued correction records for this payer/year'
+        : 'No queued original records for this payer/year — the queued records are corrections',
+    );
+  }
+
   // provider selection (per-payer override → firm default). IRIS needs a TCC/JWK;
   // Tax1099/TaxBandits need only the firm's credentials, so the payer never
   // registers with IRS. Corrections override this: they MUST stay on the provider
-  // that filed the original (affinity invariant, addendum §2.3).
+  // that filed the original (affinity invariant, addendum §2.3) — resolved from
+  // the records actually selected, never from what the caller happened to pass.
   let provider: FilingProviderKind = await resolveProviderKind(db, firmId, payerId);
-  if (opts.isCorrection && opts.recordIds?.length) {
-    const affinity = await resolveCorrectionProvider(db, firmId, opts.recordIds);
+  if (isCorrection) {
+    const affinity = await resolveCorrectionProvider(
+      db,
+      firmId,
+      records.map((r) => r.id),
+    );
     if (affinity) provider = affinity; // corrections follow the original filing's provider
   }
   const irisConfig = provider === 'iris' ? await loadIrisConfig(db, firmId) : null;
@@ -111,19 +149,6 @@ export async function composeTransmission(
           ? 'PROD'
           : 'ATS';
   const tcc = irisConfig?.tcc ?? '';
-
-  const conds = [
-    eq(formRecords.firmId, firmId),
-    eq(formRecords.payerId, payerId),
-    eq(formRecords.taxYear, taxYear),
-    eq(formRecords.status, 'queued'),
-  ];
-  if (opts.recordIds?.length) conds.push(inArray(formRecords.id, opts.recordIds));
-  const records = await db
-    .select()
-    .from(formRecords)
-    .where(and(...conds));
-  if (!records.length) throw AppError.validation('No queued records for this payer/year');
 
   // duplicate-submission guard: no record may already belong to an in-flight transmission
   const inFlight = records.filter((r) => r.transmissionId != null);
@@ -233,7 +258,7 @@ export async function composeTransmission(
     },
     records: irisRecords,
     cfsfStates: await cfsfStates(db),
-    isCorrection: !!opts.isCorrection,
+    isCorrection,
   };
 
   // Build the provider payload + run its pre-checks, then stash it in a blob the
@@ -306,7 +331,7 @@ export async function composeTransmission(
         payerId,
         utid,
         status: 'building',
-        isCorrection: !!opts.isCorrection,
+        isCorrection,
         recordCount: records.length,
         xmlBlobId,
         cfsfStates: input.cfsfStates,
@@ -336,6 +361,11 @@ export async function composeTransmission(
             formType: r.formType,
             snapshotAt: new Date().toISOString(),
             utid,
+            // The state return(s) THIS record's submission files — per record, not
+            // the transmission-wide union: a provider emits a state block only for
+            // records that carry one, so a no-state record on a mixed submission
+            // was never state-filed and must stay eligible for the MO direct file.
+            statesFiled: statesFiledBy(provider, [irisRecords.find((ir) => ir.recordId === r.id)!], input.cfsfStates),
           },
           updatedAt: new Date(),
         })
@@ -344,7 +374,7 @@ export async function composeTransmission(
     return tx.id;
   });
 
-  return { transmissionId: txId, recordCount: records.length, problems: [] };
+  return { transmissionId: txId, recordCount: records.length, problems: [], isCorrection, skipped };
 }
 
 // applyAckToRecords lives in @vibe1099/core (shared with the worker).

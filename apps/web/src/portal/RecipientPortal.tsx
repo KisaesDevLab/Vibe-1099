@@ -35,7 +35,11 @@ export function RecipientPortal() {
   const sendCode = async () => {
     setError('');
     try {
-      const r = await api.post<{ sent: boolean; throttled: boolean; sentTo: string }>(`/api/portal/${encodeURIComponent(token)}/request-otp`, {});
+      const r = await api.post<{ sent: boolean; throttled?: boolean; notConfigured?: boolean; sentTo: string }>(`/api/portal/${encodeURIComponent(token)}/request-otp`, {});
+      if (r.notConfigured) {
+        setError('Codes cannot be sent yet — the firm has not set up email/text delivery. Contact them to receive your form.');
+        return;
+      }
       setCodeSent(true);
       if (r.throttled) setError('A code was just sent — check your messages (you can resend in a moment).');
     } catch (err) { setError(err instanceof ApiError ? err.message : 'Could not send a code'); }

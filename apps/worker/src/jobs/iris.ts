@@ -3,85 +3,42 @@
  * polling (exponential backoff, terminal-state handling, partial acceptance).
  * Alerting: transmission failures → staff email.
  */
-import { and, desc, eq, isNotNull, notInArray } from 'drizzle-orm';
+import { and, count, eq, notInArray } from 'drizzle-orm';
 import { Job } from 'bullmq';
 import {
+  buildFilingProvider,
+  checkLowBalance,
   createLogger,
   getBlob,
-  getCrypto,
   getQueue,
-  IrisClient,
-  IrisFilingProvider,
-  irisEndpoints,
-  loadEnv,
+  latestBalanceCents,
   putBlob,
   QUEUE_NAMES,
+  recordCost,
   Tax1099Client,
-  tax1099Endpoints,
   TaxBanditsClient,
-  taxbanditsEndpoints,
   type DeliveryJob,
   type FilingProvider,
   type FilingProviderKind,
+  type FilingStatusResult,
   type IrisPollJob,
   type IrisTransmitJob,
 } from '@vibe1099/core';
 import { applyAckToRecords, audit, notify, type RecordError } from '@vibe1099/core';
-import { deliveries, firms, formRecords, getDb, taxbanditsCostLedger, transmissions, users } from '@vibe1099/db';
+import { deliveries, firms, formRecords, getDb, transmissions, users } from '@vibe1099/db';
 
 const log = createLogger('worker:iris');
 
 const POLL_DELAYS_MS = [60_000, 120_000, 300_000, 600_000, 1_800_000, 3_600_000]; // exp backoff → hourly
 const MAX_POLLS = 96; // ~4 days at terminal cadence
+const POLL_ERROR_ALERT_AT = 6; // consecutive unreachable-provider polls before staff hear about it (~1h on the ladder)
 
-/** Build the FilingProvider a transmission targets (IRIS A2A / Tax1099 / TaxBandits). */
-export async function providerFor(firmId: string, kind: FilingProviderKind): Promise<FilingProvider> {
-  const env = loadEnv();
-  const db = getDb();
-  const firm = await db.query.firms.findFirst({ where: eq(firms.id, firmId) });
-  if (!firm) throw new Error('firm missing');
-
-  if (kind === 'tax1099') {
-    if (!firm.tax1099ApiKeyEncrypted) throw new Error('Tax1099 not configured');
-    // §7216 gate — mirror loadTax1099Config: never transmit payee TINs to Zenwork
-    // without the recorded admin disclosure acknowledgment.
-    if (!firm.tax1099DisclosureAckAt) throw new Error('Tax1099 disclosure not acknowledged');
-    const base =
-      env.TAX1099_MOCK_BASE_URL ||
-      (firm.tax1099Environment === 'production' ? env.TAX1099_PROD_BASE_URL : env.TAX1099_SANDBOX_BASE_URL);
-    return new Tax1099Client(tax1099Endpoints(base), { apiKey: getCrypto().decrypt(firm.tax1099ApiKeyEncrypted) });
-  }
-
-  if (kind === 'taxbandits') {
-    if (!firm.taxbanditsEnabled || !firm.taxbanditsClientIdEncrypted || !firm.taxbanditsClientSecretEncrypted || !firm.taxbanditsUserTokenEncrypted) {
-      throw new Error('TaxBandits not configured');
-    }
-    // §7216 gate — mirror loadTaxBanditsConfig.
-    if (!firm.taxbanditsDisclosureAckAt) throw new Error('TaxBandits disclosure not acknowledged');
-    const crypto = getCrypto();
-    const mock = env.TAXBANDITS_MOCK_BASE_URL;
-    const base = mock || (firm.taxbanditsEnvironment === 'production' ? env.TAXBANDITS_PROD_BASE_URL : env.TAXBANDITS_SANDBOX_BASE_URL);
-    const oauthUrl = mock
-      ? `${mock.replace(/\/$/, '')}/v2/tbsauth`
-      : firm.taxbanditsEnvironment === 'production'
-        ? env.TAXBANDITS_PROD_OAUTH_URL
-        : env.TAXBANDITS_SANDBOX_OAUTH_URL;
-    return new TaxBanditsClient(taxbanditsEndpoints(base, oauthUrl), {
-      clientId: crypto.decrypt(firm.taxbanditsClientIdEncrypted),
-      clientSecret: crypto.decrypt(firm.taxbanditsClientSecretEncrypted),
-      userToken: crypto.decrypt(firm.taxbanditsUserTokenEncrypted),
-    });
-  }
-
-  if (!firm.irisJwkEncrypted) throw new Error('IRIS not configured');
-  const base = env.IRIS_MOCK_BASE_URL || (firm.irisEnvironment === 'PROD' ? env.IRIS_PROD_BASE_URL : env.IRIS_ATS_BASE_URL);
-  return new IrisFilingProvider(
-    new IrisClient(irisEndpoints(base), {
-      apiClientId: firm.irisApiClientId,
-      privateJwk: JSON.parse(getCrypto().decrypt(firm.irisJwkEncrypted)) as Record<string, unknown>,
-      tokenUrl: irisEndpoints(base).tokenUrl,
-    }),
-  );
+/**
+ * The FilingProvider a transmission targets — the SAME builders (credentials,
+ * §7216 gates, mock/sandbox/prod URLs) the API uses, from @vibe1099/core.
+ */
+export function providerFor(firmId: string, kind: FilingProviderKind): Promise<FilingProvider> {
+  return buildFilingProvider(getDb(), firmId, kind);
 }
 
 async function alertStaff(firmId: string, subject: string, message: string): Promise<void> {
@@ -105,11 +62,31 @@ export async function handleIrisTransmit(job: Job): Promise<void> {
   const db = getDb();
   const tx = await db.query.transmissions.findFirst({ where: eq(transmissions.id, data.transmissionId) });
   if (!tx) throw new Error('transmission missing');
-  if (tx.status !== 'building' && tx.status !== 'failed') {
+  // ONLY a freshly composed transmission may be sent. A 'failed' one must never be
+  // re-driven from the queue (admin "retry failed" / manual Job.retry): its records
+  // were released and may already be inside a newer transmission, so re-POSTing
+  // the stale blob would file the same returns twice (§6721). A failed
+  // transmission is retried by composing a new one.
+  if (tx.status !== 'building') {
     log.warn({ tx: tx.id, status: tx.status }, 'transmit skipped — not in building state (duplicate guard)');
     return;
   }
   if (!tx.xmlBlobId) throw new Error('transmission has no XML');
+  // The blob is only safe to send while every record it was built from is still
+  // bound to this transmission; anything else means the records were released.
+  const [linked] = await db.select({ n: count() }).from(formRecords).where(eq(formRecords.transmissionId, tx.id));
+  const linkedCount = Number(linked?.n ?? 0);
+  if (linkedCount !== tx.recordCount) {
+    log.error({ tx: tx.id, expected: tx.recordCount, linked: linkedCount }, 'transmit aborted — records no longer bound to this transmission');
+    await db
+      .update(transmissions)
+      .set({
+        status: 'failed',
+        errorDetails: [{ recordId: '', code: 'TRANSMIT_ABORTED', message: `Expected ${tx.recordCount} bound record(s) but found ${linkedCount} — the records were released; compose a fresh transmission` }],
+      })
+      .where(eq(transmissions.id, tx.id));
+    return;
+  }
   const blob = await getBlob(db, tx.xmlBlobId, data.firmId);
   if (!blob) throw new Error('XML blob missing');
 
@@ -145,10 +122,36 @@ export async function handleIrisTransmit(job: Job): Promise<void> {
   } catch (err) {
     const terminal = job.attemptsMade + 1 >= (job.opts.attempts ?? 1);
     if (terminal) {
+      const details = (err as { details?: { recordErrors?: RecordError[]; transport?: boolean } }).details;
+      if (details?.transport === true) {
+        // No answer from the provider (timeout / lost response): the submission
+        // MAY have been received. Unlinking the records here would let the next
+        // compose mint a fresh UTID and file the same returns twice (§6721), so
+        // they stay bound to this failed transmission until an operator confirms
+        // with the provider and releases them (Transmissions → Release records).
+        const message = `${(err as Error).message} — no answer from the provider; the submission MAY have been received. Confirm with the provider before releasing these records for a fresh transmit.`;
+        await db
+          .update(transmissions)
+          .set({ status: 'failed', errorDetails: [{ recordId: '', code: 'TRANSMIT_UNCONFIRMED', message }] })
+          .where(eq(transmissions.id, tx.id));
+        await audit(db, {
+          firmId: data.firmId,
+          actorType: 'system',
+          action: 'transmission.unconfirmed',
+          entityType: 'transmission',
+          entityId: tx.id,
+          detail: { utid: tx.utid, provider: tx.provider },
+        });
+        await alertStaff(
+          data.firmId,
+          'IRIS transmission unconfirmed',
+          `Transmission ${tx.utid} got no answer from the provider — it may or may not have been received. Its records stay bound to it: confirm with the provider, then release them from the transmission log before re-transmitting.`,
+        );
+        throw err;
+      }
       // Providers reject per record (TaxBandits returns ErrorRecords on a 400
       // Create). Persist those so the operator sees WHICH payee failed and why
       // instead of a bare HTTP status; fall back to the summary message.
-      const details = (err as { details?: { recordErrors?: RecordError[] } }).details;
       const recordErrors = details?.recordErrors ?? [];
       const errorDetails = recordErrors.length
         ? [
@@ -201,23 +204,49 @@ export async function handleIrisPoll(job: Job): Promise<void> {
   if (!tx?.receiptId) throw new Error('transmission missing or has no receipt');
   if (tx.status === 'accepted' || tx.status === 'accepted_with_errors' || tx.status === 'rejected') return;
 
-  const provider = await providerFor(data.firmId, tx.provider);
-  // TaxBandits status endpoints are per form type — derive it from the
-  // transmission's records (compose enforces a single type per submission).
-  let formType: string | undefined;
-  if (tx.provider === 'taxbandits') {
-    const rec = await db.query.formRecords.findFirst({ where: eq(formRecords.transmissionId, tx.id) });
-    formType = rec?.formType;
-  }
-  const result = await provider.status(tx.receiptId, formType ? { formType } : undefined);
-
-  if (result.status === 'Processing' || result.status === 'NotFound') {
+  const reschedule = async (extra: Partial<IrisPollJob>): Promise<void> => {
     if (data.attempt + 1 >= MAX_POLLS) {
       await alertStaff(data.firmId, 'IRIS ack polling stalled', `Transmission ${tx.utid} (Receipt ${tx.receiptId}) still processing after ${MAX_POLLS} polls — check IRIS status manually.`);
       return;
     }
     const delay = POLL_DELAYS_MS[Math.min(data.attempt + 1, POLL_DELAYS_MS.length - 1)];
-    await getQueue(QUEUE_NAMES.iris).add('poll', { ...data, attempt: data.attempt + 1 }, { delay });
+    await getQueue(QUEUE_NAMES.iris).add('poll', { ...data, attempt: data.attempt + 1, consecutiveErrors: 0, ...extra }, { delay });
+  };
+
+  // A status call that throws (provider 5xx/maintenance page, open circuit
+  // breaker, config drift) must keep the poll chain alive on the same backoff
+  // ladder — letting the queue's few retries exhaust would strand the
+  // transmission in 'polling' forever with nobody told.
+  let result: FilingStatusResult;
+  try {
+    const provider = await providerFor(data.firmId, tx.provider);
+    // TaxBandits status endpoints are per form type — derive it from the
+    // transmission's records (compose enforces a single type per submission).
+    let formType: string | undefined;
+    if (tx.provider === 'taxbandits') {
+      const rec = await db.query.formRecords.findFirst({ where: eq(formRecords.transmissionId, tx.id) });
+      formType = rec?.formType;
+    }
+    result = await provider.status(tx.receiptId, formType ? { formType } : undefined);
+  } catch (err) {
+    const consecutiveErrors = (data.consecutiveErrors ?? 0) + 1;
+    log.warn({ tx: tx.id, err: (err as Error).message, consecutiveErrors }, 'ack poll could not get a status from the provider — rescheduling');
+    if (consecutiveErrors === POLL_ERROR_ALERT_AT) {
+      await alertStaff(data.firmId, 'IRIS ack polling cannot reach the provider', `Transmission ${tx.utid} (Receipt ${tx.receiptId}): ${consecutiveErrors} status checks in a row failed (${(err as Error).message}). Polling continues; check the provider's service status.`);
+    }
+    await reschedule({ consecutiveErrors });
+    return;
+  }
+
+  if (result.status === 'Processing' || result.status === 'NotFound') {
+    // A TaxBandits submission still staged (every record CREATED) after several
+    // polls means the mandatory Transmit/release keeps failing (credits, provider
+    // console) — say so instead of a silent 4-day wait for the stall alert.
+    const staged = !!result.records?.length && result.records.every((r) => r.status.toUpperCase() === 'CREATED');
+    if (staged && data.attempt === 2) {
+      await alertStaff(data.firmId, 'Submission not released at the provider', `Transmission ${tx.utid} (Submission ${tx.receiptId}) is still staged (CREATED) after ${data.attempt + 1} status checks — the provider's Transmit/release step keeps failing. Check prepaid credits and the provider console; polling continues.`);
+    }
+    await reschedule({});
     return;
   }
 
@@ -270,14 +299,10 @@ export async function handleIrisPoll(job: Job): Promise<void> {
     try {
       const provider = await providerFor(data.firmId, 'taxbandits');
       const balance = provider instanceof TaxBanditsClient ? await provider.credits() : null;
-      const [prev] = await db
-        .select({ balance: taxbanditsCostLedger.balanceAfterCents })
-        .from(taxbanditsCostLedger)
-        .where(and(eq(taxbanditsCostLedger.firmId, data.firmId), isNotNull(taxbanditsCostLedger.balanceAfterCents)))
-        .orderBy(desc(taxbanditsCostLedger.createdAt))
-        .limit(1);
-      const amountCents = balance && prev?.balance != null ? Math.max(0, prev.balance - balance.balanceCents) : 0;
-      await db.insert(taxbanditsCostLedger).values({
+      const prev = await latestBalanceCents(db, data.firmId);
+      const amountCents = balance && prev != null ? Math.max(0, prev - balance.balanceCents) : 0;
+      // the shared, AUDITED ledger write (every charge gets its append-only audit row)
+      await recordCost(db, {
         firmId: data.firmId,
         transmissionId: tx.id,
         eventType: tx.isCorrection ? 'correction' : 'efile',
@@ -285,19 +310,7 @@ export async function handleIrisPoll(job: Job): Promise<void> {
         balanceAfterCents: balance?.balanceCents ?? null,
         detail: { utid: tx.utid, recordCount: tx.recordCount },
       });
-      const firm = await db.query.firms.findFirst({ where: eq(firms.id, data.firmId) });
-      if (balance && firm && balance.balanceCents <= firm.taxbanditsLowCreditCents) {
-        await notify(db, {
-          firmId: data.firmId,
-          kind: 'system',
-          severity: 'warning',
-          title: 'TaxBandits credit balance low',
-          body: `Prepaid credit balance is $${(balance.balanceCents / 100).toFixed(2)} — top up to avoid failed filings.`,
-          link: '/settings',
-          entityType: 'firm',
-          entityId: data.firmId,
-        }).catch(() => undefined);
-      }
+      if (balance) await checkLowBalance(db, data.firmId, balance.balanceCents);
     } catch (e) {
       log.warn({ err: (e as Error).message, tx: tx.id }, 'taxbandits credit ledger update failed (non-fatal)');
     }
@@ -345,6 +358,6 @@ export async function handleIrisPoll(job: Job): Promise<void> {
   if (overall === 'rejected') {
     await alertStaff(data.firmId, 'IRIS transmission rejected', `Transmission ${tx.utid} was rejected. ${result.errors.length} record error(s) — see the transmission log.`);
   } else if (result.errors.length) {
-    await alertStaff(data.firmId, 'IRIS accepted with errors', `Transmission ${tx.utid}: ${result.errors.length} record(s) rejected — see the exception queue.`);
+    await alertStaff(data.firmId, 'IRIS accepted with errors', `Transmission ${tx.utid}: ${result.errors.length} record error(s) — rejected records are back in the queue to edit; accepted-with-errors records need a correction. See the exception queue.`);
   }
 }

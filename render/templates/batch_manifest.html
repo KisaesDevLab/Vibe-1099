@@ -24,7 +24,7 @@
     <thead><tr><th>#</th><th>Payer</th><th>Recipient</th><th>Form</th><th>Sheet</th></tr></thead>
     <tbody>
       {% for r in rows %}
-      <tr><td>{{ r.n }}</td><td>{{ r.payer }}</td><td>{{ r.recipient }}</td><td>1099-{{ r.form_type }}</td><td>{{ r.sheet }}</td></tr>
+      <tr><td>{{ r.n }}</td><td>{{ r.payer }}</td><td>{{ r.recipient }}</td><td>{{ r.form_number }}</td><td>{{ r.sheet }}</td></tr>
       {% endfor %}
     </tbody>
   </table>

@@ -7,7 +7,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useSort } from '../components/useSort';
-import { api, ApiError, formatCents, parseCentsInput } from '../api';
+import { api, ApiError, FORM_TYPES, formatCents, formTypeLabel, parseCentsInput } from '../api';
+import { useTaxYears } from '../components/useTaxYears';
 import { MO_FILING_ENABLED } from '../config';
 import { Combobox } from '../components/Combobox';
 import { Paginator, usePageSize } from '../components/Paginator';
@@ -46,7 +47,7 @@ export function Corrections() {
   const [payerFilter, setPayerFilter] = useState('');
   const [formType, setFormType] = useState('');
   const [yearFilter, setYearFilter] = useState('');
-  const [taxYears, setTaxYears] = useState<number[]>([]);
+  const { years: taxYears } = useTaxYears(); // shared, cache-backed — stays current after an admin rollover
   const [search, setSearch] = useState('');
 
   const [target, setTarget] = useState<FormRow | null>(null);
@@ -78,7 +79,6 @@ export function Corrections() {
 
   useEffect(() => {
     api.get<{ payers: Payer[] }>('/api/payers?limit=1000').then((r) => setPayers(r.payers));
-    api.get<{ years: number[] }>('/api/admin/tax-years').then((r) => setTaxYears(r.years)).catch(() => {});
   }, []);
   useEffect(() => { void loadList(0); void loadOutstanding(0); }, [payerFilter, formType, yearFilter, limit, preparers.query]);
 
@@ -165,7 +165,7 @@ export function Corrections() {
           </div>
           <div className="field"><label>Form type</label>
             <select value={formType} onChange={(e) => setFormType(e.target.value)}>
-              <option value="">All</option>{['NEC', 'MISC', 'INT', 'DIV'].map((t) => <option key={t} value={t}>1099-{t}</option>)}
+              <option value="">All</option>{FORM_TYPES.map((t) => <option key={t} value={t}>{formTypeLabel(t)}</option>)}
             </select></div>
           <div className="field"><label>Tax year</label>
             <select value={yearFilter} onChange={(e) => setYearFilter(e.target.value)}>
@@ -185,7 +185,7 @@ export function Corrections() {
             <tr key={f.id}>
               <td>{payerName(f.payerId)}</td>
               <td>{f.recipient?.name1} <span className="mono muted">{f.recipient?.tinMasked}</span></td>
-              <td>1099-{f.formType}{f.correctionSeq > 0 && ` (corr ×${f.correctionSeq})`}</td>
+              <td>{formTypeLabel(f.formType)}{f.correctionSeq > 0 && ` (corr ×${f.correctionSeq})`}</td>
               <td>{f.taxYear}</td>
               <td><span className={`badge ${f.status}`}>{f.status}</span></td>
               <td style={{ whiteSpace: 'nowrap' }}>
@@ -208,7 +208,7 @@ export function Corrections() {
             <tr key={f.id}>
               <td>{f.payerName}</td>
               <td>{f.recipientName}</td>
-              <td>1099-{f.formType} TY{f.taxYear}</td>
+              <td>{formTypeLabel(f.formType)} TY{f.taxYear}</td>
               <td>{f.correctionType?.replace(/_/g, ' ')}</td>
               <td><span className={`badge ${f.status}`}>{f.status}</span></td>
               <td>{['accepted', 'accepted_with_errors'].includes(f.status) && <button className="small secondary" onClick={() => redeliver(f.id)}>Re-deliver</button>}</td>
@@ -221,11 +221,13 @@ export function Corrections() {
 
       {/* --- guided correction modal --- */}
       {target && (
-        <Modal title={`Correct 1099-${target.formType} TY${target.taxYear} — ${target.recipient?.name1} (${payerName(target.payerId)})`} width={720} onClose={() => setTarget(null)}>
+        <Modal title={`Correct ${formTypeLabel(target.formType)} TY${target.taxYear} — ${target.recipient?.name1} (${payerName(target.payerId)})`} width={720} onClose={() => setTarget(null)}>
+          {/* any change to the request invalidates the previewed diff — Create is
+              only offered for a diff that describes exactly what will be sent */}
           <div className="tabs">
-            <button type="button" className={mode === 'amounts' ? 'active' : ''} onClick={() => setMode('amounts')}>Type 1 — wrong amounts</button>
-            <button type="button" className={mode === 'void' ? 'active' : ''} onClick={() => setMode('void')}>Type 1 — filed in error</button>
-            <button type="button" className={mode === 'identity' ? 'active' : ''} onClick={() => setMode('identity')}>Type 2 — wrong TIN/name</button>
+            <button type="button" className={mode === 'amounts' ? 'active' : ''} onClick={() => { setMode('amounts'); setDiff(null); }}>Type 1 — wrong amounts</button>
+            <button type="button" className={mode === 'void' ? 'active' : ''} onClick={() => { setMode('void'); setDiff(null); }}>Type 1 — filed in error</button>
+            <button type="button" className={mode === 'identity' ? 'active' : ''} onClick={() => { setMode('identity'); setDiff(null); }}>Type 2 — wrong TIN/name</button>
           </div>
 
           {mode === 'amounts' && (
@@ -233,7 +235,7 @@ export function Corrections() {
               {numericBoxes.map(([boxId, v]) => (
                 <div className="field" key={boxId} style={{ minWidth: 200 }}>
                   <label>{boxLabel(boxId)} <span className="muted">(as filed {formatCents(v as number)})</span></label>
-                  <input className="num" value={edits[boxId] ?? formatCents(v as number)} onChange={(e) => setEdits((d) => ({ ...d, [boxId]: e.target.value }))} />
+                  <input className="num" value={edits[boxId] ?? formatCents(v as number)} onChange={(e) => { setDiff(null); setEdits((d) => ({ ...d, [boxId]: e.target.value })); }} />
                 </div>
               ))}
               {!numericBoxes.length && <p className="muted">This form has no numeric boxes to adjust.</p>}
@@ -244,20 +246,20 @@ export function Corrections() {
             <div className="field" style={{ position: 'relative' }}>
               <label>Correct recipient</label>
               {newRecipient
-                ? <div className="ok-box">Will re-file under <strong>{newRecipient.name}</strong>. <button className="small secondary" onClick={() => setNewRecipient(null)}>change</button></div>
+                ? <div className="ok-box">Will re-file under <strong>{newRecipient.name}</strong>. <button className="small secondary" onClick={() => { setNewRecipient(null); setDiff(null); }}>change</button></div>
                 : <button className="secondary" onClick={() => setShowPicker(true)}>Choose the correct recipient from the vault…</button>}
-              {showPicker && <RecipientPicker onPick={(id, name) => { setNewRecipient({ id, name }); setShowPicker(false); }} onClose={() => setShowPicker(false)} />}
+              {showPicker && <RecipientPicker onPick={(id, name) => { setNewRecipient({ id, name }); setDiff(null); setShowPicker(false); }} onClose={() => setShowPicker(false)} />}
               <p className="muted">Two-transaction correction: a zeroing record against the ORIGINAL identity plus a new original — transmitted as a linked pair.</p>
             </div>
           )}
 
           <div className="field"><label>Correction reason (workpaper trail)</label>
-            <input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="e.g. Client reported additional December payment" /></div>
+            <input value={reason} onChange={(e) => { setDiff(null); setReason(e.target.value); }} placeholder="e.g. Client reported additional December payment" /></div>
 
           <div className="row" style={{ justifyContent: 'flex-end' }}>
             <button className="secondary" onClick={() => setTarget(null)}>Cancel</button>
             <button className="secondary" onClick={previewDiff} disabled={reason.length < 3 || (mode === 'identity' && !newRecipient)}>Preview diff</button>
-            {diff && <button onClick={create}>Create correction ({diff.classification})</button>}
+            {diff && <button onClick={create} disabled={reason.length < 3 || (mode === 'identity' && !newRecipient)}>Create correction ({diff.classification})</button>}
           </div>
 
           {diff && (

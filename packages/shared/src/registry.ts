@@ -48,12 +48,22 @@ export interface FormValidationContext {
   secondTinNotice: boolean;
   /** admin-configured override of the registry's federal threshold (cents; Settings → federal_thresholds) */
   federalThresholdCents?: number;
+  /**
+   * The record is a void ("filed in error") or the zeroing half of a Type 2
+   * correction: every amount is 0 BY DESIGN, so the empty-form gate must not
+   * block it from being queued and transmitted.
+   */
+  zeroCorrection?: boolean;
 }
 
 export interface FormDef {
   formType: FormType;
   taxYear: number;
   title: string;
+  /** printed form number on substitute statements ("1099-NEC", "1098") */
+  formNumber: string;
+  /** OMB control number printed on the substitute statement (Pub 1179) */
+  omb: string;
   /** IRIS submission form type name */
   irisFormType: string;
   /** Pub 1220 A-record "Type of Return" code (2 chars, left-justified) */
@@ -63,6 +73,12 @@ export interface FormDef {
   /** federal filing threshold in cents (warn-only; from registry, per LOCKED decision) */
   federalThresholdCents?: number;
   federalThresholdNote?: string;
+  /**
+   * The boxes the federal threshold is measured against (the largest one is
+   * tested) — registry data, never a form-type branch in the validator. Forms
+   * without this list have no threshold warning even when a threshold is set.
+   */
+  thresholdBoxIds?: string[];
   validate: (values: FormRecordValues, ctx: FormValidationContext) => ValidationIssue[];
 }
 
@@ -140,7 +156,7 @@ function commonValidate(def: FormDef, values: FormRecordValues, ctx: FormValidat
     if (b.kind === 'checkbox') return v === true;
     return false;
   });
-  if (!anyValue) {
+  if (!anyValue && !ctx.zeroCorrection) {
     issues.push({ severity: 'error', code: 'E_EMPTY_FORM', message: 'Form has no reportable amounts' });
   }
 
@@ -178,13 +194,15 @@ function commonValidate(def: FormDef, values: FormRecordValues, ctx: FormValidat
   // Admin settings may override the registry default per (form type, tax year).
   const thresholdCents = ctx.federalThresholdCents ?? def.federalThresholdCents;
   if (thresholdCents != null) {
-    // primary reportable box the threshold applies to: NEC box1 (comp), 1098 box1
-    // (mortgage interest received). Other forms have no single-box threshold gate.
-    const primary = def.formType === 'NEC' || def.formType === '1098' ? cents(values, 'box1') : undefined;
+    // the registry names the reportable box(es) the threshold applies to; the
+    // largest entered one is what is compared
+    const candidates = (def.thresholdBoxIds ?? []).map((id) => ({ id, amount: cents(values, id) })).filter((c) => c.amount > 0);
+    const top = candidates.sort((a, b) => b.amount - a.amount)[0];
+    const primary = top?.amount;
     if (primary != null && primary > 0 && primary < thresholdCents) {
       issues.push({
         severity: 'warning',
-        boxId: 'box1',
+        boxId: top!.id,
         code: 'W_UNDER_THRESHOLD',
         message:
           ctx.federalThresholdCents != null
@@ -207,8 +225,11 @@ function necDef(taxYear: number): FormDef {
     formType: 'NEC',
     taxYear,
     title: 'Nonemployee Compensation',
+    formNumber: '1099-NEC',
+    omb: '1545-0116',
     irisFormType: 'Form1099NEC',
     mo1220ReturnType: 'NE',
+    thresholdBoxIds: ['box1'],
     federalThresholdCents: taxYear >= 2026 ? 200000 : 60000,
     federalThresholdNote:
       taxYear >= 2026
@@ -230,8 +251,20 @@ function miscDef(taxYear: number): FormDef {
     formType: 'MISC',
     taxYear,
     title: 'Miscellaneous Information',
+    formNumber: '1099-MISC',
+    omb: '1545-0115',
     irisFormType: 'Form1099MISC',
     mo1220ReturnType: 'A ',
+    // §6041(a) class ($600, $2,000 for payments after 12/31/2025 under OBBBA):
+    // rents, other income, medical, crop insurance, attorney proceeds, fish.
+    // Royalties (box 2) and substitute payments (box 8) stay at $10 and are
+    // deliberately NOT in the list; fishing boat proceeds have no minimum.
+    thresholdBoxIds: ['box1', 'box3', 'box6', 'box9', 'box10', 'box11', 'box15'],
+    federalThresholdCents: taxYear >= 2026 ? 200000 : 60000,
+    federalThresholdNote:
+      taxYear >= 2026
+        ? 'Under the TY2026 OBBBA federal threshold ($2,000) — filing is optional but permitted; state rules may still require it'
+        : 'Under the $600 federal threshold — filing is optional but permitted',
     boxes: [
       { id: 'box1', boxNumber: '1', label: 'Rents', kind: 'cents', irisElement: 'RentsAmt', moAmountCode: '1', copyBSlot: 'box1' },
       { id: 'box2', boxNumber: '2', label: 'Royalties', kind: 'cents', irisElement: 'RoyaltiesAmt', moAmountCode: '2', copyBSlot: 'box2' },
@@ -260,6 +293,8 @@ function intDef(taxYear: number): FormDef {
     formType: 'INT',
     taxYear,
     title: 'Interest Income',
+    formNumber: '1099-INT',
+    omb: '1545-0112',
     irisFormType: 'Form1099INT',
     mo1220ReturnType: '6 ',
     boxes: [
@@ -290,6 +325,8 @@ function divDef(taxYear: number): FormDef {
     formType: 'DIV',
     taxYear,
     title: 'Dividends and Distributions',
+    formNumber: '1099-DIV',
+    omb: '1545-0110',
     irisFormType: 'Form1099DIV',
     mo1220ReturnType: '1 ',
     boxes: [
@@ -342,6 +379,8 @@ function mortgageInterestDef(taxYear: number): FormDef {
     formType: '1098',
     taxYear,
     title: 'Mortgage Interest Statement',
+    formNumber: '1098',
+    omb: '1545-0901',
     irisFormType: 'Form1098',
     mo1220ReturnType: '', // not a Missouri Pub 1220 income form — excluded from MO filing
     federalThresholdCents: 60000, // $600 interest received (reg. threshold, warn-only)

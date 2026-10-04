@@ -26,3 +26,16 @@
 3. **10DLC sender registration** — account-level task at TextLink before January volume.
 4. **MO handbook check** — see resolved note above; the one-line position change + golden-test
    update is expected work before the first MO filing.
+5. **Pub 1220 record terminator** — the writer emits 750 data characters **plus** CR/LF (752
+   bytes per line). Pub 1220 defines positions 749–750 as "blank or CR/LF" (i.e. 748 data +
+   CR/LF inside the 750). Most vendors ship 750 + CR/LF and line-oriented readers accept it, but
+   MO DOR's tolerance is undocumented — upload a `testFile` to mytax.mo.gov before the first
+   real submission; if it is rejected for record length, switch `writer.ts` to 748 + CR/LF and
+   update the golden test's 750-character assertion.
+6. **Proxy hop count for the staff IP allowlist** — `TRUST_PROXY_HOPS` defaults to 2 (appliance:
+   Caddy + nginx). In the standalone compose there is only nginx in front of the API, and nginx
+   *appends* to `X-Forwarded-For`, so a LAN client can pre-load one hop and choose its own
+   `req.ip` — which `STAFF_IP_ALLOWLIST` and the per-IP rate limits key on. Decide per
+   deployment: set `TRUST_PROXY_HOPS=1` for LAN/Tailscale-only standalone installs (tunnel
+   traffic then rate-limits per tunnel, not per client), or keep 2 only where a sanitizing proxy
+   (Caddy/Cloudflare) is guaranteed in front of nginx.

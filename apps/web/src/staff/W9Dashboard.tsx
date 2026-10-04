@@ -100,7 +100,7 @@ export function W9Dashboard() {
           {sort.rows.map((r) => (
             <tr key={r.id}>
               <td>{r.recipientName || <span className="muted">unnamed</span>}
-                {r.tinMismatch && <span className="badge err" style={{ marginLeft: 6 }}>TIN MISMATCH</span>}</td>
+                {r.tinMismatch && <span className="badge err" style={{ marginLeft: 6 }} title="The submitted W-9 disagrees with the vault (different TIN, or a TIN already on file under another name/address) — nothing was changed; apply or keep">NEEDS REVIEW</span>}</td>
               <td>{r.email ?? r.mobile}</td>
               <td><span className={`badge ${r.status === 'completed' ? 'ok' : r.status === 'expired' ? 'err' : 'warn'}`}>{r.status}</span></td>
               <td>{r.ageDays}d</td>
@@ -110,8 +110,8 @@ export function W9Dashboard() {
                 {r.status === 'completed' && <button className="small secondary" onClick={() => pdf(r.id)}>PDF</button>}
                 {r.tinMismatch && (
                   <>
-                    <button className="small" onClick={() => resolveMismatch(r.id, true)}>Use W-9 TIN</button>
-                    <button className="small secondary" onClick={() => resolveMismatch(r.id, false)}>Keep vault TIN</button>
+                    <button className="small" onClick={() => resolveMismatch(r.id, true)} title="Accept the W-9 as submitted: its TIN and/or name + mailing address replace the vault's">Apply W-9</button>
+                    <button className="small secondary" onClick={() => resolveMismatch(r.id, false)} title="Keep the vault data; clear the review flag">Keep vault</button>
                   </>
                 )}
               </td>

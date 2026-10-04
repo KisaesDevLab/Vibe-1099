@@ -5,7 +5,7 @@
 import { Router } from 'express';
 import { and, desc, eq, gte, lte, sql } from 'drizzle-orm';
 import { z } from 'zod';
-import { AppError } from '@vibe1099/shared';
+import { AppError, validateTin } from '@vibe1099/shared';
 import { getCrypto, getQueue, loadEnv, QUEUE_NAMES, resolveEmailAdapter, resolveSmsAdapter, toE164, type QueueName } from '@vibe1099/core';
 import { auditLog, firms, getDb } from '@vibe1099/db';
 import { h } from '../middleware/error.js';
@@ -95,7 +95,7 @@ adminRouter.post(
     // The no-op adapter silently swallows sends. Reporting that as success is
     // worse than failing: staff would believe delivery works while every invite
     // and portal link quietly goes nowhere.
-    const notConfigured = (adapterName: string): boolean => adapterName === 'null';
+    const notConfigured = (adapterName: string): boolean => adapterName === 'null' || adapterName === 'none';
     try {
       if (channel === 'email') {
         const emailer = await resolveEmailAdapter(db, firmId);
@@ -185,7 +185,14 @@ adminRouter.put(
     const input = z
       .object({
         name: z.string().min(1).max(120).optional(),
-        ein: z.string().max(11).optional(),
+        // the firm EIN is the IRIS TransmitterTIN / Pub 1220 T-record TIN — a bad
+        // value only surfaces as a provider rejection after records were marked
+        // transmitted, so validate it where it is typed (blank = not yet known)
+        ein: z
+          .string()
+          .max(11)
+          .optional()
+          .refine((v) => v === undefined || v.trim() === '' || validateTin(v, 'EIN').valid, 'EIN must be a valid 9-digit employer identification number'),
         address: z.record(z.string()).optional(),
         phone: z.string().max(20).optional(),
         moWithholdingId: z.string().max(14).optional(),
@@ -405,6 +412,10 @@ adminRouter.put(
       // 0 = disabled. Only regenerable documents are purged on this horizon
       // (see purgeGeneratedDocuments) — filing evidence keeps its years floor.
       z.number().int().min(0).max(3650).parse(value);
+    } else if (key === 'federal_thresholds') {
+      // integer cents per "TYPE:YEAR" — a NaN/null from a bad UI parse must never
+      // be persisted (thresholdOverride would silently ignore it)
+      z.record(z.string().regex(/^[A-Z0-9]+:\d{4}$/), z.number().int().min(0)).parse(value);
     }
     await setSetting(key, value);
     res.locals['audit'] = { action: 'settings.update', entityType: 'app_settings', entityId: key };
@@ -517,7 +528,13 @@ adminRouter.post(
     const jobs = await getQueue(name).getFailed(0, 500);
     // only retry this firm's failed jobs
     const firmId = req.staff!.firmId;
-    const mine = jobs.filter((j) => (j.data as { firmId?: string } | undefined)?.firmId === firmId);
+    // Never re-drive a filing POST from the queue: a failed 'transmit' job's records
+    // were released (or deliberately held) and re-POSTing its stale blob would file
+    // the same returns twice (§6721). Failed transmissions are retried by composing
+    // a fresh transmission from the Transmissions screen.
+    const mine = jobs.filter(
+      (j) => (j.data as { firmId?: string } | undefined)?.firmId === firmId && !(name === 'iris' && j.name === 'transmit'),
+    );
     for (const j of mine) await j.retry();
     res.locals['audit'] = { action: 'queue.retry-failed', entityType: 'queue', entityId: name, detail: { count: mine.length } };
     res.json({ retried: mine.length });

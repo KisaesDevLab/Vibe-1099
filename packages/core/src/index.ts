@@ -11,6 +11,7 @@ export * from './delivery/index.js';
 export * from './iris/index.js';
 export * from './filing/provider.js';
 export * from './filing/iris-provider.js';
+export * from './filing/resolve.js';
 export * from './tax1099/index.js';
 export * from './taxbandits/index.js';
 export * from './mo1220/index.js';

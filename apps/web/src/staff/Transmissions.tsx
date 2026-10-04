@@ -55,13 +55,33 @@ export function Transmissions() {
   const load = () => api.get<{ transmissions: Tx[] }>('/api/iris/transmissions').then((r) => setRows(r.transmissions));
   useEffect(() => {
     void load();
-    const t = setInterval(load, 10_000);
-    return () => clearInterval(t);
+    const tick = () => { if (!document.hidden) void load(); }; // paused while the tab is hidden
+    const t = setInterval(tick, 10_000);
+    document.addEventListener('visibilitychange', tick);
+    return () => { clearInterval(t); document.removeEventListener('visibilitychange', tick); };
   }, []);
 
   const poll = async (id: string) => {
     await api.post(`/api/iris/transmissions/${id}/poll`);
     load();
+  };
+
+  // A failed transmission with no provider answer keeps its records bound (the
+  // submission may have been received). Releasing them is the operator's
+  // deliberate, audited step after confirming with the provider.
+  const release = async (t: Tx) => {
+    const ok = await dialogs.confirm(
+      `Release the records of ${t.utid.slice(0, 20)}… back to the queue? Only do this after confirming with the provider that this submission was NOT received — otherwise re-transmitting files the same returns twice.`,
+    );
+    if (!ok) return;
+    try {
+      const r = await api.post<{ released: number }>(`/api/iris/transmissions/${t.id}/release`);
+      setError('');
+      dialogs.toast(`${r.released} record(s) released — compose a fresh transmission from the forms grid.`, 'success');
+      load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : String(err));
+    }
   };
 
   const [check, setCheck] = useState<StatusCheck | null>(null);
@@ -168,6 +188,11 @@ export function Transmissions() {
                     <button className="small secondary" onClick={() => poll(t.id)} title="Queue an immediate background status poll">Poll now</button>
                     <button className="small secondary" onClick={() => void checkStatus(t.id)} title="Call the provider's status API right now, show its answer, and apply a final verdict to our records">Check status</button>
                   </>)}
+                  {me.role === 'admin' && t.status === 'failed' && (
+                    <button className="small danger" onClick={() => void release(t)} title="Unbind this failed transmission's records so they can be composed into a fresh transmission — confirm with the provider first">
+                      Release records
+                    </button>
+                  )}
                   {me.role === 'admin' && (
                     <button className="small secondary" onClick={() => void editStatesFiled(t)} title="Record which states the provider already filed for this submission (affects the state direct-file)">
                       State filing…

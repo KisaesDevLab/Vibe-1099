@@ -13,6 +13,19 @@ describe('CryptoService — envelope AES-256-GCM + HMAC tin_hash (ADR-002)', () 
     expect(svc.decrypt(ct)).toBe('400111222');
   });
 
+  it('binary (v2) blob envelope round-trips without base64 and is distinguishable from v1 text', () => {
+    const svc = new CryptoService(key());
+    const pdf = randomBytes(10_000);
+    const env = svc.encryptBytesRaw(pdf);
+    expect(CryptoService.isRawEnvelope(env)).toBe(true);
+    expect(env.length).toBeLessThan(pdf.length + 120); // header only — no 33% inflation
+    expect(svc.decryptBytesRaw(env).equals(pdf)).toBe(true);
+    const legacy = Buffer.from(svc.encryptBytes(pdf), 'utf8');
+    expect(CryptoService.isRawEnvelope(legacy)).toBe(false);
+    expect(svc.decryptBytes(legacy.toString('utf8')).equals(pdf)).toBe(true);
+    expect(() => new CryptoService(key()).decryptBytesRaw(env)).toThrow();
+  });
+
   it('unique DEK per record: same plaintext → different ciphertext', () => {
     const svc = new CryptoService(key());
     expect(svc.encrypt('400111222')).not.toBe(svc.encrypt('400111222'));

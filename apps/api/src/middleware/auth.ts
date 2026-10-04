@@ -127,8 +127,11 @@ export function staffIpAllowlist() {
     const env = loadEnv();
     if (!env.STAFF_IP_ALLOWLIST) return next();
     const allowed = env.STAFF_IP_ALLOWLIST.split(',').map((s) => s.trim()).filter(Boolean);
-    const ip = req.ip ?? '';
-    const ok = allowed.some((a) => ip === a || ip.startsWith(a));
+    const ip = (req.ip ?? '').replace(/^::ffff:/, '');
+    // exact match, or a prefix that ends on an octet/hextet boundary: "192.168.1"
+    // must admit 192.168.1.x only — never 192.168.100.x or 192.168.1x.x
+    const boundary = (a: string) => a.endsWith('.') || a.endsWith(':') || ip[a.length] === '.' || ip[a.length] === ':';
+    const ok = allowed.some((a) => ip === a || (ip.startsWith(a) && boundary(a)));
     if (!ok) return next(AppError.forbidden('Staff access is restricted from this network'));
     next();
   };

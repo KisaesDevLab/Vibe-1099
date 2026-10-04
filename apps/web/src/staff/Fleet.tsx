@@ -10,7 +10,7 @@ import { useSort } from '../components/useSort';
 import { api, ApiError, downloadBlob } from '../api';
 import { EntityPicker } from '../components/EntityPicker';
 import { usePreparerFilter } from '../components/PreparerFilter';
-import { useTaxYears } from '../components/useTaxYears';
+import { useTaxYearState } from '../components/useTaxYears';
 import { Paginator, usePageSize } from '../components/Paginator';
 import { Modal } from '../components/Modal';
 import { useDialogs } from '../components/Dialogs';
@@ -26,9 +26,8 @@ export function Fleet() {
   const dialogs = useDialogs();
   const [payers, setPayers] = useState<Payer[]>([]);
   const [payerIds, setPayerIds] = useState<string[]>([]);
-  const [taxYear, setTaxYear] = useState(2026);
-  const { years: taxYears, current: currentYear } = useTaxYears();
-  useEffect(() => { setTaxYear(currentYear); setPayerIds([]); }, [currentYear]);
+  const [taxYear, setTaxYear, { years: taxYears, current: currentYear }] = useTaxYearState();
+  useEffect(() => { setPayerIds([]); }, [currentYear]);
   const [elig, setElig] = useState<Eligibility | null>(null);
   const [preview, setPreview] = useState<{ items: RunItem[]; total: number } | null>(null);
   const [runs, setRuns] = useState<Run[]>([]);
@@ -52,8 +51,10 @@ export function Fleet() {
   // Poll the page currently in view. Re-arm on page change — a mount-scoped
   // interval would capture runsOffset=0 forever and snap pagination back to page 1.
   useEffect(() => {
-    const t = setInterval(() => void loadRuns(runsOffset), 8000);
-    return () => clearInterval(t);
+    const tick = () => { if (!document.hidden) void loadRuns(runsOffset); }; // paused while the tab is hidden
+    const t = setInterval(tick, 8000);
+    document.addEventListener('visibilitychange', tick);
+    return () => { clearInterval(t); document.removeEventListener('visibilitychange', tick); };
   }, [runsOffset, rlimit]);
   useEffect(() => { loadElig(); loadPending(); }, [loadElig, loadPending]);
 

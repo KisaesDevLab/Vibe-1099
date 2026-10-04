@@ -10,7 +10,7 @@
  * Guardrails: corrections only from accepted records; only the latest record in
  * a chain is correctable; diff-from-snapshot shown before queueing.
  */
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { AppError, isCorrectable, type FormStatus, type FormType } from '@vibe1099/shared';
 import { formRecords, getDb, recipients, type Db } from '@vibe1099/db';
 
@@ -129,16 +129,20 @@ export async function createCorrection(
   req: CorrectionRequest,
   createdBy: string,
 ): Promise<CorrectionResult> {
-  const original = await loadCorrectable(db, firmId, req.originalId);
   if (req.newRecipientId) await assertRecipientInFirm(db, firmId, req.newRecipientId);
   const classification = classifyCorrection(req);
-  const nextSeq = original.correctionSeq + 1;
   const createdIds: string[] = [];
 
   // All-or-nothing: the correction record(s) AND the original's transition to
   // `corrected` must commit together, or a crash could leave a half-built Type-2
-  // pair or an original stuck `corrected` with no correction record.
+  // pair or an original stuck `corrected` with no correction record. Serialized
+  // per original: two overlapping requests (a double-click) would otherwise both
+  // pass the "not yet corrected" check and create sibling corrections that each
+  // get filed.
   await db.transaction(async (tx) => {
+  await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`correction:${req.originalId}`}, 0))`);
+  const original = await loadCorrectable(db, firmId, req.originalId);
+  const nextSeq = original.correctionSeq + 1;
   if (req.voidRecord) {
     // filed-in-error: one-transaction zero-out with void semantics
     const [zero] = await tx
@@ -231,8 +235,14 @@ export async function createCorrection(
     if (fresh) createdIds.push(fresh.id);
   }
 
-  // original locks into its chain
-  await tx.update(formRecords).set({ status: 'corrected', updatedAt: new Date() }).where(eq(formRecords.id, original.id));
+  // original locks into its chain — guarded by status so a concurrent correction
+  // that slipped past the lock can never flip an already-corrected original twice
+  const locked = await tx
+    .update(formRecords)
+    .set({ status: 'corrected', updatedAt: new Date() })
+    .where(and(eq(formRecords.id, original.id), inArray(formRecords.status, ['accepted', 'accepted_with_errors'])))
+    .returning({ id: formRecords.id });
+  if (!locked.length) throw AppError.conflict('This record was corrected by a concurrent request — reload and review the existing correction');
   });
 
   return { classification: req.voidRecord ? 'void' : classification, createdIds };

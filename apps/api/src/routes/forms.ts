@@ -4,13 +4,14 @@
  * registry metadata for the grid UI.
  */
 import { Router } from 'express';
-import { and, desc, eq, ilike, inArray, or, sql } from 'drizzle-orm';
+import { and, desc, eq, ilike, inArray, isNull, or, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import {
   AppError,
   formatCents,
   getFormDef,
   listFormDefs,
+  normalizeTin,
   parseCents,
   sumCents,
   zFormRecordInput,
@@ -20,7 +21,8 @@ import {
   type FormStatus,
   type FormType,
 } from '@vibe1099/shared';
-import { formRecords, getDb, payers, recipients } from '@vibe1099/db';
+import { audit, getCrypto } from '@vibe1099/core';
+import { deliveries, formRecords, getDb, payers, recipients } from '@vibe1099/db';
 import { h } from '../middleware/error.js';
 import { requireStaff } from '../middleware/auth.js';
 import {
@@ -34,7 +36,7 @@ import {
 } from '../services/forms.js';
 import { preparerCond, zPreparerFilter } from '../services/preparers.js';
 import { getSetting, thresholdOverride } from '../services/settings.js';
-import { lookupByTin, toPublicRecipient } from '../services/vault.js';
+import { toPublicRecipient } from '../services/vault.js';
 
 export const formsRouter = Router();
 formsRouter.use(requireStaff());
@@ -85,6 +87,9 @@ function toPublicForm(f: typeof formRecords.$inferSelect) {
     recordErrors: f.recordErrors,
     notes: f.notes,
     transmissionId: f.transmissionId,
+    // imported filed-history (never transmitted by this system) — the one kind of
+    // `accepted` row the DELETE route allows cleaning up, so the grid can offer it
+    externallyFiled: f.filedSnapshot?.['filedVia'] === 'external' && !f.transmissionId,
     createdAt: f.createdAt,
     updatedAt: f.updatedAt,
   };
@@ -172,7 +177,9 @@ formsRouter.post(
     if (!payer) throw AppError.notFound('Payer');
 
     const issues = await validateFormRecord(db, firmId, input);
-    const errors = issues.filter((i) => i.severity === 'error');
+    // A new draft may be empty (amounts are keyed in afterwards, exactly like a
+    // rollforward row); the → ready transition is where "no amounts" blocks.
+    const errors = issues.filter((i) => i.severity === 'error' && i.code !== 'E_EMPTY_FORM');
     if (errors.length) throw AppError.validation('Form has validation errors', errors);
 
     const dupes = await findDuplicates(db, firmId, input.payerId, input.recipientId, input.formType, input.taxYear);
@@ -227,8 +234,10 @@ formsRouter.patch(
       boxValues: (patch.boxValues ?? record.boxValues) as Record<string, number | boolean | string | null>,
       secondTinNotice: patch.secondTinNotice ?? record.secondTinNotice,
     };
-    const issues = await validateFormRecord(db, firmId, merged);
-    const errors = issues.filter((i) => i.severity === 'error');
+    const issues = await validateFormRecord(db, firmId, { ...merged, correctionType: record.correctionType });
+    // a draft may be cleared back to empty (the → ready gate re-checks); anything
+    // already past draft keeps every error blocking
+    const errors = issues.filter((i) => i.severity === 'error' && (i.code !== 'E_EMPTY_FORM' || record.status !== 'draft'));
     if (errors.length) throw AppError.validation('Form has validation errors', errors);
 
     // edits to a rejected record return it to draft (status machine)
@@ -277,7 +286,17 @@ formsRouter.delete(
     if (dependents.length) {
       throw AppError.conflict('This record has a linked correction record — delete that one first.');
     }
+    // A printed (paper) delivery is part of the mailing record: the form behind it
+    // cannot simply vanish. Electronic courtesy links are revoked with the record.
+    const delivered = await db
+      .select({ id: deliveries.id, channel: deliveries.channel })
+      .from(deliveries)
+      .where(eq(deliveries.formRecordId, id));
+    if (delivered.some((d) => d.channel === 'paper')) {
+      throw AppError.conflict('This form was printed in a paper batch and is part of the mailing record — it cannot be deleted; void or correct it instead.');
+    }
     await db.transaction(async (tx) => {
+      if (delivered.length) await tx.delete(deliveries).where(eq(deliveries.formRecordId, id));
       await tx.delete(formRecords).where(eq(formRecords.id, id));
       // If this was the last outstanding correction draft of an original, roll the
       // original back from terminal `corrected` to `accepted` so it stays
@@ -288,10 +307,26 @@ formsRouter.delete(
           .from(formRecords)
           .where(eq(formRecords.correctsId, record.correctsId));
         if (!siblings.length) {
-          await tx
+          // the one edge outside the LOCKED machine (corrected → accepted): it exists
+          // only to un-strand an original whose last correction draft was discarded,
+          // so it gets its own audit row rather than hiding inside `form.delete`
+          const reverted = await tx
             .update(formRecords)
             .set({ status: 'accepted', updatedAt: new Date() })
-            .where(and(eq(formRecords.id, record.correctsId), eq(formRecords.status, 'corrected')));
+            .where(and(eq(formRecords.id, record.correctsId), eq(formRecords.status, 'corrected')))
+            .returning({ id: formRecords.id });
+          if (reverted.length) {
+            await audit(db, {
+              firmId: req.staff!.firmId,
+              actorType: 'staff',
+              actorId: req.staff!.userId,
+              action: 'form.status.accepted',
+              entityType: 'form_record',
+              entityId: record.correctsId,
+              detail: { reason: 'last correction draft deleted — original restored from corrected to accepted', deletedCorrection: id },
+              ip: req.ip,
+            });
+          }
         }
       }
     });
@@ -362,6 +397,8 @@ formsRouter.post(
     if (!importPayer) throw AppError.notFound('Payer');
     const def = getFormDef(formType, taxYear);
     const report: Array<{ row: number; status: 'created' | 'error'; message?: string }> = [];
+    // constant for the whole import — one settings read, not one per row
+    const federalThresholdCents = await thresholdOverride(formType, taxYear);
 
     for (let i = 0; i < rows.length; i++) {
       const r = rows[i]!;
@@ -376,7 +413,7 @@ formsRouter.post(
           else if (box.kind === 'checkbox') boxValues[boxId] = raw === 'true' || raw === '1' || raw.toLowerCase() === 'x';
           else boxValues[boxId] = raw;
         }
-        const issues = await validateFormRecord(db, firmId, { formType, taxYear, boxValues, recipientId, secondTinNotice: false });
+        const issues = await validateFormRecord(db, firmId, { formType, taxYear, boxValues, recipientId, secondTinNotice: false, federalThresholdCents });
         const errors = issues.filter((x) => x.severity === 'error');
         if (errors.length) throw new Error(errors.map((e) => e.message).join('; '));
         await db.insert(formRecords).values({
@@ -472,11 +509,9 @@ formsRouter.post(
       .where(and(eq(formRecords.firmId, firmId), eq(formRecords.payerId, payerId), eq(formRecords.taxYear, toYear)));
     const existingKeys = new Set(existing.map((e) => `${e.recipientId}:${e.formType}`));
 
-    let created = 0;
-    for (const p of prior) {
-      if (formType && p.formType !== formType) continue;
-      if (existingKeys.has(`${p.recipientId}:${p.formType}`)) continue;
-      await db.insert(formRecords).values({
+    const rows = prior
+      .filter((p) => !(formType && p.formType !== formType) && !existingKeys.has(`${p.recipientId}:${p.formType}`))
+      .map((p) => ({
         firmId,
         payerId,
         recipientId: p.recipientId,
@@ -485,9 +520,10 @@ formsRouter.post(
         boxValues: {}, // amounts blank per plan
         moSource: false,
         createdBy: req.staff!.userId,
-      });
-      created++;
-    }
+      }));
+    // one multi-row insert per 500 instead of one round trip per recipient
+    for (let i = 0; i < rows.length; i += 500) await db.insert(formRecords).values(rows.slice(i, i + 500));
+    const created = rows.length;
     res.locals['audit'] = { action: 'form.rollforward', entityType: 'form_record', detail: { payerId, fromYear, toYear, created } };
     res.json({ created });
   }),
@@ -527,30 +563,47 @@ formsRouter.post(
     let created = 0;
     let skippedExisting = 0;
     const unmatched: number[] = []; // 1-based row indexes with no vault match (no TINs echoed)
+    // recipients already holding a form of this type for the payer/year — one query, not one per row
+    const alreadyFiled = new Set(
+      (
+        await db
+          .select({ recipientId: formRecords.recipientId })
+          .from(formRecords)
+          .where(
+            and(
+              eq(formRecords.firmId, firmId),
+              eq(formRecords.payerId, input.payerId),
+              eq(formRecords.taxYear, input.taxYear),
+              eq(formRecords.formType, input.formType),
+            ),
+          )
+      ).map((r) => r.recipientId),
+    );
+    const crypto = getCrypto();
     for (const [i, row] of input.rows.entries()) {
-      const match = await lookupByTin(db, firmId, row.tin, row.tinType);
+      // hash lookup only — the vault's full lookup-as-you-type (with its "last used" subquery) is not needed here
+      const tin = normalizeTin(row.tin);
+      const match =
+        tin.length === 9
+          ? await db.query.recipients.findFirst({
+              where: and(eq(recipients.firmId, firmId), eq(recipients.tinHash, crypto.tinHash(tin, firmId, row.tinType)), isNull(recipients.mergedIntoId)),
+              columns: { id: true },
+            })
+          : undefined;
       if (!match) {
         unmatched.push(i + 1);
         continue;
       }
-      const existing = await db.query.formRecords.findFirst({
-        where: and(
-          eq(formRecords.firmId, firmId),
-          eq(formRecords.payerId, input.payerId),
-          eq(formRecords.recipientId, match.recipientId),
-          eq(formRecords.taxYear, input.taxYear),
-          eq(formRecords.formType, input.formType),
-        ),
-      });
-      if (existing) {
+      if (alreadyFiled.has(match.id)) {
         skippedExisting++;
         continue;
       }
+      alreadyFiled.add(match.id); // a TIN repeated within the same upload counts once
       const boxValues = { [input.boxId]: row.amountCents };
       await db.insert(formRecords).values({
         firmId,
         payerId: input.payerId,
-        recipientId: match.recipientId,
+        recipientId: match.id,
         taxYear: input.taxYear,
         formType: input.formType,
         boxValues,

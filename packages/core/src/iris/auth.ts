@@ -73,10 +73,6 @@ export async function getAccessToken(creds: IrisCredentials, fetchImpl: typeof f
   return token.token;
 }
 
-export function clearTokenCache(): void {
-  tokenCache.clear();
-}
-
 /** Generate an RSA keypair as JWK for IRS enrollment (Settings → JWK tooling). */
 export async function generateJwkPair(): Promise<{ privateJwk: Record<string, unknown>; publicJwk: Record<string, unknown> }> {
   const { generateKeyPairSync, randomUUID: uuid } = await import('node:crypto');

@@ -33,6 +33,14 @@ export interface RecordError {
   recordId: string;
   code: string;
   message: string;
+  /**
+   * What the agency did with the record that carries this error:
+   *  - 'rejected'             — never accepted; edit and re-file as a fresh original
+   *  - 'accepted_with_errors' — ACCEPTED (filed) with a defect; fix via a correction,
+   *                             never by re-filing an original (that is a duplicate)
+   * Absent = treated as 'rejected' (legacy / providers that do not say).
+   */
+  disposition?: 'rejected' | 'accepted_with_errors';
 }
 
 export interface StatusResult {
@@ -83,10 +91,6 @@ function recordOutcome(base: string, ok: boolean): void {
   }
 }
 
-export function resetBreakers(): void {
-  breakers.clear();
-}
-
 // --- xml value extraction (minimal, namespace-agnostic) -----------------------
 
 export function extractXmlValue(xml: string, element: string): string | null {
@@ -131,7 +135,9 @@ export class IrisClient {
       return res;
     } catch (err) {
       recordOutcome(this.endpoints.base, false);
-      throw new AppError(ErrorCodes.E_IRIS, `IRIS request failed: ${(err as Error).message}`, 502);
+      // transport: true — the request may have REACHED the IRS (timeout / lost
+      // response); callers must not treat this like a provider rejection.
+      throw new AppError(ErrorCodes.E_IRIS, `IRIS request failed: ${(err as Error).message}`, 502, { transport: true });
     }
   }
 
@@ -163,10 +169,15 @@ export class IrisClient {
       throw new AppError(ErrorCodes.E_IRIS, `IRIS status failed (${res.status}): ${raw.slice(0, 1000)}`, 502, { raw });
     }
     const statusText = extractXmlValue(raw, 'TransmissionStatusCd') ?? extractXmlValue(raw, 'StatusCd') ?? 'Processing';
+    // 'E' Accepted with Errors = every record was ACCEPTED, the flagged ones need a
+    // correction. 'P' Partially Accepted = the flagged records were REJECTED.
+    // Both land in our AcceptedWithErrors bucket; the per-record disposition
+    // tells applyAckToRecords which is which.
+    const partial = statusText === 'P' || /partial/i.test(statusText);
     const normalized: IrisAckStatus =
       statusText === 'A' || /^accepted$/i.test(statusText)
         ? 'Accepted'
-        : statusText === 'E' || /accepted.?with.?errors/i.test(statusText)
+        : statusText === 'E' || partial || /accepted.?with.?errors/i.test(statusText)
           ? 'AcceptedWithErrors'
           : statusText === 'R' || /^rejected$/i.test(statusText)
             ? 'Rejected'
@@ -178,6 +189,7 @@ export class IrisClient {
         recordId: extractXmlValue(block, 'RecordId') ?? '',
         code: extractXmlValue(block, 'ErrorMessageCd') ?? extractXmlValue(block, 'ErrorCd') ?? 'UNKNOWN',
         message: extractXmlValue(block, 'ErrorMessageTxt') ?? '',
+        disposition: normalized === 'AcceptedWithErrors' && !partial ? 'accepted_with_errors' : 'rejected',
       });
     }
     return { status: normalized, errors, raw };

@@ -7,7 +7,7 @@
  */
 import { and, eq } from 'drizzle-orm';
 import { blobs, type Db } from '@vibe1099/db';
-import { getCrypto } from './crypto.js';
+import { CryptoService, getCrypto } from './crypto.js';
 
 export type BlobKind =
   | 'form_pdf'
@@ -31,7 +31,8 @@ export async function putBlob(
     encrypt?: boolean;
   },
 ): Promise<string> {
-  const stored = opts.encrypt ? Buffer.from(getCrypto().encryptBytes(opts.bytes), 'utf8') : opts.bytes;
+  // binary (v2) envelope: raw bytes, no base64 inflation, no JS-string ceiling
+  const stored = opts.encrypt ? getCrypto().encryptBytesRaw(opts.bytes) : opts.bytes;
   const [row] = await db
     .insert(blobs)
     .values({
@@ -63,7 +64,12 @@ export async function getBlob(
     where: firmId == null ? eq(blobs.id, id) : and(eq(blobs.id, id), eq(blobs.firmId, firmId)),
   });
   if (!row) return null;
-  const bytes = row.encrypted ? getCrypto().decryptBytes(row.bytes.toString('utf8')) : row.bytes;
+  // v2 raw envelopes and legacy v1 text envelopes (stored as UTF-8) both decrypt
+  const bytes = !row.encrypted
+    ? row.bytes
+    : CryptoService.isRawEnvelope(row.bytes)
+      ? getCrypto().decryptBytesRaw(row.bytes)
+      : getCrypto().decryptBytes(row.bytes.toString('utf8'));
   return { bytes, contentType: row.contentType, filename: row.filename, kind: row.kind };
 }
 

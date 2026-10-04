@@ -7,9 +7,18 @@ export * from './resolve.js';
 
 import { loadEnv } from '../env.js';
 import type { EmailAdapter, SmsAdapter } from './types.js';
-import { NullEmailAdapter, SmtpEmailAdapter } from './email-smtp.js';
+import { NullEmailAdapter, SmtpEmailAdapter, UnconfiguredEmailAdapter } from './email-smtp.js';
 import { EmailItEmailAdapter } from './email-emailit.js';
 import { NullSmsAdapter, TextLinkSmsAdapter, TwilioSmsAdapter } from './sms.js';
+import type { SmsMessage } from './types.js';
+
+/** Production stand-in for an unconfigured SMS provider — fails loudly (see UnconfiguredEmailAdapter). */
+class UnconfiguredSmsAdapter implements SmsAdapter {
+  readonly name = 'none';
+  async send(_msg: SmsMessage): Promise<{ messageId: string }> {
+    throw new Error('No SMS provider is configured — Settings → Delivery (TextLink or Twilio)');
+  }
+}
 
 let email: EmailAdapter | undefined;
 let sms: SmsAdapter | undefined;
@@ -33,7 +42,8 @@ export function getEmailAdapter(): EmailAdapter {
         secure: env.SMTP_SECURE === 1,
       });
     } else {
-      email = new NullEmailAdapter();
+      // dev/test keep the silent no-op; production must never pretend to deliver
+      email = env.NODE_ENV === 'production' ? new UnconfiguredEmailAdapter() : new NullEmailAdapter();
     }
   }
   return email;
@@ -47,13 +57,9 @@ export function getSmsAdapter(): SmsAdapter {
     } else if (env.SMS_PROVIDER === 'twilio' && env.TWILIO_ACCOUNT_SID) {
       sms = new TwilioSmsAdapter(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN, env.TWILIO_FROM_NUMBER);
     } else {
-      sms = new NullSmsAdapter();
+      sms = env.NODE_ENV === 'production' ? new UnconfiguredSmsAdapter() : new NullSmsAdapter();
     }
   }
   return sms;
 }
 
-export function setAdaptersForTest(e: EmailAdapter, s: SmsAdapter): void {
-  email = e;
-  sms = s;
-}

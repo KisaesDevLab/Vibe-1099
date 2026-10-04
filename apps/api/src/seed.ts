@@ -8,7 +8,7 @@
 import { hash as argonHash } from '@node-rs/argon2';
 import { createLogger, getCrypto, loadEnv } from '@vibe1099/core';
 import { closeDb, firms, formRecords, getDb, getPool, payers, recipients, runMigrations, users } from '@vibe1099/db';
-import { tinLast4 } from '@vibe1099/shared';
+import { getFormDef, tinLast4, type FormType } from '@vibe1099/shared';
 import { ARGON_OPTS } from './lib/argon.js';
 
 const log = createLogger('seed');
@@ -28,8 +28,10 @@ const DEMO_RECIPIENTS: Array<{ tin: string; tinType: 'SSN' | 'EIN'; name1: strin
   { tin: '454567890', tinType: 'EIN', name1: 'NOVEMBER TRUST', city: 'Chesterfield', formType: 'DIV', cents: 12500000 },
 ];
 
+/** The form's primary payment box, from the registry (first money box that is not withholding). */
 function primaryBoxFor(formType: string): string {
-  return formType === 'DIV' ? 'box1a' : 'box1';
+  const def = getFormDef(formType as FormType, 2026);
+  return def.boxes.find((b) => b.kind === 'cents' && b.id !== 'fedTaxWithheld')?.id ?? 'box1';
 }
 
 async function main(): Promise<void> {

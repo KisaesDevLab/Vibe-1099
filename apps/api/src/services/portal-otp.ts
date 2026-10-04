@@ -9,13 +9,15 @@
  * Redis keys (short-lived): potp:<key> = {hash, attempts}; potp-ok:<key> = '1'.
  */
 import { createHash, randomInt, timingSafeEqual } from 'node:crypto';
-import { getQueue, getRedis, QUEUE_NAMES, type DeliveryJob } from '@vibe1099/core';
+import { getQueue, getRedis, QUEUE_NAMES, resolveEmailAdapter, resolveSmsAdapter, type DeliveryJob } from '@vibe1099/core';
+import { getDb } from '@vibe1099/db';
 import { getSetting } from './settings.js';
 
 const OTP_TTL = 600; // 10 min to enter the code
 const VERIFIED_TTL = 1800; // 30 min viewing window after verifying
 const MAX_ATTEMPTS = 5;
 const RESEND_THROTTLE = 30; // seconds between sends
+const SENDS_PER_CONTACT_PER_HOUR = 5;
 
 export type OtpChannel = 'email' | 'sms';
 
@@ -34,11 +36,22 @@ export async function requestPortalOtp(
   firmName: string,
   key: string,
   contact: { channel: OtpChannel; to: string },
-): Promise<{ sent: boolean; throttled?: boolean }> {
+): Promise<{ sent: boolean; throttled?: boolean; notConfigured?: boolean }> {
   const redis = getRedis();
   if (await redis.get(`potp-sent:${key}`)) return { sent: false, throttled: true };
+  // Per-contact cap: the per-key throttle above is bound to a cookie the caller
+  // can rotate, so on its own a link holder could flood the real recipient's
+  // inbox/phone (and run up SMS cost) by re-requesting with a fresh cookie.
+  const capKey = `potp-cap:${createHash('sha256').update(`${contact.channel}:${contact.to.trim().toLowerCase()}`).digest('hex')}`;
+  const sends = await redis.incr(capKey);
+  if (sends === 1) await redis.expire(capKey, 3600);
+  if (sends > SENDS_PER_CONTACT_PER_HOUR) return { sent: false, throttled: true };
+  // Never claim "code sent" when nothing can deliver it (unconfigured appliance):
+  // the portal would then demand a code that never arrives.
+  const adapter = contact.channel === 'email' ? await resolveEmailAdapter(getDb(), firmId) : await resolveSmsAdapter(getDb(), firmId);
+  if (adapter.name === 'null' || adapter.name === 'none') return { sent: false, notConfigured: true };
   const code = String(randomInt(0, 1_000_000)).padStart(6, '0');
-  await redis.set(`potp:${key}`, JSON.stringify({ hash: codeHash(key, code), attempts: 0 }), 'EX', OTP_TTL);
+  await redis.set(`potp:${key}`, JSON.stringify({ hash: codeHash(key, code) }), 'EX', OTP_TTL);
   await redis.set(`potp-sent:${key}`, '1', 'EX', RESEND_THROTTLE);
   const job: DeliveryJob = {
     kind: 'portal_code',
@@ -57,21 +70,29 @@ export async function verifyPortalOtp(key: string, code: string): Promise<'ok' |
   const redis = getRedis();
   const raw = await redis.get(`potp:${key}`);
   if (!raw) return 'expired';
-  const state = JSON.parse(raw) as { hash: string; attempts: number };
-  if (state.attempts >= MAX_ATTEMPTS) {
-    await redis.del(`potp:${key}`);
+  const state = JSON.parse(raw) as { hash: string };
+  // Atomic attempt counter (INCR before comparing): N concurrent guesses consume
+  // N attempts. The former read-modify-write on the JSON blob let every parallel
+  // guess read attempts=0, so MAX_ATTEMPTS bounded batches, not guesses. The
+  // counter is NOT reset by a re-send, so re-requesting codes cannot refill it.
+  const attKey = `potp-att:${key}`;
+  const attempts = await redis.incr(attKey);
+  if (attempts === 1) await redis.expire(attKey, OTP_TTL);
+  if (attempts > MAX_ATTEMPTS) {
+    await redis.del(`potp:${key}`, attKey);
     return 'locked';
   }
   const expected = Buffer.from(state.hash);
   const got = Buffer.from(codeHash(key, code));
   const match = expected.length === got.length && timingSafeEqual(expected, got);
   if (!match) {
-    state.attempts += 1;
-    const ttl = await redis.ttl(`potp:${key}`);
-    await redis.set(`potp:${key}`, JSON.stringify(state), 'EX', ttl > 0 ? ttl : OTP_TTL);
-    return state.attempts >= MAX_ATTEMPTS ? 'locked' : 'wrong';
+    if (attempts >= MAX_ATTEMPTS) {
+      await redis.del(`potp:${key}`, attKey);
+      return 'locked';
+    }
+    return 'wrong';
   }
-  await redis.del(`potp:${key}`);
+  await redis.del(`potp:${key}`, attKey);
   await redis.set(`potp-ok:${key}`, '1', 'EX', VERIFIED_TTL);
   return 'ok';
 }

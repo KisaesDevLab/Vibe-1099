@@ -21,7 +21,8 @@ export interface TinValidation {
 /**
  * Heuristic validation. `declaredType` comes from the entry form radio.
  * SSN rules: no 000/666/900-999 area, no 00 group, no 0000 serial.
- * ITIN detection: 9XX area with group 70-88, 90-92, 94-99 (valid for filing; flagged).
+ * ITIN detection: 9XX area with group 50-65, 70-88, 90-92, 94-99 (IRS Pub 1915;
+ * the 50-65 block was added in 2012). Valid for filing; flagged.
  */
 export function validateTin(raw: string, declaredType: TinType): TinValidation {
   const tin = normalizeTin(raw);
@@ -41,7 +42,7 @@ export function validateTin(raw: string, declaredType: TinType): TinValidation {
     if (area === '666') return { valid: false, reason: 'SSN area cannot be 666' };
     if (area.startsWith('9')) {
       const g = parseInt(group, 10);
-      const isItin = (g >= 70 && g <= 88) || (g >= 90 && g <= 92) || (g >= 94 && g <= 99);
+      const isItin = (g >= 50 && g <= 65) || (g >= 70 && g <= 88) || (g >= 90 && g <= 92) || (g >= 94 && g <= 99);
       if (isItin) return { valid: true, tinType: 'SSN', isItin: true };
       return { valid: false, reason: 'SSN area cannot start with 9 (not a valid ITIN group)' };
     }

@@ -31,6 +31,17 @@ export function errorHandler(err: unknown, req: Request, res: Response, _next: N
     });
     return;
   }
+  // Postgres integrity violations are client-resolvable conflicts, not crashes:
+  // surface them as 409s with a readable reason instead of an opaque 500.
+  const pgCode = (err as { code?: unknown } | null)?.code;
+  if (pgCode === '23503') {
+    res.status(409).json({ error: { code: ErrorCodes.E_CONFLICT, message: 'This record is still referenced by other records (deliveries, batches, filings) and cannot be removed' } });
+    return;
+  }
+  if (pgCode === '23505') {
+    res.status(409).json({ error: { code: ErrorCodes.E_CONFLICT, message: 'A record with the same unique value already exists — reload and try again' } });
+    return;
+  }
   log.error({ err, requestId: req.requestId, path: req.path }, 'unhandled error');
   res.status(500).json({ error: { code: ErrorCodes.E_INTERNAL, message: 'Internal error' } });
 }

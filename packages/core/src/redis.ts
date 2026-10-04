@@ -9,16 +9,14 @@ export function getRedis(url = process.env.REDIS_URL ?? 'redis://localhost:6379/
   return client;
 }
 
-/** BullMQ requires its own connection options (not a shared client for blocking ops). */
+/**
+ * BullMQ requires its own connection options (not a shared client for blocking
+ * ops). The URL is handed to ioredis untouched — exactly as getRedis() does — so
+ * an ACL username, a percent-encoded password and rediss:// TLS all resolve the
+ * same way for queues/workers as for sessions (a hand parser dropped all three).
+ */
 export function redisConnectionOptions(url = process.env.REDIS_URL ?? 'redis://localhost:6379/3') {
-  const u = new URL(url);
-  return {
-    host: u.hostname,
-    port: u.port ? parseInt(u.port, 10) : 6379,
-    db: u.pathname && u.pathname !== '/' ? parseInt(u.pathname.slice(1), 10) : 0,
-    password: u.password || undefined,
-    maxRetriesPerRequest: null as null,
-  };
+  return { url, maxRetriesPerRequest: null as null };
 }
 
 export async function closeRedis(): Promise<void> {

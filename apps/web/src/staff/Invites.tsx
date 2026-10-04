@@ -1,9 +1,9 @@
 import { FormEvent, useEffect, useState } from 'react';
 import { useSort } from '../components/useSort';
-import { api, ApiError } from '../api';
+import { api, ApiError, FORM_TYPES, formTypeLabel } from '../api';
 import { Combobox } from '../components/Combobox';
 import { useDialogs } from '../components/Dialogs';
-import { useTaxYears } from '../components/useTaxYears';
+import { useTaxYearState } from '../components/useTaxYears';
 import { usePreparerFilter } from '../components/PreparerFilter';
 
 interface Invite {
@@ -29,9 +29,7 @@ export function Invites() {
   const invites = allInvites.filter((i) => preparers.matches(i.payerId));
   const [payers, setPayers] = useState<Payer[]>([]);
   const [payerId, setPayerId] = useState('');
-  const [taxYear, setTaxYear] = useState(2026);
-  const { years: taxYears, current: currentYear } = useTaxYears();
-  useEffect(() => { setTaxYear(currentYear); }, [currentYear]);
+  const [taxYear, setTaxYear, { years: taxYears }] = useTaxYearState();
   const [formTypes, setFormTypes] = useState<string[]>(['NEC']);
   const [link, setLink] = useState('');
   const [error, setError] = useState('');
@@ -158,9 +156,9 @@ export function Invites() {
           <div className="field">
             <label>Form types the client may enter</label>
             <div className="row" style={{ gap: 8 }}>
-              {['NEC', 'MISC', 'INT', 'DIV'].map((t) => (
+              {FORM_TYPES.map((t) => (
                 <label key={t} style={{ display: 'flex', gap: 4, alignItems: 'center', fontSize: 13, color: 'var(--text)' }}>
-                  <input type="checkbox" style={{ width: 'auto' }} checked={formTypes.includes(t)} onChange={() => toggleType(t)} /> {t}
+                  <input type="checkbox" style={{ width: 'auto' }} checked={formTypes.includes(t)} onChange={() => toggleType(t)} /> {formTypeLabel(t)}
                 </label>
               ))}
             </div>

@@ -5,7 +5,7 @@
 import { Router } from 'express';
 import { and, desc, eq, inArray, isNotNull, sql } from 'drizzle-orm';
 import { z } from 'zod';
-import { AppError, zFormType } from '@vibe1099/shared';
+import { AppError, isAccepted, zFormType, type FormStatus } from '@vibe1099/shared';
 import { getQueue, loadEnv, QUEUE_NAMES, type DeliveryJob } from '@vibe1099/core';
 import { firms, formRecords, getDb, payers, recipients, stateFiles } from '@vibe1099/db';
 import { h } from '../middleware/error.js';
@@ -171,7 +171,7 @@ correctionsRouter.post(
     });
     if (!record) throw AppError.notFound('Form record');
     if (!record.correctionType) throw AppError.validation('Record is not a correction');
-    if (record.status !== 'accepted' && record.status !== 'accepted_with_errors') {
+    if (!isAccepted(record.status as FormStatus)) {
       throw AppError.state('Correction must be accepted before re-delivery');
     }
 

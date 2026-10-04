@@ -65,6 +65,58 @@ export function parseCentsInput(input: string): number {
   return parseInt(whole || '0', 10) * 100 + parseInt((frac + '00').slice(0, 2), 10);
 }
 
+/** Form types the registry serves (mirrors packages/shared FORM_TYPES — the SPA cannot import it). */
+export const FORM_TYPES = ['NEC', 'MISC', 'INT', 'DIV', '1098'] as const;
+
+/** Printed form number: 1099-NEC … but Form 1098 is not a 1099. */
+export function formTypeLabel(formType: string): string {
+  return formType === '1098' ? 'Form 1098' : `1099-${formType}`;
+}
+
+/** Split one CSV line per RFC 4180: quoted fields may hold commas and doubled quotes (Excel exports). */
+export function splitCsvLine(line: string): string[] {
+  const out: string[] = [];
+  let cur = '';
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i]!;
+    if (inQuotes) {
+      if (ch === '"') {
+        if (line[i + 1] === '"') {
+          cur += '"';
+          i++;
+        } else {
+          inQuotes = false;
+        }
+      } else {
+        cur += ch;
+      }
+    } else if (ch === '"') {
+      inQuotes = true;
+    } else if (ch === ',') {
+      out.push(cur);
+      cur = '';
+    } else {
+      cur += ch;
+    }
+  }
+  out.push(cur);
+  return out.map((c) => c.trim());
+}
+
+/** Header-keyed rows from pasted/uploaded CSV text (BOM tolerated, blank lines skipped). */
+export function parseCsv(text: string): Array<Record<string, string>> {
+  const lines = text.replace(/^﻿/, '').trim().split(/\r?\n/);
+  const headers = splitCsvLine(lines[0] ?? '');
+  return lines
+    .slice(1)
+    .filter((l) => l.trim() !== '')
+    .map((line) => {
+      const cells = splitCsvLine(line);
+      return Object.fromEntries(headers.map((h, i) => [h, cells[i] ?? '']));
+    });
+}
+
 /**
  * Filename for a PDF downloaded for a payer: PayersName-Year-FormType-ClientID.pdf.
  * Name/ID are reduced to filename-safe characters (same rule as the archive ZIP's

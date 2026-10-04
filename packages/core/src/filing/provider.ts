@@ -18,9 +18,10 @@
  * transmission row so the worker knows which backend to talk to. Corrections MUST
  * transmit through the same provider as the original (affinity invariant).
  */
+import type { FilingProviderKind } from '@vibe1099/shared';
 import type { IrisAckStatus, RecordError } from '../iris/client.js';
 
-export type FilingProviderKind = 'iris' | 'tax1099' | 'taxbandits';
+export type { FilingProviderKind };
 
 export interface FilingTransmitResult {
   /** Provider's submission handle — IRIS Receipt ID or Tax1099 submission id. */

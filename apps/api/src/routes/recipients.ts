@@ -45,7 +45,9 @@ recipientsRouter.get(
         or(ilike(recipients.name1, `%${q.search}%`), ilike(recipients.name2, `%${q.search}%`), eq(recipients.tinLast4, q.search))!,
       );
     }
-    if (q.filter === 'missing_address') conds.push(sql`(${recipients.address}->>'line1') IS NULL OR (${recipients.address}->>'line1') = ''`);
+    // parenthesized: drizzle's and() joins members with AND without wrapping each one,
+    // so a bare OR here would un-scope the firm/tombstone predicates for its right side
+    if (q.filter === 'missing_address') conds.push(sql`((${recipients.address}->>'line1') IS NULL OR (${recipients.address}->>'line1') = '')`);
     if (q.filter === 'missing_contact') conds.push(sql`${recipients.email} IS NULL AND ${recipients.mobile} IS NULL`);
     if (q.filter === 'missing_w9') conds.push(eq(recipients.w9Status, 'none'));
     if (q.filter === 'stale_w9') conds.push(eq(recipients.w9Status, 'stale'));
@@ -200,6 +202,7 @@ recipientsRouter.post(
   h(async (req, res) => {
     const id = z.string().uuid().parse(req.params['id']);
     const tin = await revealTin(getDb(), req.staff!.firmId, id);
+    res.locals['audit'] = false; // audited explicitly below
     await audit(getDb(), {
       firmId: req.staff!.firmId,
       actorType: 'staff',
@@ -433,6 +436,7 @@ recipientsRouter.post(
       backupWithholding: r.backupWithholding,
     }));
     const encrypted = crypto.encryptBytes(Buffer.from(JSON.stringify(payload, null, 2), 'utf8'));
+    res.locals['audit'] = false; // audited explicitly below
     await audit(db, {
       firmId,
       actorType: 'staff',

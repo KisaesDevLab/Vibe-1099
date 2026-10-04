@@ -12,7 +12,7 @@
  * when the live schema is confirmed. Box ids come straight from the shared form
  * registry (box1, box2, box1a, …) so NEC/MISC/INT/DIV all map generically.
  */
-import { centsToDecimalString } from '@vibe1099/shared';
+import { centsToDecimalString, normalizeUsPhone } from '@vibe1099/shared';
 import type { IrisTransmissionInput, IrisFormRecord } from '../iris/xml.js';
 
 export interface Tax1099Form {
@@ -123,7 +123,7 @@ export function buildTax1099Payload(
       city: input.issuer.address.city,
       state: input.issuer.address.state,
       zip: input.issuer.address.zip,
-      phone: input.issuer.phone,
+      phone: normalizeUsPhone(input.issuer.phone) || undefined,
     },
     combinedFederalState: input.cfsfStates,
     forms: input.records.map(formToTax1099),

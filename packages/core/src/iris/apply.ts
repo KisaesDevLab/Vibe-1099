@@ -29,7 +29,18 @@ export async function applyAckToRecords(
 
   for (const r of records) {
     const recErrors = errorsByRecord.get(r.id) ?? [];
-    if (overall === 'rejected' || recErrors.length) {
+    const translated = recErrors.map((e) => ({
+      code: e.code,
+      message: e.message,
+      translated: tmap.get(e.code)
+        ? `${tmap.get(e.code)!.plainEnglish} ${tmap.get(e.code)!.suggestedFix}`.trim()
+        : undefined,
+    }));
+    // An error row without a disposition is treated as a rejection (legacy /
+    // providers that do not distinguish); an explicit 'accepted_with_errors'
+    // means the agency HAS the return.
+    const rejected = overall === 'rejected' || recErrors.some((e) => (e.disposition ?? 'rejected') === 'rejected');
+    if (rejected) {
       await db
         .update(formRecords)
         .set({
@@ -39,15 +50,17 @@ export async function applyAckToRecords(
           // compose guard blocks records still bound to a transmission, so leaving
           // this set would make rejected records permanently unfileable (§6721).
           transmissionId: null,
-          recordErrors: recErrors.map((e) => ({
-            code: e.code,
-            message: e.message,
-            translated: tmap.get(e.code)
-              ? `${tmap.get(e.code)!.plainEnglish} ${tmap.get(e.code)!.suggestedFix}`.trim()
-              : undefined,
-          })),
+          recordErrors: translated,
           updatedAt: new Date(),
         })
+        .where(eq(formRecords.id, r.id));
+    } else if (recErrors.length) {
+      // Accepted with errors: the IRS filed it. It LOCKS like an accepted record
+      // (keeps its transmission link + as-filed snapshot) and is repaired through
+      // the corrections path — re-queuing it as an original would file a duplicate.
+      await db
+        .update(formRecords)
+        .set({ status: 'accepted_with_errors', recordErrors: translated, updatedAt: new Date() })
         .where(eq(formRecords.id, r.id));
     } else {
       // error-free records in a partially-accepted batch lock as accepted

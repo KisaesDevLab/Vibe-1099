@@ -11,7 +11,7 @@
  * from the shared form registry (box1, box2, box1a, …) so NEC/MISC/INT/DIV map
  * generically. PayerRef/PayeeRef carry our ULIDs for idempotency + linkage.
  */
-import { centsToDecimalString } from '@vibe1099/shared';
+import { centsToDecimalString, normalizeUsPhone } from '@vibe1099/shared';
 import type { IrisTransmissionInput, IrisFormRecord } from '../iris/xml.js';
 
 export interface TaxBanditsRecord {
@@ -308,7 +308,7 @@ export function toTaxBanditsWire(payload: TaxBanditsPayload): Record<string, unk
     PayerRef: b.payerRef,
     IsEIN: b.tinType === 'EIN',
     EINorSSN: formatWireTin(b.tin, b.tinType),
-    ...(digits(b.phone) ? { Phone: digits(b.phone).slice(0, 10) } : {}),
+    ...(normalizeUsPhone(b.phone) ? { Phone: normalizeUsPhone(b.phone) } : {}),
     IsForeign: false,
     USAddress: wireAddress(b),
   };

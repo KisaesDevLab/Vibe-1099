@@ -113,6 +113,9 @@ taxbanditsWebhookRouter.post(
       recordAnomaly({ at: new Date().toISOString(), ip: req.ip ?? '', kind: 'rejected', reason: verdict.reason });
       return void res.status(401).json({ error: 'unauthorized' });
     }
+    // Every write below is scoped to the firm whose credentials signed this
+    // delivery — a signature for firm A can never touch firm B's rows.
+    const firmId = verdict.firmId;
     if (!ipAllowed(req)) {
       // signature already proves origin; a new/undocumented TaxBandits egress IP
       // must not break status delivery — surface it for the operator instead.
@@ -166,7 +169,7 @@ taxbanditsWebhookRouter.post(
       // matching one of OUR transmissions rather than on a name.
       const tx = submissionId
         ? await db.query.transmissions.findFirst({
-            where: and(eq(transmissions.receiptId, submissionId), eq(transmissions.provider, 'taxbandits')),
+            where: and(eq(transmissions.receiptId, submissionId), eq(transmissions.provider, 'taxbandits'), eq(transmissions.firmId, firmId)),
           })
         : null;
       if (tx) {
@@ -174,15 +177,18 @@ taxbanditsWebhookRouter.post(
           const poll: IrisPollJob = { kind: 'poll', transmissionId: tx.id, firmId: tx.firmId, attempt: 0 };
           await getQueue(QUEUE_NAMES.iris).add('poll', poll);
         }
-      } else if (/tin/i.test(eventType) || submissionId || payeeRef) {
-        // TIN-match verdict: update the pending row for this submission/payee.
-        // The authoritative housekeeping poll also reconciles these; unmatched
-        // WHERE clauses no-op safely.
+      } else if (submissionId || payeeRef) {
+        // TIN-match verdict: update the pending row for THIS submission/payee in
+        // the signing firm — never a bare "every pending row" wildcard (an event
+        // without a submission/payee reference carries nothing to apply). The
+        // authoritative housekeeping poll also reconciles these; unmatched WHERE
+        // clauses no-op safely.
         const tinVerdict = normalizeTinMatchStatus(status ?? '');
-        if (tinVerdict !== 'pending') {
-          const conds = [eq(tinMatchResults.provider, 'taxbandits'), eq(tinMatchResults.status, 'pending')];
+        const uuidShaped = (s: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s);
+        if (tinVerdict !== 'pending' && (submissionId || (payeeRef && uuidShaped(payeeRef)))) {
+          const conds = [eq(tinMatchResults.firmId, firmId), eq(tinMatchResults.provider, 'taxbandits'), eq(tinMatchResults.status, 'pending')];
           if (submissionId) conds.push(eq(tinMatchResults.submissionRef, submissionId));
-          else if (payeeRef) conds.push(eq(tinMatchResults.recipientId, payeeRef));
+          else conds.push(eq(tinMatchResults.recipientId, payeeRef!));
           await db
             .update(tinMatchResults)
             .set({ status: tinVerdict, code: status ?? '', message: `IRS TIN matching: ${status ?? ''}`, checkedAt: new Date() })

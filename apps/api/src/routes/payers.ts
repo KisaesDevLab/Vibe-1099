@@ -4,7 +4,7 @@
 import { Router } from 'express';
 import { and, eq, ilike, inArray, isNotNull, isNull, or, sql } from 'drizzle-orm';
 import { z } from 'zod';
-import { AppError, formatTin, maskTin, normalizeTin, zPayerInput, zTaxYear } from '@vibe1099/shared';
+import { AppError, FORM_TYPES, formatTin, maskTin, normalizeTin, zPayerInput, zTaxYear, type FormType } from '@vibe1099/shared';
 import { audit, getCrypto } from '@vibe1099/core';
 import { clientInvites, formRecords, getDb, payers, recipients, users } from '@vibe1099/db';
 import { h } from '../middleware/error.js';
@@ -285,7 +285,10 @@ payersRouter.post(
       if (seen.has(nameKey)) { skipped++; continue; } // already exists or duplicated within the file
       try {
         const { tin } = checkTin(d.tin, d.tinType);
-        const formTypes = d.defaultFormTypes.split(/[|,;]/).map((s) => s.trim().toUpperCase()).filter((s) => ['NEC', 'MISC', 'INT', 'DIV'].includes(s));
+        const formTypes = d.defaultFormTypes
+          .split(/[|,;]/)
+          .map((s) => s.trim().toUpperCase())
+          .filter((s): s is FormType => (FORM_TYPES as readonly string[]).includes(s));
         await db.insert(payers).values({
           firmId,
           legalName,
@@ -385,6 +388,7 @@ payersRouter.post(
     const row = await db.query.payers.findFirst({ where: and(eq(payers.id, id), eq(payers.firmId, req.staff!.firmId)) });
     if (!row) throw AppError.notFound('Payer');
     const tin = getCrypto().decrypt(row.tinEncrypted);
+    res.locals['audit'] = false; // audited explicitly below
     await audit(db, {
       firmId: req.staff!.firmId,
       actorType: 'staff',

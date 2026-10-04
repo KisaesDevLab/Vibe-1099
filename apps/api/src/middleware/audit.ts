@@ -10,9 +10,15 @@ const log = createLogger('audit');
 
 export function auditMutations() {
   return (req: Request, res: Response, next: NextFunction): void => {
-    if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) return next();
+    if (['HEAD', 'OPTIONS'].includes(req.method)) return next();
+    const readOnly = req.method === 'GET';
     res.on('finish', () => {
       if (res.statusCode >= 400) return; // only successful mutations
+      // A handler that wrote its own audit row(s) opts out of the generic one;
+      // a GET is audited only when its handler says it mutated something
+      // (e.g. a status check that enqueues work) by setting res.locals.audit.
+      if (res.locals['audit'] === false) return;
+      if (readOnly && !res.locals['audit']) return;
       const enriched = (res.locals['audit'] ?? {}) as Partial<{
         action: string;
         entityType: string;

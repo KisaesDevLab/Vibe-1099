@@ -118,6 +118,11 @@ export function createVibeUsers(): UserAdapter {
 
     async setRole(userId, role) {
       await db().update(users).set({ role: role as UserRow['role'] }).where(eq(users.id, userId));
+      // A role change at the IdP must not leave an older browser session running
+      // with the previous (possibly admin) role until the absolute cap — same
+      // rule as the local PATCH /users/:id path. The login in progress mints a
+      // fresh session with the synced role afterwards.
+      await destroyAllUserSessions(userId);
     },
 
     /** Break-glass provisioning (D12): an ACTIVE local admin with a real password, no TOTP

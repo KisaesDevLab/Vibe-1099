@@ -4,7 +4,7 @@
  * reprints, test pattern, single-form preview.
  */
 import { Router } from 'express';
-import { and, desc, eq, inArray, sql } from 'drizzle-orm';
+import { and, desc, eq, getTableColumns, inArray, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { AppError, zFormType, zTaxYear } from '@vibe1099/shared';
 import { deleteBlob, getBlob, getQueue, getRenderClient, QUEUE_NAMES, type RenderBatchJob } from '@vibe1099/core';
@@ -26,8 +26,12 @@ batchesRouter.get(
       .parse(req.query);
     const db = getDb();
     const where = eq(paperBatches.firmId, req.staff!.firmId);
+    // the list is polled every few seconds by the Batches screen, which never
+    // reads form_record_ids (one UUID per form — the bulk of every row); the
+    // drill-in route serves those on demand
+    const { formRecordIds: _omit, ...listColumns } = getTableColumns(paperBatches);
     const [rows, [countRow]] = await Promise.all([
-      db.select().from(paperBatches).where(where).orderBy(desc(paperBatches.createdAt)).limit(q.limit).offset(q.offset),
+      db.select(listColumns).from(paperBatches).where(where).orderBy(desc(paperBatches.createdAt)).limit(q.limit).offset(q.offset),
       db.select({ n: sql<number>`count(*)::int` }).from(paperBatches).where(where),
     ]);
     res.json({ batches: rows, total: countRow?.n ?? 0, limit: q.limit, offset: q.offset });
@@ -305,8 +309,9 @@ batchesRouter.delete(
     if (batch.status === 'printed' || batch.status === 'delivered') {
       throw AppError.state('This batch is already printed — it is part of the mailing record and cannot be deleted');
     }
-    if (batch.pdfBlobId) await deleteBlob(db, batch.pdfBlobId);
+    // row first, then its blob — the batch row references the blob
     await db.delete(paperBatches).where(eq(paperBatches.id, id));
+    if (batch.pdfBlobId) await deleteBlob(db, batch.pdfBlobId);
     res.locals['audit'] = { action: 'batch.delete', entityType: 'paper_batch', entityId: id, detail: { status: batch.status } };
     res.json({ ok: true });
   }),

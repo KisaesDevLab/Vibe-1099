@@ -6,6 +6,7 @@
 import { Router } from 'express';
 import { and, desc, eq, inArray, isNull, lt, sql } from 'drizzle-orm';
 import { z } from 'zod';
+import { randomUUID } from 'node:crypto';
 import { AppError, ErrorCodes, maskTin, normalizeTin, zW9RequestInput, zW9SubmitInput } from '@vibe1099/shared';
 import { audit, getBlob, getCrypto, getQueue, getRenderClient, loadEnv, notify, putBlob, QUEUE_NAMES, safeHexEqual, type DeliveryJob } from '@vibe1099/core';
 import { firms, formRecords, getDb, recipients, w9Requests } from '@vibe1099/db';
@@ -16,6 +17,19 @@ import { checkTin, createRecipient, lookupByTin, updateRecipient } from '../serv
 import { getSetting } from '../services/settings.js';
 
 const W9_EXPIRY_DAYS = 30;
+
+/** Loose identity comparison for W-9 submissions against the vault row they match by TIN. */
+function sameIdentity(
+  match: { name1: string; address: Record<string, string> },
+  input: { name: string; address: { line1: string; zip: string } },
+): boolean {
+  const norm = (s: string | null | undefined) => (s ?? '').toUpperCase().replace(/[^A-Z0-9]+/g, ' ').trim();
+  return (
+    norm(match.name1) === norm(input.name) &&
+    norm(match.address['line1']) === norm(input.address.line1) &&
+    norm(match.address['zip']).slice(0, 5) === norm(input.address.zip).slice(0, 5)
+  );
+}
 
 const TAX_CLASS_LABELS: Record<string, string> = {
   individual: 'Individual/sole proprietor',
@@ -53,16 +67,30 @@ export async function createW9Request(opts: {
   if (!opts.email && !opts.mobile) throw AppError.validation('An email or mobile number is required to send a W-9 request');
 
   const expiresAt = new Date(Date.now() + W9_EXPIRY_DAYS * 86_400_000);
+  if (opts.recipientId) {
+    // the recipient must be this firm's (and not a merged-away tombstone) — a
+    // body-supplied id is never trusted
+    const owned = await db.query.recipients.findFirst({
+      where: and(eq(recipients.id, opts.recipientId), eq(recipients.firmId, opts.firmId), isNull(recipients.mergedIntoId)),
+    });
+    if (!owned) throw AppError.notFound('Recipient');
+  }
+  // The token embeds the request id, so mint the id first and insert the REAL
+  // hash in one statement: a 'pending' placeholder collides on the unique
+  // token_hash index whenever two requests are created at the same moment.
+  const id = randomUUID();
+  const token = crypto.signScopedToken('w9', id, expiresAt);
   const [created] = await db
     .insert(w9Requests)
     .values({
+      id,
       firmId: opts.firmId,
       recipientId: opts.recipientId ?? null,
       payerId: opts.payerId ?? null,
       requestedName: opts.requestedName ?? '',
       email: opts.email ?? null,
       mobile: opts.mobile ?? null,
-      tokenHash: 'pending',
+      tokenHash: crypto.tokenHash(token),
       expiresAt,
       requestedBy: opts.requestedBy ?? null,
       requestedVia: opts.requestedVia,
@@ -70,16 +98,13 @@ export async function createW9Request(opts: {
     .returning({ id: w9Requests.id });
   if (!created) throw new Error('w9 insert failed');
 
-  const token = crypto.signScopedToken('w9', created.id, expiresAt);
-  await db.update(w9Requests).set({ tokenHash: crypto.tokenHash(token) }).where(eq(w9Requests.id, created.id));
-
   if (opts.recipientId) {
     // mark requested from either 'none' or 'stale' so a campaign doesn't re-select
     // the same recipient forever
     await db
       .update(recipients)
       .set({ w9Status: 'requested', updatedAt: new Date() })
-      .where(and(eq(recipients.id, opts.recipientId), inArray(recipients.w9Status, ['none', 'stale'])));
+      .where(and(eq(recipients.id, opts.recipientId), eq(recipients.firmId, opts.firmId), inArray(recipients.w9Status, ['none', 'stale'])));
   }
 
   const link = `${env.PORTAL_BASE_URL}/w9/${encodeURIComponent(token)}`;
@@ -156,7 +181,7 @@ w9StaffRouter.get(
         ageDays: sql<number>`EXTRACT(day FROM now() - ${w9Requests.createdAt})::int`,
       })
       .from(w9Requests)
-      .leftJoin(recipients, eq(recipients.id, w9Requests.recipientId))
+      .leftJoin(recipients, and(eq(recipients.id, w9Requests.recipientId), eq(recipients.firmId, w9Requests.firmId)))
       .where(and(...conds))
       .orderBy(desc(w9Requests.createdAt));
     res.json({
@@ -345,10 +370,33 @@ w9StaffRouter.post(
     const db = getDb();
     const row = await db.query.w9Requests.findFirst({ where: and(eq(w9Requests.id, id), eq(w9Requests.firmId, req.staff!.firmId)) });
     if (!row || !row.tinMismatch) throw AppError.notFound('Mismatch');
-    const submitted = row.submittedData as { tinEncrypted?: string; tinType?: 'SSN' | 'EIN' } | null;
-    if (applyTin && row.recipientId && submitted?.tinEncrypted) {
-      const tin = getCrypto().decrypt(submitted.tinEncrypted);
-      await updateRecipient(db, req.staff!.firmId, row.recipientId, { tin, tinType: submitted.tinType }, 'w9', req.staff!.userId);
+    const submitted = row.submittedData as {
+      tinEncrypted?: string;
+      tinType?: 'SSN' | 'EIN';
+      name?: string;
+      businessName?: string;
+      address?: { line1: string; line2?: string; city: string; state: string; zip: string };
+      reviewReason?: 'tin_mismatch' | 'identity_mismatch' | null;
+    } | null;
+    if (applyTin && row.recipientId && submitted) {
+      // "apply" = accept the W-9 as submitted: the TIN (TIN-mismatch case) and/or
+      // the name + mailing address (identity-mismatch case, where the TIN already
+      // matched an existing vault recipient and the submission was held back)
+      const patch: Parameters<typeof updateRecipient>[3] = {};
+      if (submitted.tinEncrypted) {
+        patch.tin = getCrypto().decrypt(submitted.tinEncrypted);
+        patch.tinType = submitted.tinType;
+      }
+      if (submitted.reviewReason === 'identity_mismatch') {
+        if (submitted.name) patch.name1 = submitted.name;
+        if (submitted.businessName !== undefined) patch.name2 = submitted.businessName;
+        if (submitted.address) patch.address = { ...submitted.address, line2: submitted.address.line2 ?? '' };
+      }
+      await updateRecipient(db, req.staff!.firmId, row.recipientId, patch, 'w9', req.staff!.userId);
+      await db
+        .update(recipients)
+        .set({ w9Status: 'on_file', w9CompletedAt: new Date(), updatedAt: new Date() })
+        .where(and(eq(recipients.id, row.recipientId), eq(recipients.firmId, req.staff!.firmId)));
     }
     await db.update(w9Requests).set({ tinMismatch: false }).where(eq(w9Requests.id, id));
     res.locals['audit'] = { action: 'w9.resolve-mismatch', entityType: 'w9_request', entityId: id, detail: { applyTin } };
@@ -383,6 +431,9 @@ w9PublicRouter.get(
     const db = getDb();
     if (row.status === 'sent') {
       await db.update(w9Requests).set({ status: 'opened', openedAt: new Date() }).where(eq(w9Requests.id, row.id));
+      // a GET that mutates opts in to the audit trail (the middleware only logs a
+      // GET when its handler says so)
+      res.locals['audit'] = { action: 'w9.opened', entityType: 'w9_request', entityId: row.id };
     }
     const firm = await db.query.firms.findFirst({ where: eq(firms.id, row.firmId) });
     res.json({
@@ -446,6 +497,7 @@ w9PublicRouter.post(
     // vault upsert with mismatch guard
     let recipientId = row.recipientId;
     let tinMismatch = false;
+    let reviewReason: 'tin_mismatch' | 'identity_mismatch' | null = null;
     const existingByTin = await lookupByTin(db, row.firmId, tin, input.tinType);
 
     if (recipientId) {
@@ -453,6 +505,7 @@ w9PublicRouter.post(
       if (current && crypto.tinHash(tin, row.firmId, input.tinType) !== current.tinHash) {
         // vault already has a DIFFERENT TIN for this recipient — flag for staff review, never silently overwrite
         tinMismatch = true;
+        reviewReason = 'tin_mismatch';
         await updateRecipient(
           db,
           row.firmId,
@@ -472,15 +525,18 @@ w9PublicRouter.post(
         );
       }
     } else if (existingByTin) {
+      // The request was not bound to a vault recipient, but the submitted TIN
+      // matches one already in the firm's vault (possibly under another payer).
+      // A public link holder must never be able to rewrite that recipient's
+      // name or mailing address — that would redirect every payer's Copy B for
+      // the real payee. Bind the request to the match; when the submitted
+      // identity differs, hold it for staff review (W-9 dashboard → apply /
+      // dismiss) and leave the vault row untouched.
       recipientId = existingByTin.recipientId;
-      await updateRecipient(
-        db,
-        row.firmId,
-        recipientId,
-        { name1: input.name, name2: input.businessName, address: input.address },
-        'w9',
-        null,
-      );
+      if (!sameIdentity(existingByTin, input)) {
+        tinMismatch = true; // "needs staff review" — the resolve flow applies the submission or not
+        reviewReason = 'identity_mismatch';
+      }
     } else {
       const created = await createRecipient(
         db,
@@ -495,7 +551,8 @@ w9PublicRouter.post(
           mobile: row.mobile,
           backupWithholding: false,
         },
-        { source: 'w9', onExisting: 'update' },
+        // a concurrent create of the same TIN wins; never overwrite it from here
+        { source: 'w9', onExisting: 'return' },
       );
       recipientId = created.id;
     }
@@ -519,13 +576,16 @@ w9PublicRouter.post(
         submittedData: {
           name: input.name,
           businessName: input.businessName,
+          address: input.address,
           taxClassification: input.taxClassification,
           tinEncrypted: crypto.encrypt(tin),
           tinType: input.tinType,
+          reviewReason,
         },
       })
       .where(eq(w9Requests.id, row.id));
 
+    res.locals['audit'] = false; // audited explicitly below
     await audit(db, {
       firmId: row.firmId,
       actorType: 'recipient',

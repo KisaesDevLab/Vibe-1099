@@ -3,7 +3,7 @@ import { useSort } from '../components/useSort';
 import { api, ApiError } from '../api';
 import { EntityPicker } from '../components/EntityPicker';
 import { usePreparerFilter } from '../components/PreparerFilter';
-import { useTaxYears } from '../components/useTaxYears';
+import { useTaxYearState } from '../components/useTaxYears';
 
 interface Pending { undeliveredElectronic: string[]; accepted: string[] }
 
@@ -29,12 +29,11 @@ export function Deliveries() {
   const [rows, setRows] = useState<Delivery[]>([]);
   const [payers, setPayers] = useState<Payer[]>([]);
   const [payerIds, setPayerIds] = useState<string[]>([]);
-  const [taxYear, setTaxYear] = useState(2026);
-  const { years: taxYears, current: currentYear } = useTaxYears();
-  useEffect(() => { setTaxYear(currentYear); }, [currentYear]);
+  const [taxYear, setTaxYear, { years: taxYears }] = useTaxYearState();
   const [pending, setPending] = useState<Pending | null>(null);
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
 
   const load = () => api.get<{ deliveries: Delivery[] }>('/api/deliveries').then((r) => setRows(r.deliveries));
   useEffect(() => {
@@ -45,25 +44,43 @@ export function Deliveries() {
 
   const compose = async (e: FormEvent) => {
     e.preventDefault();
+    if (busy) return;
+    setError('');
+    setBusy(true);
+    try {
+      const r = await api.post<{ queued: number; paperOnly: number; skipped: number }>('/api/deliveries/compose', { taxYear, payerIds });
+      setNotice(
+        `${r.queued} portal link(s) queued (email preferred, SMS fallback). ${r.paperOnly} recipient(s) are paper-only.${
+          r.skipped ? ` ${r.skipped} already had a live link and were not re-sent.` : ''
+        }`,
+      );
+      load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const resend = async (id: string) => {
     setError('');
     try {
-      const r = await api.post<{ queued: number; paperOnly: number }>('/api/deliveries/compose', { taxYear, payerIds });
-      setNotice(`${r.queued} portal link(s) queued (email preferred, SMS fallback). ${r.paperOnly} recipient(s) are paper-only.`);
+      await api.post(`/api/deliveries/${id}/resend`);
+      setNotice('Re-sent with a fresh token (old link revoked).');
       load();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : String(err));
     }
   };
 
-  const resend = async (id: string) => {
-    await api.post(`/api/deliveries/${id}/resend`).catch((err: ApiError) => setError(err.message));
-    setNotice('Re-sent with a fresh token (old link revoked).');
-    load();
-  };
-
   const revoke = async (id: string) => {
-    await api.post(`/api/deliveries/${id}/revoke`);
-    load();
+    setError('');
+    try {
+      await api.post(`/api/deliveries/${id}/revoke`);
+      load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : String(err));
+    }
   };
 
   const status = (d: Delivery) => {
@@ -110,7 +127,7 @@ export function Deliveries() {
               ] : []}
             />
           </div>
-          <button type="submit" disabled={!payerIds.length}>Send portal links (accepted forms)</button>
+          <button type="submit" disabled={!payerIds.length || busy}>{busy ? 'Queuing…' : 'Send portal links (accepted forms)'}</button>
         </div>
         <p className="muted">Courtesy copies — the paper Copy B is always mailed (delivery policy b). Links carry opaque tokens only.</p>
       </form>

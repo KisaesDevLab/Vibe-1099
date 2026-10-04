@@ -3,10 +3,10 @@
  * columns; keyboard-first (Enter advances like Tab, ten-key friendly);
  * inline recipient add via vault lookup; status actions; rollforward.
  */
-import { useCallback, useEffect, useMemo, useState, KeyboardEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, KeyboardEvent } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useSort } from '../components/useSort';
-import { api, ApiError, downloadBlob, formatCents, parseCentsInput, payerPdfName } from '../api';
+import { api, ApiError, downloadBlob, formatCents, formTypeLabel, parseCentsInput, payerPdfName } from '../api';
 import { Combobox } from '../components/Combobox';
 import { RecipientPicker } from '../components/RecipientPicker';
 import { useTaxYears } from '../components/useTaxYears';
@@ -26,6 +26,8 @@ interface FormRow {
   moSource: boolean;
   correctionType: string | null;
   recordErrors: Array<{ code: string; message: string; translated?: string }> | null;
+  /** imported filed-history (accepted, never transmitted here) — deletable to clean up a bad import */
+  externallyFiled?: boolean;
   recipient: { id: string; name1: string; tinMasked: string; w9Status: string } | null;
 }
 
@@ -92,9 +94,13 @@ export function FormsGrid() {
   const setDraft = (formId: string, boxId: string, value: string) =>
     setDrafts((d) => ({ ...d, [formId]: { ...d[formId], [boxId]: value } }));
 
+  // One PATCH per row at a time: Enter + focus-change both fire a commit, and a
+  // second concurrent PATCH would race the first (and double the audit trail).
+  const inflight = useRef(new Set<string>());
+
   const commitRow = async (row: FormRow) => {
     const rowDrafts = drafts[row.id];
-    if (!rowDrafts) return;
+    if (!rowDrafts || inflight.current.has(row.id)) return;
     const boxValues: Record<string, number | boolean | string | null> = { ...row.boxValues };
     try {
       for (const [boxId, raw] of Object.entries(rowDrafts)) {
@@ -104,13 +110,30 @@ export function FormsGrid() {
       setError(String((err as Error).message));
       return;
     }
+    inflight.current.add(row.id);
     try {
-      await api.patch(`/api/forms/${row.id}`, { boxValues });
-      setDrafts((d) => { const { [row.id]: _, ...rest } = d; return rest; });
+      const r = await api.patch<{ form: { boxValues: FormRow['boxValues']; status: string; accountNumber: string } }>(`/api/forms/${row.id}`, { boxValues });
+      // merge the server's answer into the row instead of refetching the whole
+      // grid (up to 1,000 rows) after every single cell commit
+      setRows((rs) => rs.map((x) => (x.id === row.id ? { ...x, boxValues: r.form.boxValues, status: r.form.status, accountNumber: r.form.accountNumber } : x)));
+      // Drop only the boxes this PATCH sent, and only if they were not retyped
+      // while it was in flight — a value keyed into another box of the same row
+      // meanwhile must survive to be committed by its own blur.
+      setDrafts((d) => {
+        const current = d[row.id];
+        if (!current) return d;
+        const rest: Record<string, string> = {};
+        for (const [boxId, value] of Object.entries(current)) {
+          if (rowDrafts[boxId] === undefined || rowDrafts[boxId] !== value) rest[boxId] = value;
+        }
+        const { [row.id]: _, ...others } = d;
+        return Object.keys(rest).length ? { ...others, [row.id]: rest } : others;
+      });
       setError('');
-      load();
     } catch (err) {
       setError(err instanceof ApiError ? `${err.message}${err.details ? ': ' + JSON.stringify(err.details) : ''}` : String(err));
+    } finally {
+      inflight.current.delete(row.id);
     }
   };
 
@@ -125,10 +148,15 @@ export function FormsGrid() {
   const onKeyDown = (e: KeyboardEvent<HTMLInputElement>, rowIndex: number, boxId: string, row: FormRow) => {
     if (e.key === 'Enter') {
       e.preventDefault();
-      void commitRow(row);
+      // moving focus blurs this cell, and the blur handler commits the row — do not
+      // commit here as well or the same PATCH goes out twice
       const next = document.querySelector<HTMLInputElement>(`input[data-cell="${rowIndex + 1}:${boxId}"]`);
-      next?.focus();
-      next?.select();
+      if (next) {
+        next.focus();
+        next.select();
+      } else {
+        e.currentTarget.blur();
+      }
     }
   };
 
@@ -159,8 +187,11 @@ export function FormsGrid() {
 
   const transmit = async () => {
     try {
-      const r = await api.post<{ transmissionId: string; recordCount: number }>('/api/iris/transmit', { payerId, taxYear });
-      setNotice(`Transmission queued: ${r.recordCount} record(s). Track it under IRS transmissions.`);
+      const r = await api.post<{ transmissionId: string; recordCount: number; isCorrection: boolean; skipped: number }>('/api/iris/transmit', { payerId, taxYear });
+      const left = r.skipped
+        ? ` ${r.skipped} ${r.isCorrection ? 'original' : 'correction'} record(s) are still queued — click Transmit again to send them as a separate ${r.isCorrection ? 'original' : 'correction'} transmission.`
+        : '';
+      setNotice(`${r.isCorrection ? 'Correction transmission' : 'Transmission'} queued: ${r.recordCount} record(s). Track it under IRS transmissions.${left}`);
       load();
     } catch (err) {
       setError(err instanceof ApiError ? `${err.message}${err.details ? ': ' + JSON.stringify(err.details) : ''}` : String(err));
@@ -170,8 +201,10 @@ export function FormsGrid() {
   const addRecipientRow = async (recipientId: string, name: string) => {
     setShowPicker(false);
     try {
-      await api.post('/api/forms', { payerId, recipientId, taxYear, formType, boxValues: { [moneyBoxes[0]?.id ?? 'box1']: 1 } });
-      setNotice(`Added ${name} — enter amounts.`);
+      // an empty draft — amounts are typed in afterwards (the → ready gate enforces
+      // "at least one amount"; a placeholder cent would be a transmittable $0.01 return)
+      const r = await api.post<{ duplicateWarning: string | null }>('/api/forms', { payerId, recipientId, taxYear, formType, boxValues: {} });
+      setNotice(r.duplicateWarning ? `Added ${name} — ${r.duplicateWarning}.` : `Added ${name} — enter amounts.`);
       load();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : String(err));
@@ -217,7 +250,7 @@ export function FormsGrid() {
 
   return (
     <div>
-      <h1>Form entry — 1099-{formType} TY{taxYear}</h1>
+      <h1>Form entry — {formTypeLabel(formType)} TY{taxYear}</h1>
       {error && <div className="error-box" onClick={() => setError('')}>{error}</div>}
       {notice && <div className="ok-box" onClick={() => setNotice('')}>{notice}</div>}
 
@@ -230,7 +263,7 @@ export function FormsGrid() {
             <select value={taxYear} onChange={(e) => setParam('taxYear', e.target.value)}>{taxYears.map((y) => <option key={y} value={y}>{y}</option>)}</select></div>
           <div className="field"><label>Form type</label>
             <select value={formType} onChange={(e) => setParam('formType', e.target.value)}>
-              {registry.map((r) => <option key={r.formType} value={r.formType}>1099-{r.formType}</option>)}
+              {registry.map((r) => <option key={r.formType} value={r.formType}>{formTypeLabel(r.formType)}</option>)}
             </select></div>
         </div>
         {/* entry actions on the left; filing actions grouped on the right so a
@@ -311,7 +344,10 @@ export function FormsGrid() {
               <td><span className={`badge ${row.status}`}>{row.status}</span></td>
               <td style={{ whiteSpace: 'nowrap' }}>
                 <button className="small secondary" onClick={() => preview(row)} title="Copy B PDF preview">PDF</button>
-                {['draft', 'ready'].includes(row.status) && <button className="small danger" onClick={() => deleteRow(row)}>✕</button>}
+                {(['draft', 'ready'].includes(row.status) || row.externallyFiled) && (
+                  <button className="small danger" onClick={() => deleteRow(row)} title={row.externallyFiled ? 'Imported filed history — delete to clean up a bad import' : 'Delete draft'}>✕</button>
+                )}
+                {row.externallyFiled && <span className="badge queued" title="Filed outside Vibe 1099 and imported as history" style={{ marginLeft: 4 }}>imported</span>}
               </td>
             </tr>
           ))}
@@ -329,7 +365,7 @@ export function FormsGrid() {
         )}
       </table>
       </div>
-      <Paginator total={total} limit={limit} offset={offset} onChange={(o) => load(o)} onLimitChange={setLimit} unit={`1099-${formType} forms`} />
+      <Paginator total={total} limit={limit} offset={offset} onChange={(o) => load(o)} onLimitChange={setLimit} unit={`${formTypeLabel(formType)} forms`} />
       <p className="muted">Enter moves down the column (ten-key friendly). Amounts commit on blur/Enter. Sub-threshold NEC amounts warn but never block.</p>
     </div>
   );

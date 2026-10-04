@@ -3,7 +3,7 @@ import { useSort } from '../components/useSort';
 import { api, ApiError, downloadBlob } from '../api';
 import { EntityPicker } from '../components/EntityPicker';
 import { usePreparerFilter } from '../components/PreparerFilter';
-import { useTaxYears } from '../components/useTaxYears';
+import { useTaxYearState } from '../components/useTaxYears';
 import { useDialogs } from '../components/Dialogs';
 
 interface StateFile {
@@ -36,9 +36,7 @@ export function MoFiles() {
   const [files, setFiles] = useState<StateFile[]>([]);
   const [payers, setPayers] = useState<Payer[]>([]);
   const [payerIds, setPayerIds] = useState<string[]>([]);
-  const [taxYear, setTaxYear] = useState(2026);
-  const { years: taxYears, current: currentYear } = useTaxYears();
-  useEffect(() => { setTaxYear(currentYear); }, [currentYear]);
+  const [taxYear, setTaxYear, { years: taxYears }] = useTaxYearState();
   const [includeBelowThreshold, setIncludeBelowThreshold] = useState(false);
   const [preview, setPreview] = useState<PreviewRow[] | null>(null);
   const [guidance, setGuidance] = useState<Record<string, string> | null>(null);

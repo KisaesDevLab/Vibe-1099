@@ -49,6 +49,13 @@ export function isEditable(status: FormStatus): boolean {
   return status === 'draft' || status === 'ready' || status === 'rejected';
 }
 
+/** The IRS holds these returns: filed, lockable, deliverable, correctable. */
+export const ACCEPTED_STATUSES = ['accepted', 'accepted_with_errors'] as const;
+
+export function isAccepted(status: FormStatus): boolean {
+  return (ACCEPTED_STATUSES as readonly string[]).includes(status);
+}
+
 export function isCorrectable(status: FormStatus): boolean {
-  return status === 'accepted' || status === 'accepted_with_errors';
+  return isAccepted(status);
 }

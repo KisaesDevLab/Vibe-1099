@@ -3,7 +3,7 @@
  * Queue durability across restarts is provided by Redis-backed BullMQ.
  */
 import { Worker } from 'bullmq';
-import { createLogger, loadEnv, redisConnectionOptions, QUEUE_NAMES, getQueue } from '@vibe1099/core';
+import { closeQueues, closeRedis, createLogger, loadEnv, redisConnectionOptions, QUEUE_NAMES, getQueue } from '@vibe1099/core';
 import { getPool, runMigrations } from '@vibe1099/db';
 import { handleRenderJob } from './jobs/render.js';
 import { handleDeliveryJob } from './jobs/delivery.js';
@@ -50,6 +50,10 @@ async function main(): Promise<void> {
   const shutdown = async () => {
     log.info('shutting down workers');
     await Promise.all(workers.map((w) => w.close()));
+    // drain the producer queues + shared client too, so an in-flight add()
+    // (poll reschedule, staff alert) is not cut off mid-command on SIGTERM
+    await closeQueues().catch(() => undefined);
+    await closeRedis().catch(() => undefined);
     process.exit(0);
   };
   process.on('SIGTERM', shutdown);

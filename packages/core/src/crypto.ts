@@ -23,6 +23,9 @@ const b64u = {
   dec: (s: string) => Buffer.from(s, 'base64url'),
 };
 
+/** Leading bytes of the binary (v2) envelope — distinct from the "v1." text envelope. */
+const RAW_MAGIC = Buffer.from('v2\0', 'latin1');
+
 export class CryptoService {
   private readonly kek: Buffer;
   private readonly hmacKey: Buffer;
@@ -54,6 +57,52 @@ export class CryptoService {
     const wrapTag = wrap.getAuthTag();
 
     return ['v1', b64u.enc(iv), b64u.enc(ct), b64u.enc(tag), b64u.enc(wrapIv), b64u.enc(wrappedDek), b64u.enc(wrapTag)].join('.');
+  }
+
+  /**
+   * Binary envelope for large artifacts (blobs). Same AES-256-GCM envelope as
+   * v1 but stored as raw bytes — no base64 (+33%) and no round trip through a
+   * JS string, which capped v1 blobs at V8's ~512 MB string limit (≈385 MB of
+   * PDF/ZIP) and tripled transient heap on every read.
+   * Layout: "v2" | iv(12) | tag(16) | wrapIv(12) | wrapTag(16) | wrappedDek(32) | ct
+   */
+  encryptBytesRaw(plaintext: Buffer): Buffer {
+    const dek = randomBytes(32);
+    const iv = randomBytes(12);
+    const cipher = createCipheriv('aes-256-gcm', dek, iv);
+    const ct = Buffer.concat([cipher.update(plaintext), cipher.final()]);
+    const tag = cipher.getAuthTag();
+    const wrapIv = randomBytes(12);
+    const wrap = createCipheriv('aes-256-gcm', this.kek, wrapIv);
+    const wrappedDek = Buffer.concat([wrap.update(dek), wrap.final()]);
+    const wrapTag = wrap.getAuthTag();
+    return Buffer.concat([RAW_MAGIC, iv, tag, wrapIv, wrapTag, wrappedDek, ct]);
+  }
+
+  decryptBytesRaw(envelope: Buffer): Buffer {
+    if (!CryptoService.isRawEnvelope(envelope)) throw new Error('Unsupported ciphertext format');
+    let o = RAW_MAGIC.length;
+    const take = (n: number) => {
+      const b = envelope.subarray(o, o + n);
+      o += n;
+      return b;
+    };
+    const iv = take(12);
+    const tag = take(16);
+    const wrapIv = take(12);
+    const wrapTag = take(16);
+    const wrappedDek = take(32);
+    const ct = envelope.subarray(o);
+    const unwrap = createDecipheriv('aes-256-gcm', this.kek, wrapIv);
+    unwrap.setAuthTag(wrapTag);
+    const dek = Buffer.concat([unwrap.update(wrappedDek), unwrap.final()]);
+    const decipher = createDecipheriv('aes-256-gcm', dek, iv);
+    decipher.setAuthTag(tag);
+    return Buffer.concat([decipher.update(ct), decipher.final()]);
+  }
+
+  static isRawEnvelope(bytes: Buffer): boolean {
+    return bytes.length > RAW_MAGIC.length + 88 && bytes.subarray(0, RAW_MAGIC.length).equals(RAW_MAGIC);
   }
 
   decrypt(ciphertext: string): string {
@@ -150,7 +199,4 @@ export function getCrypto(masterKeyBase64?: string): CryptoService {
     instance = new CryptoService(key);
   }
   return instance;
-}
-export function resetCrypto(): void {
-  instance = undefined;
 }
