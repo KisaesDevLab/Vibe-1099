@@ -64,6 +64,7 @@ export function StaffShell() {
         <div className="section">Filing & delivery</div>
         <NavLink to="/transmissions">IRS transmissions</NavLink>
         <NavLink to="/filing-status">Filing status</NavLink>
+        <NavLink to="/billing">Billing</NavLink>
         {MO_FILING_ENABLED && <NavLink to="/missouri">Missouri</NavLink>}
         <NavLink to="/batches">Paper batches</NavLink>
         <NavLink to="/deliveries">Deliveries</NavLink>

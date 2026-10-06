@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
-import { useOutletContext } from 'react-router-dom';
+import { Link, useOutletContext, useSearchParams } from 'react-router-dom';
 import { AuthSettingsPage } from '@kisaesdevlab/vibe-auth/react';
 import { useSort } from '../components/useSort';
-import { api, ApiError, csrfToken, downloadBlob, formatCents, parseCentsInput } from '../api';
+import { api, ApiError, csrfToken, downloadBlob, formatCents, FORM_TYPES, formTypeLabel, parseCentsInput } from '../api';
 import { useDialogs } from '../components/Dialogs';
 import { Modal } from '../components/Modal';
 import { refreshTaxYears } from '../components/useTaxYears';
@@ -53,12 +53,26 @@ interface CloudflareInfo {
   token?: string; // transient input
 }
 interface User { id: string; email: string; name: string; role: string; active: boolean; totpEnabled: boolean; lastLoginAt: string | null }
+/** Billing fee schedule for one tax year as edited (dollar strings); stored as cents in app_settings.billing_fees. */
+type RateKind = 'base' | 'perForm' | 'correction';
+type BillingForm = Record<RateKind, Record<string, string>> & { mailing: string };
+interface BillingSchedule { base: Record<string, number>; perForm: Record<string, number>; correction: Record<string, number>; mailing: number }
+const emptyBillingForm = (): BillingForm => ({ base: {}, perForm: {}, correction: {}, mailing: '' });
+const billingFormFrom = (s: BillingSchedule | undefined): BillingForm => {
+  if (!s) return emptyBillingForm();
+  const toStr = (m: Record<string, number>) => Object.fromEntries(Object.entries(m).map(([k, v]) => [k, formatCents(v)]));
+  return { base: toStr(s.base), perForm: toStr(s.perForm), correction: toStr(s.correction), mailing: formatCents(s.mailing) };
+};
+const RATE_COLUMNS: Array<[RateKind, string]> = [['base', 'Base fee ($)'], ['perForm', 'Per form ($)'], ['correction', 'Per correction ($)']];
+
 interface AuditEntry { id: number; createdAt: string; actorType: string; actorId: string | null; action: string; entityType: string; entityId: string | null; ip: string | null }
 
 export function Settings() {
   const me = useOutletContext<Me>();
   const dialogs = useDialogs();
-  const [tab, setTab] = useState<'firm' | 'efile' | 'delivery' | 'users' | 'authentication' | 'network' | 'advanced'>('firm');
+  type Tab = 'firm' | 'efile' | 'delivery' | 'billing' | 'users' | 'authentication' | 'network' | 'advanced';
+  const [searchParams] = useSearchParams();
+  const [tab, setTab] = useState<Tab>(() => (searchParams.get('tab') === 'billing' ? 'billing' : 'firm'));
   const [firm, setFirm] = useState<Firm | null>(null);
   const [iris, setIris] = useState<IrisSettings | null>(null);
   const [users, setUsers] = useState<User[]>([]);
@@ -80,6 +94,8 @@ export function Settings() {
   const [editUser, setEditUser] = useState<User | null>(null);
   const [filingYears, setFilingYears] = useState<{ years: number[]; current: number }>({ years: [], current: 0 });
   const [thresholds, setThresholds] = useState<Record<string, string>>({});
+  const [billingYear, setBillingYear] = useState(0);
+  const [billingForm, setBillingForm] = useState<BillingForm>(emptyBillingForm());
   const isAdmin = me.role === 'admin';
 
   const loadAll = () => {
@@ -106,6 +122,51 @@ export function Settings() {
     fetch('/api/status', { credentials: 'same-origin' }).then((r) => r.json()).then(setStatus).catch(() => {});
   };
   useEffect(loadAll, [isAdmin]);
+
+  // billing schedule editor follows the chosen year (defaults to the current filing year)
+  useEffect(() => {
+    if (!billingYear && filingYears.current) setBillingYear(filingYears.current);
+  }, [filingYears.current, billingYear]);
+  useEffect(() => {
+    const fees = (settings['billing_fees'] as Record<string, BillingSchedule> | undefined) ?? {};
+    setBillingForm(billingFormFrom(fees[String(billingYear)]));
+  }, [settings, billingYear]);
+
+  const saveBilling = async () => {
+    // blank = $0; a typo is reported instead of silently saving a wrong fee
+    const parse = (v: string, what: string): number => {
+      if (v.trim() === '') return 0;
+      try {
+        return parseCentsInput(v);
+      } catch {
+        throw new Error(`Invalid amount for ${what}: "${v}" — use dollars and cents, e.g. 25.00`);
+      }
+    };
+    let schedule: BillingSchedule;
+    try {
+      const rates = (kind: RateKind, label: string) =>
+        Object.fromEntries(FORM_TYPES.map((ft) => [ft, parse(billingForm[kind][ft] ?? '', `${formTypeLabel(ft)} ${label}`)]));
+      schedule = {
+        base: rates('base', 'base fee'),
+        perForm: rates('perForm', 'per-form fee'),
+        correction: rates('correction', 'per-correction fee'),
+        mailing: parse(billingForm.mailing, 'mailing fee'),
+      };
+      const all = [schedule.mailing, ...Object.values(schedule.base), ...Object.values(schedule.perForm), ...Object.values(schedule.correction)];
+      if (all.some((n) => n < 0)) {
+        throw new Error('Fees cannot be negative');
+      }
+    } catch (e) {
+      dialogs.toast(e instanceof Error ? e.message : String(e), 'error');
+      return;
+    }
+    const fees = (settings['billing_fees'] as Record<string, BillingSchedule> | undefined) ?? {};
+    try {
+      await saveSetting('billing_fees', { ...fees, [String(billingYear)]: schedule });
+    } catch (err) {
+      dialogs.toast(err instanceof ApiError ? err.message : String(err), 'error');
+    }
+  };
 
   const saveFirm = async () => {
     if (!firm) return;
@@ -417,6 +478,7 @@ export function Settings() {
           ['firm', 'Firm & printing'],
           ['efile', 'IRS e-file'],
           ['delivery', 'Delivery & SMS'],
+          ['billing', 'Billing'],
           ['users', 'Users'],
           ['authentication', 'Authentication'],
           ['network', 'Public access'],
@@ -678,6 +740,52 @@ export function Settings() {
             }
             void saveSetting('federal_thresholds', map);
           }}>Save thresholds</button>
+        </div>
+      )}
+
+      {tab === 'billing' && (
+        <div className="panel">
+          <h2>Billing fee schedule</h2>
+          <p className="muted">
+            Used by the <Link to="/billing">Billing</Link> page to estimate each payer's fee. Per payer and tax year: the base
+            fee is charged once for each form type the payer files, plus the per-form fee for every non-draft form and the
+            per-correction fee for every corrected form. The mailing fee applies to each paper Copy B actually mailed.
+            Blank = $0. Rolling over to a new filing year copies the latest schedule forward.
+            {!isAdmin && ' Only admins can change these rates.'}
+          </p>
+          <div className="field" style={{ maxWidth: 140 }}>
+            <label>Tax year</label>
+            <select value={billingYear} onChange={(e) => setBillingYear(Number(e.target.value))}>
+              {filingYears.years.map((y) => <option key={y} value={y}>{y}{y === filingYears.current ? ' (current)' : ''}</option>)}
+            </select>
+          </div>
+          {!(settings['billing_fees'] as Record<string, unknown> | undefined)?.[String(billingYear)] && billingYear > 0 && (
+            <p className="muted"><strong>No schedule saved for {billingYear} yet</strong> — fees for this year show as $0 until you save one.</p>
+          )}
+          <table className="grid" style={{ maxWidth: 620 }}>
+            <thead>
+              <tr><th>Form</th>{RATE_COLUMNS.map(([k, label]) => <th key={k} className="num">{label}</th>)}</tr>
+            </thead>
+            <tbody>
+              {FORM_TYPES.map((ft) => (
+                <tr key={ft}>
+                  <td>{formTypeLabel(ft)}</td>
+                  {RATE_COLUMNS.map(([kind]) => (
+                    <td key={kind}>
+                      <input className="num" disabled={!isAdmin} value={billingForm[kind][ft] ?? ''} placeholder="0.00"
+                        onChange={(e) => setBillingForm((f) => ({ ...f, [kind]: { ...f[kind], [ft]: e.target.value } }))} />
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <div className="field" style={{ maxWidth: 260, marginTop: 10 }}>
+            <label>Mailing fee per paper Copy B ($)</label>
+            <input className="num" disabled={!isAdmin} value={billingForm.mailing} placeholder="0.00"
+              onChange={(e) => setBillingForm((f) => ({ ...f, mailing: e.target.value }))} />
+          </div>
+          {isAdmin && <button style={{ marginTop: 8 }} disabled={!billingYear} onClick={() => void saveBilling()}>Save {billingYear} fees</button>}
         </div>
       )}
 

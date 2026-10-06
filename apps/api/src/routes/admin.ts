@@ -5,7 +5,7 @@
 import { Router } from 'express';
 import { and, desc, eq, gte, lte, sql } from 'drizzle-orm';
 import { z } from 'zod';
-import { AppError, validateTin } from '@vibe1099/shared';
+import { AppError, validateTin, zBillingFees } from '@vibe1099/shared';
 import { getCrypto, getQueue, loadEnv, QUEUE_NAMES, resolveEmailAdapter, resolveSmsAdapter, toE164, type QueueName } from '@vibe1099/core';
 import { auditLog, firms, getDb } from '@vibe1099/db';
 import { h } from '../middleware/error.js';
@@ -416,6 +416,9 @@ adminRouter.put(
       // integer cents per "TYPE:YEAR" — a NaN/null from a bad UI parse must never
       // be persisted (thresholdOverride would silently ignore it)
       z.record(z.string().regex(/^[A-Z0-9]+:\d{4}$/), z.number().int().min(0)).parse(value);
+    } else if (key === 'billing_fees') {
+      // integer cents per tax year; unknown form types / negative or fractional rates rejected
+      zBillingFees.parse(value);
     }
     await setSetting(key, value);
     res.locals['audit'] = { action: 'settings.update', entityType: 'app_settings', entityId: key };

@@ -28,6 +28,7 @@ import { irisRouter } from './routes/iris.js';
 import { moRouter } from './routes/mo.js';
 import { correctionsRouter } from './routes/corrections.js';
 import { dashboardRouter } from './routes/dashboard.js';
+import { billingRouter } from './routes/billing.js';
 import { adminRouter } from './routes/admin.js';
 import { healthRouter } from './routes/health.js';
 import { runsRouter } from './routes/runs.js';
@@ -127,6 +128,7 @@ export function createApp(): express.Express {
   staff.use('/mo', moRouter);
   staff.use('/corrections', correctionsRouter);
   staff.use('/dashboard', dashboardRouter);
+  staff.use('/billing', billingRouter);
   staff.use('/admin', adminRouter);
   staff.use('/runs', runsRouter);
   staff.use('/inbox', inboxRouter);

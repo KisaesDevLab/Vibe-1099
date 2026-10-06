@@ -5,3 +5,4 @@ export * from './phone.js';
 export * from './registry.js';
 export * from './status.js';
 export * from './schemas.js';
+export * from './billing.js';
