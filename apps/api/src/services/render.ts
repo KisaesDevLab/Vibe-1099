@@ -13,7 +13,7 @@ import {
   type FormType,
 } from '@vibe1099/shared';
 import { getCrypto, getRenderClient } from '@vibe1099/core';
-import { firms, formRecords, getDb, payers, recipients, type Db } from '@vibe1099/db';
+import { firms, formRecords, getDb, payers, recipients, transmissions, type Db } from '@vibe1099/db';
 
 function addressLines(addr: Record<string, string>): string[] {
   const lines = [addr['line1'] ?? ''];
@@ -175,6 +175,23 @@ export async function renderZfoldSheet(db: Db, firmId: string, formRecordId: str
   });
 }
 
+const PROVIDER_LABEL: Record<string, string> = { iris: 'IRS IRIS', tax1099: 'Tax1099', taxbandits: 'TaxBandits' };
+const ACCEPTED_TX = new Set(['accepted', 'accepted_with_errors']);
+const TX_STATUS_LABEL: Record<string, string> = {
+  building: 'Preparing',
+  transmitting: 'Transmitting',
+  transmitted: 'Awaiting acknowledgement',
+  polling: 'Awaiting acknowledgement',
+  accepted: 'Accepted',
+  accepted_with_errors: 'Accepted with errors',
+  rejected: 'Rejected',
+  failed: 'Failed',
+};
+
+function fmtDate(d: Date | null): string {
+  return d ? d.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }) : '';
+}
+
 /**
  * Client copy: compact multi-up print of forms for the CLIENT'S records — not a
  * filing copy, never furnished to recipients. Grouped per payer (new page per
@@ -198,15 +215,27 @@ export async function renderClientCopyPdf(db: Db, firmId: string, formRecordIds:
     forms: unknown[];
     totalCents: number;
     withheldCents: number;
+    // transmissionId → number of this printout's forms filed in it; null key = not yet filed
+    filings: Map<string | null, number>;
   }
   const groups = new Map<string, ClientCopyGroup>();
   for (const row of rows) {
     const p = await buildFormPayload(db, firmId, row.id);
     let g = groups.get(row.payerId);
     if (!g) {
-      g = { payer: p.form.payer, tax_year: p.form.tax_year, form_number: p.form.form_number, forms: [], totalCents: 0, withheldCents: 0 };
+      g = {
+        payer: p.form.payer,
+        tax_year: p.form.tax_year,
+        form_number: p.form.form_number,
+        forms: [],
+        totalCents: 0,
+        withheldCents: 0,
+        filings: new Map(),
+      };
       groups.set(row.payerId, g);
     }
+    const txKey = p.record.transmissionId ?? null;
+    g.filings.set(txKey, (g.filings.get(txKey) ?? 0) + 1);
     const boxes = [...p.form.boxes, ...p.form.state_boxes].filter(
       (b) => (b.kind === 'checkbox' ? b.value === true : b.value !== '' && b.value != null),
     );
@@ -226,15 +255,49 @@ export async function renderClientCopyPdf(db: Db, firmId: string, formRecordIds:
       boxes,
     });
   }
+  // filing history: the e-file submissions these forms went out in — filed
+  // (transmittedAt) and accepted (resolvedAt once the IRS/provider acked)
+  const txIds = [...new Set([...groups.values()].flatMap((g) => [...g.filings.keys()]))].filter(
+    (id): id is string => id != null,
+  );
+  const txs = txIds.length
+    ? await db.select().from(transmissions).where(and(eq(transmissions.firmId, firmId), inArray(transmissions.id, txIds)))
+    : [];
+  const txById = new Map(txs.map((t) => [t.id, t]));
+
   const data = {
-    groups: [...groups.values()].map((g) => ({
-      payer: g.payer,
-      tax_year: g.tax_year,
-      form_number: g.form_number,
-      forms: g.forms,
-      total: formatCents(g.totalCents),
-      withheld: g.withheldCents > 0 ? formatCents(g.withheldCents) : null,
-    })),
+    groups: [...groups.values()].map((g) => {
+      const filings = [...g.filings.entries()]
+        .flatMap(([txId, count]) => {
+          const t = txId ? txById.get(txId) : undefined;
+          return t ? [{ t, count }] : [];
+        })
+        .sort((a, b) => (a.t.transmittedAt?.getTime() ?? 0) - (b.t.transmittedAt?.getTime() ?? 0))
+        .map(({ t, count }) => ({
+          filed: fmtDate(t.transmittedAt),
+          accepted: ACCEPTED_TX.has(t.status) ? fmtDate(t.resolvedAt) : '',
+          status: TX_STATUS_LABEL[t.status] ?? t.status,
+          via: (PROVIDER_LABEL[t.provider] ?? t.provider) + (t.environment === 'ATS' ? ' (test)' : ''),
+          receipt_id: t.receiptId ?? '',
+          states: (t.statesFiled ?? []).join(', '),
+          correction: t.isCorrection,
+          count,
+        }));
+      // forms with no (or an unlinked) transmission — not e-filed yet
+      const unfiled = [...g.filings.entries()]
+        .filter(([txId]) => !txId || !txById.has(txId))
+        .reduce((n, [, c]) => n + c, 0);
+      return {
+        payer: g.payer,
+        tax_year: g.tax_year,
+        form_number: g.form_number,
+        forms: g.forms,
+        total: formatCents(g.totalCents),
+        withheld: g.withheldCents > 0 ? formatCents(g.withheldCents) : null,
+        filings,
+        unfiled,
+      };
+    }),
   };
   return getRenderClient().render({ template: 'client_copy.html', data });
 }

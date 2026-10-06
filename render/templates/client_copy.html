@@ -11,7 +11,9 @@
                     tax_year, form_number, total, withheld|null,
                     forms:[{ recipient:{name1,name2,tin_masked,address_lines},
                     account_number, corrected,
-                    boxes:[{number,label,kind,value}] }] }] } #}
+                    boxes:[{number,label,kind,value}] }],
+                    filings:[{ filed, accepted, status, via, receipt_id,
+                    states, correction, count }], unfiled }] } #}
 <html>
 <head>
   <meta charset="utf-8">
@@ -58,6 +60,28 @@
       </tr>
     </table>
     {% endfor %}
+    <table class="filing-history">
+      <tr><th colspan="7" class="fh-title">Filing history</th></tr>
+      {% if g.filings %}
+      <tr class="fh-head">
+        <td>Filed</td><td>Accepted</td><td>Status</td><td>Filed via</td><td>Receipt ID</td><td>States</td><td class="fh-num">Forms</td>
+      </tr>
+      {% for t in g.filings %}
+      <tr>
+        <td>{{ t.filed or '—' }}</td>
+        <td>{{ t.accepted or '—' }}</td>
+        <td>{{ t.status }}{% if t.correction %} (correction){% endif %}</td>
+        <td>{{ t.via }}</td>
+        <td class="fh-mono">{{ t.receipt_id or '—' }}</td>
+        <td>{{ t.states or '—' }}</td>
+        <td class="fh-num">{{ t.count }}</td>
+      </tr>
+      {% endfor %}
+      {% endif %}
+      {% if g.unfiled %}
+      <tr><td colspan="7" class="fc-muted">{{ g.unfiled }} form(s) in this printout not yet e-filed.</td></tr>
+      {% endif %}
+    </table>
   </div>
   {% endfor %}
 </body>
