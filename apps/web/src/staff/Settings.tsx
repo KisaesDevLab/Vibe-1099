@@ -55,13 +55,13 @@ interface CloudflareInfo {
 interface User { id: string; email: string; name: string; role: string; active: boolean; totpEnabled: boolean; lastLoginAt: string | null }
 /** Billing fee schedule for one tax year as edited (dollar strings); stored as cents in app_settings.billing_fees. */
 type RateKind = 'base' | 'perForm' | 'correction';
-type BillingForm = Record<RateKind, Record<string, string>> & { mailing: string };
-interface BillingSchedule { base: Record<string, number>; perForm: Record<string, number>; correction: Record<string, number>; mailing: number }
-const emptyBillingForm = (): BillingForm => ({ base: {}, perForm: {}, correction: {}, mailing: '' });
+type BillingForm = Record<RateKind, Record<string, string>> & { mailing: string; feePercent: string };
+interface BillingSchedule { base: Record<string, number>; perForm: Record<string, number>; correction: Record<string, number>; mailing: number; feePercentBp?: number }
+const emptyBillingForm = (): BillingForm => ({ base: {}, perForm: {}, correction: {}, mailing: '', feePercent: '' });
 const billingFormFrom = (s: BillingSchedule | undefined): BillingForm => {
   if (!s) return emptyBillingForm();
   const toStr = (m: Record<string, number>) => Object.fromEntries(Object.entries(m).map(([k, v]) => [k, formatCents(v)]));
-  return { base: toStr(s.base), perForm: toStr(s.perForm), correction: toStr(s.correction), mailing: formatCents(s.mailing) };
+  return { base: toStr(s.base), perForm: toStr(s.perForm), correction: toStr(s.correction), mailing: formatCents(s.mailing), feePercent: s.feePercentBp ? String(s.feePercentBp / 100) : '' };
 };
 const RATE_COLUMNS: Array<[RateKind, string]> = [['base', 'Base fee ($)'], ['perForm', 'Per form ($)'], ['correction', 'Per correction ($)']];
 
@@ -142,6 +142,16 @@ export function Settings() {
         throw new Error(`Invalid amount for ${what}: "${v}" — use dollars and cents, e.g. 25.00`);
       }
     };
+    // "4" / "4.5" / "4.25%" → basis points; up to two decimals, 0–100
+    const parsePercent = (v: string): number => {
+      const t = v.trim().replace(/%$/, '').trim();
+      if (t === '') return 0;
+      if (!/^\d{1,3}(\.\d{1,2})?$/.test(t) || Number(t) > 100) {
+        throw new Error(`Invalid percentage fee: "${v}" — use a number like 4 or 3.5`);
+      }
+      const [whole, frac = ''] = t.split('.');
+      return Number(whole) * 100 + Number(frac.padEnd(2, '0'));
+    };
     let schedule: BillingSchedule;
     try {
       const rates = (kind: RateKind, label: string) =>
@@ -151,6 +161,7 @@ export function Settings() {
         perForm: rates('perForm', 'per-form fee'),
         correction: rates('correction', 'per-correction fee'),
         mailing: parse(billingForm.mailing, 'mailing fee'),
+        feePercentBp: parsePercent(billingForm.feePercent),
       };
       const all = [schedule.mailing, ...Object.values(schedule.base), ...Object.values(schedule.perForm), ...Object.values(schedule.correction)];
       if (all.some((n) => n < 0)) {
@@ -785,6 +796,15 @@ export function Settings() {
             <input className="num" disabled={!isAdmin} value={billingForm.mailing} placeholder="0.00"
               onChange={(e) => setBillingForm((f) => ({ ...f, mailing: e.target.value }))} />
           </div>
+          <div className="field" style={{ maxWidth: 260 }}>
+            <label>Percentage fee included in the rates (%)</label>
+            <input className="num" disabled={!isAdmin} value={billingForm.feePercent} placeholder="0"
+              onChange={(e) => setBillingForm((f) => ({ ...f, feePercent: e.target.value }))} />
+          </div>
+          <p className="muted" style={{ marginTop: 4 }}>
+            The rates above already include this percentage. The Billing page backs it out to show the net before the
+            fee, e.g. a $104.00 total at 4% shows a net of $100.00, which is the amount to enter in your billing system.
+          </p>
           {isAdmin && <button style={{ marginTop: 8 }} disabled={!billingYear} onClick={() => void saveBilling()}>Save {billingYear} fees</button>}
         </div>
       )}

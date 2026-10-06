@@ -3,7 +3,7 @@
  * per-correction × corrected forms, flat mailing × paper mailings; cents only.
  */
 import { describe, expect, it } from 'vitest';
-import { computeFees, EMPTY_BILLING_SCHEDULE, zBillingFees, type BillingSchedule } from '@vibe1099/shared';
+import { computeFees, EMPTY_BILLING_SCHEDULE, netOfPercentFee, zBillingFees, type BillingSchedule } from '@vibe1099/shared';
 
 const schedule: BillingSchedule = {
   base: { NEC: 2500, MISC: 2000, INT: 1500 },
@@ -60,6 +60,35 @@ describe('computeFees', () => {
   });
 });
 
+describe('percentage fee (net before the % fee)', () => {
+  it('backs a 4% fee out of the total: $104 → net $100', () => {
+    expect(netOfPercentFee(10400, 400)).toBe(10000);
+    const r = computeFees({ originals: { NEC: 1 }, corrections: {}, mailings: 0 }, {
+      ...EMPTY_BILLING_SCHEDULE, base: { NEC: 5400 }, perForm: { NEC: 5000 }, feePercentBp: 400,
+    });
+    expect([r.total, r.net, r.percentFee]).toEqual([10400, 10000, 400]);
+  });
+
+  it('rounds the net to the nearest cent and keeps net + fee = total', () => {
+    // 100.00 / 1.04 = 96.1538… → 96.15
+    const r = computeFees({ originals: { NEC: 1 }, corrections: {}, mailings: 0 }, {
+      ...EMPTY_BILLING_SCHEDULE, base: { NEC: 10000 }, feePercentBp: 400,
+    });
+    expect(r.net).toBe(9615);
+    expect(r.net + r.percentFee).toBe(r.total);
+  });
+
+  it('no percentage set → net equals total (older schedules without the field)', () => {
+    const r = computeFees({ originals: { NEC: 2 }, corrections: {}, mailings: 0 }, schedule);
+    expect(r.feePercentBp).toBe(0);
+    expect(r.net).toBe(r.total);
+  });
+
+  it('supports fractional percentages (3.5%)', () => {
+    expect(netOfPercentFee(10350, 350)).toBe(10000);
+  });
+});
+
 describe('zBillingFees', () => {
   it('accepts a year-keyed schedule in integer cents', () => {
     expect(() => zBillingFees.parse({ '2026': schedule })).not.toThrow();
@@ -70,6 +99,8 @@ describe('zBillingFees', () => {
     ['unknown form type', { '2026': { ...schedule, perForm: { W2: 100 } } }],
     ['bad year key', { '26': schedule }],
     ['missing mailing', { '2026': { base: {}, perForm: {}, correction: {} } }],
+    ['percentage over 100%', { '2026': { ...schedule, feePercentBp: 10001 } }],
+    ['fractional basis points', { '2026': { ...schedule, feePercentBp: 4.5 } }],
   ])('rejects %s', (_label, value) => {
     expect(() => zBillingFees.parse(value)).toThrow();
   });

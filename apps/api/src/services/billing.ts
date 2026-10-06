@@ -19,6 +19,8 @@ export interface BillingReport {
   scheduleMissing: boolean;
   rows: BillingRow[];
   grandTotal: number;
+  /** sum of each payer's net (so it ties to what staff enter per payer) */
+  grandNet: number;
 }
 
 const isFormType = (t: string): t is FormType => (FORM_TYPES as readonly string[]).includes(t);
@@ -100,5 +102,6 @@ export async function buildBillingReport(
     scheduleMissing: missing,
     rows,
     grandTotal: rows.reduce((s, r) => s + r.total, 0),
+    grandNet: rows.reduce((s, r) => s + r.net, 0),
   };
 }
