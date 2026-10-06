@@ -29,7 +29,7 @@
 }
 .address-block {
   position: absolute;
-  top: 1.7in; left: 0.9in;
+  top: 1.7in; left: 3in;
   font-size: 10pt; line-height: 1.3;
   width: 4in;
   /* USPS automation clearance: keep clear of edges and fold */
